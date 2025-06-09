@@ -25,7 +25,7 @@ jobs:
     name: Build & test Visa Service (Go)
     defaults:
       run:
-        working-directory: ./visaservice
+        working-directory: .
     runs-on: ubuntu-latest
     container:
       image: docker://ghcr.io/org-zpr/38f3bb925e5e:latest
