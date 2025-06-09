@@ -7,13 +7,13 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'visaservice/mods/**'
-      - 'visaservice/core/**'
+      - 'mods/**'
+      - 'core/**'
       - '.github/workflows/visaservice.yml'
   pull_request:
     paths:
-      - 'visaservice/mods/**'
-      - 'visaservice/core/**'
+      - 'mods/**'
+      - 'core/**'
       - '.github/workflows/visaservice.yml'
 
 concurrency:
