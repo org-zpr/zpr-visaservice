@@ -181,43 +181,40 @@ func NewVSInst(vcf *VSIConfig) (*VSInst, error) {
 	} else {
 		vs.plcy.matcher = m
 	}
-
-	// We need a visa service actor to exist.
-	// TODO: These claims need to come from configuration. Note that the adapter holds the claims
-	//       for the visa service actor.
-	//
-	// TODO: In prototype, the dock attached to the visa service adapter would evetually authenticate with the
-	//       visa service after bootstrap.  We need to do something like that too.
-	visaServiceActor := actor.NewActorFromUnsubstantiatedClaims(nil)
-	{
-		visaServiceActor.SetProvides([]string{
-			policy.VisaServiceName,
-			fmt.Sprintf("/zpr/%s", policy.VisaServiceName),
-			fmt.Sprintf("/zpr/%s/admin", policy.VisaServiceName),
-		})
-		authedClaims := make(map[string]*actor.ClaimV)
-		authedClaims[actor.KAttrVisaServiceAdapter] = &actor.ClaimV{
-			V:   "true",
-			Exp: time.Now().Add(vs.bootstrapAuthDuration),
-		}
-		authedClaims[actor.KAttrEPID] = &actor.ClaimV{
-			V:   vcf.VSAddr.String(),
-			Exp: time.Now().Add(vs.bootstrapAuthDuration),
-		}
-		authedClaims[actor.KAttrCN] = &actor.ClaimV{
-			V:   vcf.CN,
-			Exp: time.Now().Add(vs.bootstrapAuthDuration),
-		}
-		visaServiceActor.SetTetherAddr(vcf.VSAddr)
-		visaServiceActor.SetAuthenticated(authedClaims, time.Now().Add(vs.bootstrapAuthDuration), nil, nil, 0)
-	}
-
-	if err := vs.actorDB.AddAdapter(vcf.VSAddr, visaServiceActor.GetTetherAddr(), visaServiceActor); err != nil {
-		return nil, fmt.Errorf("failed to add visa service actor")
-	}
-
 	vs.log.Info("visa service instance configured", "reauthBumpTime", vs.reauthBumpTime.String())
 	return vs, nil
+}
+
+// bootstrapVSActor is called to create the visa service actor.  Normally an actor is created when an
+// adapter connects to a node and the node ends up calling the vsapi to approve the connection.
+//
+// This bootstrap version is used to create the "visa service" actor on behalf of our visa service
+// adapter.  There is no authentication at all.  In the prototype the visa service requested from
+// its node that the vs-adapter perform auth.  So there was a temporary VS actor until the real
+// vs-adapter authentication happened.
+//
+// For now this is just a bit of a hack to create the visa service actor with a known CN value
+// and a long expiration time.
+func (vs *VSInst) bootstrapVSActor(cn string) error {
+	selfClaims := make(map[string]string)
+	selfClaims[actor.KAttrVisaServiceAdapter] = "true"
+	selfClaims[actor.KAttrEPID] = vs.localAddr.String()
+	selfClaims[actor.KAttrCN] = cn
+	selfConnectRequest := &vsapi.ConnectRequest{
+		ConnectionID:       0,
+		DockAddr:           vs.localAddr.AsSlice(), // Supposed to be dock address (ie, our node but we don't know that yet)
+		Claims:             selfClaims,
+		Challenge:          nil,
+		ChallengeResponses: nil,
+	}
+	// The policy should set all the correct PROVIDES info for the visa service actor.
+	// ApproveConnection will call actorDB.AddAdapter
+	visaServiceActor, err := vs.ApproveConnection(selfConnectRequest, true)
+	if err != nil {
+		return fmt.Errorf("failed to approve self connection: %w", err)
+	}
+	vs.log.Info("visa service actor created", "actor", visaServiceActor)
+	return nil
 }
 
 func (vs *VSInst) SetAuthSvc(a auth.AuthService) {

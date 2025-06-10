@@ -254,7 +254,7 @@ func (vs *VSInst) handleApproveConnection(creq *vsapi.ConnectRequest, replyC cha
 	doneMsg := VSMsgDone{
 		MsgType: MTApproveConnection,
 	}
-	approvedActor, err := vs.ApproveConnection(creq) // blocking
+	approvedActor, err := vs.ApproveConnection(creq, false) // blocking
 	if err != nil {
 		doneMsg.Err = err
 	} else {
