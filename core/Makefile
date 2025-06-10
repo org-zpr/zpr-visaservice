@@ -7,18 +7,18 @@ PKG_VSERVICE := $(PKG)/cmd/vservice
 GFLAGS:=
 
 
-ifneq ($(BUILD), release) 
-	ifndef PATCH
-		PATCH=`date -u +%Y%m%d%H%M%S`-dev
-	endif
+ifneq ($(BUILD), release)
+  ifndef PATCH
+    PATCH=`date -u +%Y%m%d%H%M%S`-dev
+  endif
 endif
 
 # If $BUILD=release then strip binaries.
 ifeq ($(BUILD), release)
-	$(info *BUILD=release)
-	GFLAGS := $(GFLAGS) -ldflags="-s -w -X main.BuildVersion=$(PATCH)"
+  $(info *BUILD=release)
+  GFLAGS := $(GFLAGS) -ldflags="-s -w -X main.BuildVersion=$(PATCH)"
 else
-	GFLAGS := $(GFLAGS) -ldflags="-X main.BuildVersion=$(PATCH)"
+  GFLAGS := $(GFLAGS) -ldflags="-X main.BuildVersion=$(PATCH)"
 endif
 
 

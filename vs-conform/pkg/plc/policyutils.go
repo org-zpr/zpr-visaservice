@@ -8,7 +8,7 @@ import (
 
 	"zpr.org/vsapi"
 	"zpr.org/vst/pkg/packets"
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 const KAttrCN = "device.zpr.adapter.cn"

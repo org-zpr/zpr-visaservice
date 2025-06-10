@@ -11,7 +11,7 @@ import (
 	"zpr.org/vst/pkg/plc"
 	"zpr.org/vst/pkg/testfw"
 	"zpr.org/vst/pkg/zcrypt"
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 type CommunicatingPair struct {

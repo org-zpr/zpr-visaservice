@@ -9,7 +9,7 @@ import (
 	snip "zpr.org/vs/pkg/ip"
 	"zpr.org/vs/pkg/logr"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 var (

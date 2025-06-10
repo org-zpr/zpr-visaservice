@@ -2,7 +2,7 @@ package vservice
 
 import (
 	"zpr.org/vs/pkg/actor"
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 // Callback function for adb/actordb

@@ -4,7 +4,7 @@ import (
 	fmt "fmt"
 	"strings"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 // Pseudocode return the procedure in a human readable "pseudocode" format.

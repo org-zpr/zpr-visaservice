@@ -12,7 +12,7 @@ import (
 	"zpr.org/vst/pkg/mocks"
 	"zpr.org/vst/pkg/vsadmin"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 type TestState struct {

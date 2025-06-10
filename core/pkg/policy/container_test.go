@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"zpr.org/vs/pkg/policy"
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 func TestSignVerifyPolicy(t *testing.T) {

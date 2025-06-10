@@ -4,7 +4,7 @@ import (
 	fmt "fmt"
 	"time"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 type CFKey uint32

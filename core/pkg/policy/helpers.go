@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 // GetMaxVisaLifetime get the visa lifetime setting from the policy, or return zero.

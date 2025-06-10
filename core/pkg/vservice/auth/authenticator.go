@@ -21,7 +21,7 @@ import (
 	"zpr.org/vs/pkg/snauth"
 	"zpr.org/vs/pkg/tsapi"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 var (

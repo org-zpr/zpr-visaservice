@@ -1,7 +1,7 @@
 package policy
 
 import (
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 type MatchedPolicy struct {

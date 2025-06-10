@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"net/netip"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"

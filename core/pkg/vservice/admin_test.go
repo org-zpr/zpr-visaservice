@@ -21,7 +21,7 @@ import (
 	"zpr.org/vs/pkg/snauth"
 	"zpr.org/vs/pkg/vservice"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 	"zpr.org/vsx/zpl/compiler"
 	"zpr.org/vsx/zpl/fs"
 

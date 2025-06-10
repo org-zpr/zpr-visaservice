@@ -9,7 +9,7 @@ import (
 	"os"
 
 	"google.golang.org/protobuf/proto"
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 type ContainedPolicy struct {
