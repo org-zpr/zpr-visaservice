@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 // Link/Connection related state.

@@ -3,7 +3,7 @@ package libvisa
 import (
 	"time"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 // VConfig holds visa configurationd details which are set by a policy proc or directly from policy data.

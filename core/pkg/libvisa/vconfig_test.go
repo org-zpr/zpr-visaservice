@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"zpr.org/vs/pkg/libvisa"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 func TestCombineBandwidth(t *testing.T) {

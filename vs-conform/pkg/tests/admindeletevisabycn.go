@@ -7,7 +7,7 @@ import (
 	"zpr.org/vsapi"
 	"zpr.org/vst/pkg/packets"
 	"zpr.org/vst/pkg/testfw"
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 type AdminDeleteVisasByCN struct{}

@@ -21,7 +21,7 @@ import (
 	"zpr.org/vs/pkg/vservice/auth"
 	"zpr.org/vsapi"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 // This authority cert signed the `nodeNoiseCert` below, but

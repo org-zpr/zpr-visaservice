@@ -11,7 +11,7 @@ import (
 	snip "zpr.org/vs/pkg/ip"
 	"zpr.org/vs/pkg/policy"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 var (

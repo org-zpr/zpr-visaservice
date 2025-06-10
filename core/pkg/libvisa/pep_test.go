@@ -11,7 +11,7 @@ import (
 	"zpr.org/vs/pkg/libvisa"
 	"zpr.org/vs/pkg/policy"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 func makeBWConstraint(bps uint64) *polio.Constraint {

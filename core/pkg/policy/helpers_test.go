@@ -1,12 +1,12 @@
 package policy_test
 
 import (
-	"testing"
-	"time"
+    "testing"
+    "time"
 
-	"github.com/stretchr/testify/require"
-	"zpr.org/vs/pkg/policy"
-	"zpr.org/vsx/polio"
+    "github.com/stretchr/testify/require"
+    "zpr.org/vs/pkg/policy"
+    "zpr.org/polio"
 )
 
 func TestGetMaxVisaLifetime(t *testing.T) {

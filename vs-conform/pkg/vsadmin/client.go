@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"

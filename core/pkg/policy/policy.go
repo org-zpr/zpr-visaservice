@@ -16,7 +16,7 @@ import (
 
 	"zpr.org/vs/pkg/logr"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 const (

@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"zpr.org/vsx/polio"
+	"zpr.org/polio"
 )
 
 // Decompress decompresses and unmarshalls a PolicyContainer.
