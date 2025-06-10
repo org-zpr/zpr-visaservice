@@ -36,7 +36,7 @@ const (
 	// and is also used for the expiration time of temporary visas issued
 	// to nodes prior to auth.  Again, this is set artifically high for
 	// milestone 2.
-	DefaultBootstrapAuthDuration = DefaultMaxAuthDuration
+	DefaultBootstrapAuthDuration = DefaultMaxAuthDuration * 7
 )
 
 var (
