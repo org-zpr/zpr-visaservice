@@ -1,8 +1,8 @@
 package vservice
 
 import (
-	"zpr.org/vs/pkg/actor"
 	"zpr.org/polio"
+	"zpr.org/vs/pkg/actor"
 )
 
 // Callback function for adb/actordb
@@ -22,11 +22,20 @@ func (vs *VSInst) HandleDBActorAdded(agnt *actor.Actor) {
 	for _, serviceName := range agnt.GetProvides() {
 		if psvc := pp.ServiceByName(serviceName); psvc != nil {
 			if psvc.Type == polio.SvcT_SVCT_AUTH {
-				err := vs.authr.AddDatasourceProvider(serviceName, svcAddr, curConfig)
+				ap, err := vs.authr.AddDatasourceProvider(serviceName, svcAddr, curConfig)
 				if err != nil {
 					vs.log.WithError(err).Error("failed to add auth service", "service_name", serviceName)
 				} else {
 					vs.log.Info("service added", "service", serviceName, "address", svcAddr)
+
+					// If we have added a remove auth service addr, we now want to push a visa
+					// that will allow the visa service to access the auth service from ANY
+					// source port.
+					if err := vs.createVsVisaForAuthServiceAndPush(serviceName, ap); err != nil {
+						vs.log.WithError(err).Error("failed to create visa for auth service", "service_name", serviceName, "address", svcAddr)
+					} else {
+						vs.log.Info("visa created for auth service", "service_name", serviceName, "address", svcAddr)
+					}
 				}
 			}
 		}

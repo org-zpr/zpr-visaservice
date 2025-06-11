@@ -21,7 +21,8 @@ type AuthenticateOK struct {
 // The VisaService requires help from an authentication system.
 // AuthService also imlements policy.PolicyListener
 type AuthService interface {
-	AddDatasourceProvider(service string, contactAddr netip.Addr, configID uint64) error
+	// On success, returns the address and port number (TCP) of the authentication service.
+	AddDatasourceProvider(service string, contactAddr netip.Addr, configID uint64) (*netip.AddrPort, error)
 	RemoveServiceByPrefix(string) int
 
 	// Run an authentication request using the current policy.
