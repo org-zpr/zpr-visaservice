@@ -103,10 +103,14 @@ func NewTCPConnect(source netip.Addr, sourcePort uint16, dest netip.Addr, destPo
 
 // Flow returns a string like "TCP/29212->80"
 func (t *Traffic) Flow() string {
-	if t.Proto == ProtocolICMP6 || t.Proto == ProtocolICMP4 {
+	switch t.Proto {
+	case ProtocolICMP4:
 		return fmt.Sprintf("ICMP/%d:%d", t.ICMPType, t.ICMPCode)
+	case ProtocolICMP6:
+		return fmt.Sprintf("ICMP6/%d:%d", t.ICMPType, t.ICMPCode)
+	default:
+		return fmt.Sprintf("%v/%d->%d", t.Proto, t.SrcPort, t.DstPort)
 	}
-	return fmt.Sprintf("%v/%d->%d", t.Proto, t.SrcPort, t.DstPort)
 }
 
 // Supports IPv4 or v6, TCP, UDP, ICMP, ICMP6.
