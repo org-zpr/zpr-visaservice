@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"zpr.org/vs/pkg/actor"
 	"zpr.org/vs/pkg/policy"
@@ -16,7 +17,9 @@ import (
 //
 // The EPID on the connection request is either a new one created by the node, or
 // one that the client has submitted at HELLO.
-func (vs *VSInst) ApproveConnection(cr *vsapi.ConnectRequest) (*actor.Actor, error) {
+//
+// Set `bootstrap` true for self-authenticating `vs.zpr` -- the Visa Service actor.
+func (vs *VSInst) ApproveConnection(cr *vsapi.ConnectRequest, bootstrap bool) (*actor.Actor, error) {
 	// The policy in use for this approval. Maybe pass in? But the VS should have it, right?
 	// Note that the auth-service has a policy which is going to be the one used.
 	curpol, curmatcher, configID := vs.getPolicyMatcherConfig()
@@ -25,9 +28,22 @@ func (vs *VSInst) ApproveConnection(cr *vsapi.ConnectRequest) (*actor.Actor, err
 	var validatedActor *actor.Actor
 
 	// First validate credentials with authorities, which will yied an authenticated Actor.
-	validatedActor, err = vs.validateCredentials(curpol, cr)
-	if err != nil {
-		return nil, fmt.Errorf("validate credentials failed: %w", err)
+	if bootstrap {
+		validatedActor = actor.NewActorFromUnsubstantiatedClaims(nil)
+		authedClaims := make(map[string]*actor.ClaimV)
+		for k, v := range cr.Claims {
+			authedClaims[k] = &actor.ClaimV{
+				V:   v,
+				Exp: time.Now().Add(vs.bootstrapAuthDuration),
+			}
+		}
+		//visaServiceActor.SetTetherAddr(vcf.VSAddr)
+		validatedActor.SetAuthenticated(authedClaims, time.Now().Add(vs.bootstrapAuthDuration), nil, nil, configID)
+	} else {
+		validatedActor, err = vs.validateCredentials(curpol, cr)
+		if err != nil {
+			return nil, fmt.Errorf("validate credentials failed: %w", err)
+		}
 	}
 	for k, v := range validatedActor.GetAuthedClaims() {
 		vs.log.Debugf("post-validate actor credential: %v -> %v", k, v)

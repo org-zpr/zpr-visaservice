@@ -32,6 +32,9 @@ var (
 
 const AUTH_PREFIX_BOOTSTRAP = "zpr.ss"
 
+// See also zpr-compiler/src/zpl.rs
+const ZPR_VALIDATION2_PORT_DEFAULT = 3999
+
 // Authenticator is responsible for running all authentication on the node either
 // by calling to an external service or using local (cert-style) validation.
 //
@@ -162,16 +165,16 @@ func getAuthEndpoint(svc *polio.Service) *snip.Endpoint {
 // permitted to advertise the service.
 //
 // TODO: Needs configuration-ID attached.
-func (a *Authenticator) AddDatasourceProvider(service string, contactAddr netip.Addr, configID uint64) error {
+func (a *Authenticator) AddDatasourceProvider(service string, contactAddr netip.Addr, configID uint64) (*netip.AddrPort, error) {
 	a.policy.RLock()
 	defer a.policy.RUnlock()
 
 	psvc := a.policy.policy.ServiceByName(service)
 	if psvc == nil {
-		return fmt.Errorf("datasource unknown: %v", service)
+		return nil, fmt.Errorf("datasource unknown: %v", service)
 	}
 	if psvc.Type != polio.SvcT_SVCT_AUTH {
-		return fmt.Errorf("not an auth service: %v", service)
+		return nil, fmt.Errorf("not an auth service: %v", service)
 	}
 
 	// In policy an auth service has URIs that use localhost since at policy time
@@ -182,15 +185,23 @@ func (a *Authenticator) AddDatasourceProvider(service string, contactAddr netip.
 	urlp, err := url.Parse(psvc.ValidateUri)
 	if err != nil {
 		a.log.Error("failed to parse validate-uri stored in policy", "service", service, "uri", psvc.ValidateUri, "error", err)
-		return errors.New("policy error: invalid validate-uri")
+		return nil, errors.New("policy error: invalid validate-uri")
 	}
 	if urlp.Scheme != "zpr-validation2" {
 		a.log.Error("invalid validate-uri scheme (expected zpr-validation2)", "service", service, "uri", psvc.ValidateUri)
-		return errors.New("policy error: invalid validate-uri scheme")
+		return nil, errors.New("policy error: invalid validate-uri scheme")
 
 	}
+	portStr := urlp.Port() // get port from policy
+	if portStr == "" {
+		portStr = fmt.Sprintf("%d", ZPR_VALIDATION2_PORT_DEFAULT)
+	}
+	portNum, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid port in validate-uri: '%s'", portStr)
+	}
 	urlp.Scheme = "https"
-	urlp.Host = fmt.Sprintf("[%s]", contactAddr.String()) // Note IPv6
+	urlp.Host = fmt.Sprintf("[%s]:%d", contactAddr.String(), portNum) // Note IPv6
 	urlp.Path = "/token"
 	fixedValidateUri := urlp.String()
 
@@ -209,11 +220,16 @@ func (a *Authenticator) AddDatasourceProvider(service string, contactAddr netip.
 
 	// TODO: Needs thought
 	// - What are we doing with the adapter facing service info?
-	return a.policy.validators.AddService(
+	err = a.policy.validators.AddService(
 		psvc.GetPrefix(),
 		contactAddr,
 		&features,
 		configID)
+	if err != nil {
+		return nil, err
+	}
+	ap := netip.AddrPortFrom(contactAddr, uint16(portNum))
+	return &ap, nil
 }
 
 // createNamespaceMap creates a map of attribute keys to their namespaces and identity status based
@@ -364,6 +380,7 @@ func (a *Authenticator) Authenticate(dsPrefix string, epID netip.Addr, blob Blob
 	}, nil
 }
 
+// blocking network call
 func (a *Authenticator) authenticateAC(dsPrefix string, epID netip.Addr, blob Blob, _unauthClaims map[string]string) (*ValidateResult, error) {
 	acBlob, ok := blob.(*ZdpAuthCodeBlob)
 	if !ok {

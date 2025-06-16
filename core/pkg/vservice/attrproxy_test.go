@@ -30,8 +30,8 @@ func (s *TAuthSvc) InstallPolicy(uint64, byte, *policy.Policy)        {}
 func (s *TAuthSvc) ActivateConfiguration(uint64, byte)                {}
 func (s *TAuthSvc) RemoveServiceByPrefix(_ string) int                { return 0 }
 
-func (s *TAuthSvc) AddDatasourceProvider(_ string, _ netip.Addr, _ uint64) error {
-	return nil
+func (s *TAuthSvc) AddDatasourceProvider(_ string, _ netip.Addr, _ uint64) (*netip.AddrPort, error) {
+	return nil, nil
 }
 
 func (s *TAuthSvc) Authenticate(domain string,

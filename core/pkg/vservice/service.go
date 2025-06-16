@@ -167,6 +167,10 @@ func (s *VisaService) Start(issuerName string, vsAddr netip.Addr, vsPort uint16,
 		vsinst.Stop()
 		return fmt.Errorf("policy install failed: %w", err)
 	}
+	if err = vsinst.bootstrapVSActor(s.cn); err != nil {
+		vsinst.Stop()
+		return fmt.Errorf("failed to bootstrap visa service actor: %w", err)
+	}
 	s.log.Infom("bootstrap: installling policy - DONE")
 	return s.run(adminPort)
 }

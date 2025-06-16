@@ -223,8 +223,8 @@ func (vs *Directory) parseZPRClaimsFromJWT(jwtStr string, expiration time.Time) 
 		return nil
 	}
 	for jwtKey, jwtVal := range jwtClaims {
-		if strings.HasPrefix(jwtKey, "zpra/") {
-			keyv := strings.TrimPrefix(jwtKey, "zpra/")
+		if strings.HasPrefix(jwtKey, "z/") {
+			keyv := strings.TrimPrefix(jwtKey, "z/")
 			claims[keyv] = actor.NewClaimV(jwtVal, expiration)
 		}
 	}

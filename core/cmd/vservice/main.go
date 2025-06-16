@@ -28,14 +28,12 @@ const (
 	versionPatch = 0
 
 	// Default Max lifetime for authenticated. When they expire we require
-	// re-auth from the peer. For milestone two we do not have real auth
-	// or re-auth, so this is set high.
-	DefaultMaxAuthDuration = 24 * time.Hour
+	// re-auth from the peer.
+	DefaultMaxAuthDuration = 48 * time.Hour
 
 	// The bootstrap auth is used while we are bringing up a visa service
 	// and is also used for the expiration time of temporary visas issued
-	// to nodes prior to auth.  Again, this is set artifically high for
-	// milestone 2.
+	// to nodes prior to auth.
 	DefaultBootstrapAuthDuration = DefaultMaxAuthDuration
 )
 

@@ -101,6 +101,19 @@ func NewTCPConnect(source netip.Addr, sourcePort uint16, dest netip.Addr, destPo
 	}
 }
 
+func NewTCPAck(source netip.Addr, sourcePort uint16, dest netip.Addr, destPort uint16) *Traffic {
+	return &Traffic{
+		SrcAddr: source,
+		DstAddr: dest,
+		Proto:   ProtocolTCP,
+		SrcPort: sourcePort,
+		DstPort: destPort,
+		Connect: false,
+		Syn:     false,
+		Flags:   0x10, // ACK flag set
+	}
+}
+
 // Flow returns a string like "TCP/29212->80"
 func (t *Traffic) Flow() string {
 	switch t.Proto {

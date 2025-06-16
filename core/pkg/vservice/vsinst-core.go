@@ -50,10 +50,13 @@ func (vs *VSInst) renewEssentialVisasForCurrentConfig(configID, policyID uint64)
 // Set `minDuration` to force a minimum TTL on the visa, or set to 0 to leave
 // calculated expiration value alone.
 //
+// If `expectedPolicyID` is set to a non-zero value then it must match the ID of the currently
+// active policy.
+//
 // TODO: We do not pay attention to the context. If the context expires the
 //
 //	caller (dock, for example) will ignore the response.
-func (vs *VSInst) doRequestVisa(ctx context.Context, tetherAddr netip.Addr, pktData *snip.Traffic, minDuration time.Duration, expectedPolicyID uint64) (*vsapi.VisaResponse, error) {
+func (vs *VSInst) doRequestVisa(ctx context.Context, requestor netip.Addr, pktData *snip.Traffic, minDuration time.Duration, expectedPolicyID uint64) (*vsapi.VisaResponse, error) {
 	// Packet will either be an opening request of a client to a service, or a response
 	// from a service to a client.  The addresses in the packet will be contact addresses.
 	//
@@ -70,7 +73,7 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, tetherAddr netip.Addr, pktD
 		vs.log.Info("visa denied: nil or empty policy", "source", pktData.SrcAddr)
 		return nil, ErrDeniedByPolicy
 	}
-	if curpol.VersionNumber() != expectedPolicyID {
+	if expectedPolicyID > 0 && (curpol.VersionNumber() != expectedPolicyID) {
 		vs.log.Info("visa denied: version mismatch", "found", curpol.VersionNumber(), "expected", expectedPolicyID)
 		return nil, ErrVSMisconfigure
 	}
@@ -148,9 +151,14 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, tetherAddr netip.Addr, pktD
 		}
 	}
 
-	dstTether := dstActor.GetTetherAddr() // The source tether address is in passed in.
+	dstTether := dstActor.GetTetherAddr()
 	if !dstTether.IsValid() {
 		vs.log.Info("destination tether is nil, visa request denied")
+		return nil, ErrNoRouteToHost
+	}
+	srcTether := srcActor.GetTetherAddr()
+	if !srcTether.IsValid() {
+		vs.log.Info("source tether is nil, visa request denied")
 		return nil, ErrNoRouteToHost
 	}
 
@@ -204,13 +212,13 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, tetherAddr netip.Addr, pktD
 	mtSrc, mtDst := policyActorInfoFromActor(srcActor), policyActorInfoFromActor(dstActor)
 	cpols, err := curmatcher.MatchTraffic(pktData, mtSrc, mtDst)
 	if err != nil {
-		vs.visaDenied(curConfigID, "no match", pktData, tetherAddr)
+		vs.visaDenied(curConfigID, "no match", pktData, requestor)
 		vs.log.WithError(err).Info("visa denied: match failed")
 		return nil, ErrDeniedByPolicy
 	}
 
 	// We set a temporary ID on it, giving it a final ID when we add it into our table.
-	builder := libvisa.NewVisaBuilder(curConfigID, tetherAddr, dstTether).WithIssuerID(1).
+	builder := libvisa.NewVisaBuilder(curConfigID, srcTether, dstTether).WithIssuerID(1).
 		WithTrafficAndPolicy(pktData, cpols).
 		WithDatacapComputeFunc(vs.dataCapApply)
 
@@ -276,7 +284,7 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, tetherAddr netip.Addr, pktD
 		IssuerID: vent.v.IssuerID,
 	}
 
-	vs.visaCreated(vent.v, visaExpiration, pktData, expFlags.String(), tetherAddr)
+	vs.visaCreated(vent.v, visaExpiration, pktData, expFlags.String(), requestor)
 	if time.Until(visaExpiration) < (30 * time.Second) {
 		vs.log.Warn("visa with very short TTL", "visaID", vent.v.IssuerID, "TTL", time.Until(visaExpiration).String())
 	}

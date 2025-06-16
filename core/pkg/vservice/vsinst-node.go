@@ -123,6 +123,59 @@ func (vs *VSInst) installPolicyWithVisasForNode(nodeAddr netip.Addr, pp *policy.
 	return nil
 }
 
+// createVsVisaForAuthService creates a visa for the VS to the auth service and then
+// pushes it to all nodes.
+//
+// This creates two visas:
+//  1. VS/any_port -> auth_service/AUTH_PORT
+//  2. auth_service/AUTH_PORT -> VS/any_port (TODO: Not loving this wide open reverse visa...)
+func (vs *VSInst) createVsVisaForAuthServiceAndPush(serviceName string, ap *netip.AddrPort) error {
+
+	curpol, _, curConfigID := vs.getPolicyMatcherConfig()
+	var visas []*vsapi.VisaHop
+
+	{
+		pktData := snip.NewTCPConnect(vs.localAddr, 0, ap.Addr(), ap.Port())
+		vs.log.Debug("invoking request-visa for VS->auth_service", "service_name", serviceName, "dest_port", ap.Port())
+		vsr, err := vs.doRequestVisa(context.Background(), vs.localAddr, pktData, 0, curpol.VersionNumber())
+		if err != nil {
+			return fmt.Errorf("failed to create visa for auth service: %w", err)
+		}
+		if vsr.Status != vsapi.StatusCode_SUCCESS {
+			return fmt.Errorf("failed to create visa for auth service: %v", vsr.Reason)
+		}
+		visas = append(visas, vsr.Visa)
+	}
+
+	{
+		// Generate something that looks like an ACK packet. The matcher will allow TCP acks to
+		// valid services.
+		pktData := snip.NewTCPAck(ap.Addr(), ap.Port(), vs.localAddr, 0)
+		vs.log.Debug("invoking request-visa for auth_service->VS", "service_name", serviceName, "source_port", ap.Port())
+		vsr, err := vs.doRequestVisa(context.Background(), vs.localAddr, pktData, 0, curpol.VersionNumber())
+		if err != nil {
+			return fmt.Errorf("failed to create visa for auth service: %w", err)
+		}
+		if vsr.Status != vsapi.StatusCode_SUCCESS {
+			return fmt.Errorf("failed to create visa for auth service: %v", vsr.Reason)
+		}
+		visas = append(visas, vsr.Visa)
+	}
+
+	for _, nodeAddr := range vs.actorDB.GetNodeList() {
+		if err := vs.updateNode(nodeAddr, curpol.VersionNumber(), curConfigID, visas); err != nil {
+			vs.log.WithError(err).Warn("failed to update node during auth-service visa push", "node", nodeAddr)
+			vs.log.Debug("buffering vs visas for node", "node", nodeAddr)
+			item := adb.PushItem{
+				NodeAddr: nodeAddr,
+				Visas:    visas,
+			}
+			vs.actorDB.BufferItemsForNode(nodeAddr, []*adb.PushItem{&item})
+		}
+	}
+	return nil
+}
+
 // For update node to work, we need to push the policy and version, plus all the visas.
 // This updates the WantXXX values in the peer record state.
 // If it completes, we update the LastXXX values in the peer record too.
@@ -254,7 +307,7 @@ func (vs *VSInst) handleApproveConnection(creq *vsapi.ConnectRequest, replyC cha
 	doneMsg := VSMsgDone{
 		MsgType: MTApproveConnection,
 	}
-	approvedActor, err := vs.ApproveConnection(creq) // blocking
+	approvedActor, err := vs.ApproveConnection(creq, false) // blocking
 	if err != nil {
 		doneMsg.Err = err
 	} else {
