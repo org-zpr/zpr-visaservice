@@ -41,8 +41,14 @@ import (
 )
 
 func main() {
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:    "version",
+		Aliases: []string{"V"},
+		Usage:   "print version and exit",
+	}
 	app := &cli.App{
 		Name:      "vs-conform",
+		Version:   "0.1.0",
 		Usage:     "ZPR visa service test tool",
 		UsageText: "vs-conform [options] <visa-service-address> <node-certificate-file>",
 		Flags: []cli.Flag{
