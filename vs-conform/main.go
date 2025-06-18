@@ -48,7 +48,7 @@ func main() {
 	}
 	app := &cli.App{
 		Name:      "vs-conform",
-		Version:   "0.1.0",
+		Version:   "0.2.0",
 		Usage:     "ZPR visa service test tool",
 		UsageText: "vs-conform [options] <visa-service-address> <node-certificate-file>",
 		Flags: []cli.Flag{

@@ -24,7 +24,7 @@ import (
 
 const (
 	versionMajor = 0
-	versionMinor = 1
+	versionMinor = 2
 	versionPatch = 0
 
 	// Default Max lifetime for authenticated. When they expire we require
