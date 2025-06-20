@@ -1,3 +1,4 @@
+VERSION ?= "0.2.0"
 PROJECT_NAME := vs
 PKG := "zpr.org/$(PROJECT_NAME)"
 PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
@@ -7,18 +8,12 @@ PKG_VSERVICE := $(PKG)/cmd/vservice
 GFLAGS:=
 
 
-ifneq ($(BUILD), release)
-  ifndef PATCH
-    PATCH=`date -u +%Y%m%d%H%M%S`-dev
-  endif
-endif
-
 # If $BUILD=release then strip binaries.
 ifeq ($(BUILD), release)
   $(info *BUILD=release)
-  GFLAGS := $(GFLAGS) -ldflags="-s -w -X main.BuildVersion=$(PATCH)"
+  GFLAGS := $(GFLAGS) -ldflags="-s -w -X main.BuildVersion=$(VERSION)"
 else
-  GFLAGS := $(GFLAGS) -ldflags="-X main.BuildVersion=$(PATCH)"
+  GFLAGS := $(GFLAGS) -ldflags="-X main.BuildVersion=$(VERSION)"
 endif
 
 
