@@ -22,10 +22,10 @@ if [ ! -f "$VS_MKFILE" ]; then
 fi
 
 sed -i \
-  -e "s/^VERSION ?= .*/VERSION ?= \"$MAJOR\"/" \
+  -e "s/^VERSION ?= .*/VERSION ?= \"$VERSION\"/" \
   "$VS_MKFILE"
 
-echo "Updated Go version constants in $VS_GO_FILE"
+echo "Updated Go version constants in $VS_MKFILE"
 
 VSC_MKFILE="../vs-conform/Makefile"
 if [ ! -f "$VSC_MKFILE" ]; then
@@ -34,7 +34,7 @@ if [ ! -f "$VSC_MKFILE" ]; then
 fi
 
 sed -i \
-  -e "s/^VERSION ?= .*/VERSION ?= \"$MAJOR\"/" \
+  -e "s/^VERSION ?= .*/VERSION ?= \"$VERSION\"/" \
   "$VSC_MKFILE"
 
 echo "Updated Go version constant in $VSC_MKFILE"
