@@ -23,10 +23,6 @@ import (
 )
 
 const (
-	versionMajor = 0
-	versionMinor = 1
-	versionPatch = 0
-
 	// Default Max lifetime for authenticated. When they expire we require
 	// re-auth from the peer.
 	DefaultMaxAuthDuration = 48 * time.Hour
@@ -38,6 +34,7 @@ const (
 )
 
 var (
+	// BuildVersion is set in Makefile to a version string, eg "0.2.0"
 	BuildVersion string
 	serviceLog   logr.Logger
 )
@@ -269,14 +266,9 @@ func initLogging(verbose bool, devMode bool) (logr.Logger, error) {
 }
 
 func MustSetVersion(buildVersion string) *version.Version {
-	var err error
-	var ver *version.Version
-	if buildVersion != "" {
-		if ver, err = version.NewSemver(fmt.Sprintf("%d.%d.%d-%v", versionMajor, versionMinor, versionPatch, buildVersion)); err != nil {
-			panic(err)
-		}
-	} else {
-		ver, _ = version.NewSemver(fmt.Sprintf("%d.%d.%d", versionMajor, versionMinor, versionPatch))
+	ver, err := version.NewSemver(buildVersion)
+	if err != nil {
+		panic(fmt.Sprintf("mail.BuildVersion must be valid semantic version: error: {%v}", err))
 	}
 	return ver
 }

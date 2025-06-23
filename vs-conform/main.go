@@ -32,6 +32,7 @@ import (
 	"net/netip"
 	"os"
 
+	"github.com/hashicorp/go-version"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -40,9 +41,21 @@ import (
 	_ "zpr.org/vst/pkg/tests" // adds tests to register via init()
 )
 
+var (
+	// BuildVersion is set in Makefile to a version string, eg "0.2.0"
+	BuildVersion string
+)
+
 func main() {
+	ver := MustSetVersion(BuildVersion)
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:    "version",
+		Aliases: []string{"V"},
+		Usage:   "print version and exit",
+	}
 	app := &cli.App{
 		Name:      "vs-conform",
+		Version:   ver.String(),
 		Usage:     "ZPR visa service test tool",
 		UsageText: "vs-conform [options] <visa-service-address> <node-certificate-file>",
 		Flags: []cli.Flag{
@@ -184,4 +197,12 @@ func initLogging(verbose bool, devMode bool) (*zap.Logger, error) {
 		return nil, err
 	}
 	return logger, nil
+}
+
+func MustSetVersion(buildVersion string) *version.Version {
+	ver, err := version.NewSemver(buildVersion)
+	if err != nil {
+		panic(fmt.Sprintf("mail.BuildVersion must be valid semantic version: error: {%v}", err))
+	}
+	return ver
 }
