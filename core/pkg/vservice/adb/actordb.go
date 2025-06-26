@@ -71,6 +71,7 @@ type PeerRecord struct {
 		LastSyncConfigID  uint64 // used by the bring-node-into-policy-sync system
 		LastSyncPolicyVer uint64
 		LastSyncVisasExp  time.Time
+		LastSyncAuthDBVer uint64
 	}
 }
 
@@ -440,18 +441,43 @@ func (db *ActorDB) GetPeerSyncDetails(nodeAddr netip.Addr) *PeerSyncDetails {
 	return nil
 }
 
-func (db *ActorDB) SetPeerSyncDetails(nodeAddr netip.Addr, polVersion, configID uint64, visasExpiration time.Time) error {
+func (db *ActorDB) SetPeerSyncDetails(nodeAddr netip.Addr, details *PeerSyncDetails) error {
 	db.Lock()
 	defer db.Unlock()
 	if rec, ok := db.actorsV6toHr[nodeAddr.As16()]; ok {
 		if rec.node && rec.Peer != nil {
-			rec.Peer.State.LastSyncConfigID = configID
-			rec.Peer.State.LastSyncPolicyVer = polVersion
-			rec.Peer.State.LastSyncVisasExp = visasExpiration
+			rec.Peer.State.LastSyncConfigID = details.ConfigID
+			rec.Peer.State.LastSyncPolicyVer = details.PolicyVersion
+			rec.Peer.State.LastSyncVisasExp = details.VisasExpiration
 			return nil
 		}
 	}
 	return fmt.Errorf("node not found")
+}
+
+func (db *ActorDB) GetPeerAuthServicesDBVersion(addr netip.Addr) (uint64, bool) {
+	db.RLock()
+	defer db.RUnlock()
+	if rec, ok := db.actorsV6toHr[addr.As16()]; ok {
+		if rec.node && rec.Peer != nil {
+			return rec.Peer.State.LastSyncAuthDBVer, true
+		}
+	}
+	return 0, false // not found or not a node
+}
+
+// SetPeerAuthServicesDBVersion sets the peer's auth service database version.
+// Returns `true` if the peer was found and the version was set, `false` otherwise.
+func (db *ActorDB) SetPeerAuthServicesDBVersion(addr netip.Addr, version uint64) bool {
+	db.Lock()
+	defer db.Unlock()
+	if rec, ok := db.actorsV6toHr[addr.As16()]; ok {
+		if rec.node && rec.Peer != nil {
+			rec.Peer.State.LastSyncAuthDBVer = version
+			return true
+		}
+	}
+	return false
 }
 
 // Check the peer update status and set it to the given new value only if it is in the expected state.

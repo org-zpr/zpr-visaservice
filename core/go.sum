@@ -20,6 +20,10 @@ github.com/org-zpr/zpr-policy-go v0.2.2 h1:ZajXSSiyMEZg3gn7POsele7b6Nfk2pROIMe6/
 github.com/org-zpr/zpr-policy-go v0.2.2/go.mod h1:PV4XjNsV3SkyA9Ja9Zy1eK/mm2bRZ2YE2QM55Otm3OE=
 github.com/org-zpr/zpr-vsapi-go v0.2.0 h1:HtVCj+McnQx3gQalgD32YEE2NsVwfMc1E8lFtcx2G78=
 github.com/org-zpr/zpr-vsapi-go v0.2.0/go.mod h1:RhHUvtaLqrcBESgbzOTKEEsDlgc1LCbCAjQkOjx559E=
+github.com/org-zpr/zpr-vsapi-go v0.3.0 h1:hdSLjZZ2WdK96GhOF56OW+48SNcBGHFTTt8fPCLaO5s=
+github.com/org-zpr/zpr-vsapi-go v0.3.0/go.mod h1:RhHUvtaLqrcBESgbzOTKEEsDlgc1LCbCAjQkOjx559E=
+github.com/org-zpr/zpr-vsapi-go v0.4.1 h1:a53aOgUkFmuWtlUCbcuFgaM7oHpk9YFjJPYrbea678w=
+github.com/org-zpr/zpr-vsapi-go v0.4.1/go.mod h1:RhHUvtaLqrcBESgbzOTKEEsDlgc1LCbCAjQkOjx559E=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/russross/blackfriday/v2 v2.1.0 h1:JIOH55/0cWyOuilr9/qlrm0BSXldqnqwMsf35Ld67mk=

@@ -33,6 +33,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace zpr.org/vsapi => github.com/org-zpr/zpr-vsapi-go v0.2.0
+replace zpr.org/vsapi => github.com/org-zpr/zpr-vsapi-go v0.4.1
 
 replace zpr.org/polio => github.com/org-zpr/zpr-policy-go v0.2.2

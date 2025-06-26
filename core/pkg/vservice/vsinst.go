@@ -40,13 +40,16 @@ type VSMsgType int
 const (
 	MTNodeRegister VSMsgType = iota + 1
 	MTApproveConnection
+	MTAuthServiceConnect
+	MTAuthServicesUpdated
 )
 
 type VSMsg struct {
 	MsgType        VSMsgType
-	NodeAddr       netip.Addr
+	Addr           netip.Addr            // for MTNodeRegister (node address), for MTAuthServiceConnect (auth service address)
 	ConnectRequest *vsapi.ConnectRequest // for MTApproveConnection
-	ReplyC         chan *VSMsgDone
+	ReplyC         chan *VSMsgDone       // for MTApproveConnection
+	ServiceName    string                // for MTAuthServiceConnect
 }
 
 type VSMsgDone struct {
@@ -78,6 +81,7 @@ type VSInst struct {
 	accessToken           []byte // Access token for special node operations
 	allowInvalidPeerAddr  bool   // Set to TRUE for testing only.
 	actorDB               *adb.ActorDB
+	actorAuthDB           *auth.ActorAuthDB // for auth service actors
 	bootstrapAuthDuration time.Duration
 	authorityCert         *x509.Certificate // for checking certififactes from nodes/adapters
 
@@ -160,7 +164,7 @@ func NewVSInst(vcf *VSIConfig) (*VSInst, error) {
 		accessToken:           vcf.AccessToken,
 		allowInvalidPeerAddr:  vcf.AllowInvalidPeerAddr,
 		nodeState:             vcf.Constrainer,
-		vsMsgC:                make(chan *VSMsg, 16),
+		vsMsgC:                make(chan *VSMsg, 32),
 		bootstrapAuthDuration: vcf.BootstrapAuthDuration,
 		authorityCert:         vcf.AuthorityCert,
 	}
@@ -251,9 +255,15 @@ VS_RUNLOOP:
 			if ok {
 				switch m.MsgType {
 				case MTNodeRegister:
-					vs.handleNodeRegister(m.NodeAddr)
+					vs.handleNodeRegister(m.Addr)
 				case MTApproveConnection:
 					vs.handleApproveConnection(m.ConnectRequest, m.ReplyC)
+				case MTAuthServiceConnect:
+					vs.handleAuthServiceConnect(m.Addr, m.ServiceName)
+				case MTAuthServicesUpdated:
+					vs.EnqueuePushAuthDbToNodes(vs.actorAuthDB.Version())
+				default:
+					vs.log.Warn("unhandled MsgType on VS run loop", "type", m.MsgType)
 				}
 			}
 
@@ -439,4 +449,32 @@ func (vs *VSInst) expireAllVisas(config uint64) {
 	default:
 		vs.log.Warn("push channel full, failed to issue revoke, continuing")
 	}
+}
+
+// handleAuthServiceConnect is called from the runloop.  We immediately spawn off
+// and make best effort to add the auth service to our internal list. If all goes
+// well we will also attempt to trigger an update message over the VSS to all nodes.
+func (vs *VSInst) handleAuthServiceConnect(addr netip.Addr, serviceName string) {
+	go func() {
+		prevVer := vs.actorAuthDB.Version()
+		vs.plcy.RLock()
+		defer vs.plcy.RUnlock()
+		if svc := vs.plcy.p.ServiceByName(serviceName); svc != nil {
+			newVer, err := vs.actorAuthDB.AddActorAuthService(svc, addr)
+			if err != nil {
+				vs.log.WithError(err).Error("failed to add auth service", "service_name", serviceName, "address", addr)
+				return
+			}
+			if newVer != prevVer {
+				msg := &VSMsg{
+					MsgType: MTAuthServicesUpdated,
+				}
+				select {
+				case vs.vsMsgC <- msg: // ok
+				default:
+					vs.log.Warn("failed to send auth services updated message, channel full")
+				}
+			}
+		}
+	}()
 }
