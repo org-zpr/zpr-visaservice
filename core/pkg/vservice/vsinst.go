@@ -176,6 +176,7 @@ func NewVSInst(vcf *VSIConfig) (*VSInst, error) {
 	vs.sessions.apiKeys = make(map[string]netip.Addr)
 	vs.sessions.hellos = make(map[int32]*HelloRecord)
 	vs.actorDB = adb.NewActorDB(vs)
+	vs.actorAuthDB = auth.NewActorAuthDB()
 
 	nopol := policy.NewEmptyPolicy()
 	vs.plcy.p = nopol

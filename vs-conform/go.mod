@@ -6,6 +6,7 @@ require (
 	github.com/apache/thrift v0.21.0
 	github.com/fatih/color v1.18.0
 	github.com/google/gopacket v1.1.19
+	github.com/hashicorp/go-version v1.7.0
 	github.com/urfave/cli/v2 v2.27.5
 	go.uber.org/zap v1.27.0
 	google.golang.org/protobuf v1.35.2
@@ -15,7 +16,6 @@ require (
 
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.5 // indirect
-	github.com/hashicorp/go-version v1.7.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
@@ -24,6 +24,6 @@ require (
 	golang.org/x/sys v0.25.0 // indirect
 )
 
-replace zpr.org/vsapi => github.com/org-zpr/zpr-vsapi-go v0.2.0
+replace zpr.org/vsapi => github.com/org-zpr/zpr-vsapi-go v0.4.1
 
 replace zpr.org/polio => github.com/org-zpr/zpr-policy-go v0.2.2
