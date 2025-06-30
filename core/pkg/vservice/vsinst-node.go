@@ -102,7 +102,12 @@ func (vs *VSInst) installPolicyWithVisasForNode(nodeAddr netip.Addr, pp *policy.
 			}
 		}
 		// Update our state so we remember that we have tried this before.
-		if err := vs.actorDB.SetPeerSyncDetails(nodeAddr, pp.VersionNumber(), configID, first_expire); err != nil {
+		details := adb.PeerSyncDetails{
+			PolicyVersion:   pp.VersionNumber(),
+			ConfigID:        configID,
+			VisasExpiration: first_expire,
+		}
+		if err := vs.actorDB.SetPeerSyncDetails(nodeAddr, &details); err != nil {
 			vs.log.WithError(err).Warn("failed to set peer sync details", "node", nodeAddr)
 		}
 	}
@@ -233,6 +238,14 @@ func (vs *VSInst) EnqueuePushVisasToNode(addr netip.Addr, visas []*vsapi.VisaHop
 	vs.visaPushC <- item
 }
 
+func (vs *VSInst) EnqueuePushAuthDbToNodes(authDbVersion uint64) {
+	item := &adb.PushItem{
+		Broadcast:     true,
+		AuthDBVersion: authDbVersion,
+	}
+	vs.visaPushC <- item
+}
+
 // This is the actual push function that is called in our little run-loop.
 // Do not call this directly -- use PushVisa.
 //
@@ -266,9 +279,13 @@ func (vs *VSInst) pushToNodeOrBuffer(nodeAddr netip.Addr, items []*adb.PushItem)
 
 	var revocations []*vsapi.VisaRevocation
 	var visas []*vsapi.VisaHop
+	authDbVersion := uint64(0)
 	for _, itm := range items {
 		revocations = append(revocations, itm.Revocations...)
 		visas = append(visas, itm.Visas...)
+		if itm.AuthDBVersion > 0 && itm.AuthDBVersion > authDbVersion {
+			authDbVersion = itm.AuthDBVersion
+		}
 	}
 
 	if len(revocations) > 0 {
@@ -288,6 +305,19 @@ func (vs *VSInst) pushToNodeOrBuffer(nodeAddr netip.Addr, items []*adb.PushItem)
 	if len(failing.Revocations) > 0 || len(failing.Visas) > 0 {
 		vs.log.Debug("adding visas/revocations to pushbuffer for node", "node", nodeAddr, "visas", len(failing.Visas), "revocations", len(failing.Revocations))
 		vs.actorDB.BufferItemsForNode(nodeAddr, []*adb.PushItem{&failing})
+	}
+
+	if authDbVersion > 0 {
+		if syncdVersion, ok := vs.actorDB.GetPeerAuthServicesDBVersion(nodeAddr); ok && syncdVersion < authDbVersion {
+			// send the services list to the node
+			vs.log.Debug("pushing auth db version to node", "node", nodeAddr, "version", authDbVersion)
+			if err := client.ServicesUpdate(vs.actorAuthDB.ListServices()); err != nil {
+				vs.log.WithError(err).Warn("failed to push auth db version to node", "node", nodeAddr, "version", authDbVersion)
+			} else {
+				// Update the peer record.
+				vs.actorDB.SetPeerAuthServicesDBVersion(nodeAddr, authDbVersion)
+			}
+		}
 	}
 }
 

@@ -27,8 +27,10 @@ import (
 )
 
 const (
-	HelloTimeout = 2 * time.Minute
-	MaxClockSkew = 5 * time.Minute
+	HelloTimeout             = 2 * time.Minute
+	MaxClockSkew             = 5 * time.Minute
+	AuthServiceListExpires   = 24 * time.Hour
+	ApproveConnectionTimeout = 1 * time.Minute
 )
 
 type PollResponse struct {
@@ -444,8 +446,8 @@ func (vs *VSInst) Authenticate(ctx context.Context, req *vsapi.NodeAuthRequest) 
 	}
 
 	vs.vsMsgC <- &VSMsg{
-		MsgType:  MTNodeRegister,
-		NodeAddr: naddr,
+		MsgType: MTNodeRegister,
+		Addr:    naddr,
 	}
 
 	return apiKey, nil
@@ -625,7 +627,22 @@ func (vs *VSInst) RequestVisa(ctx context.Context, key string, srcTetherAddr []b
 	return vsResp, nil
 }
 
-const ApproveConnectionTimeout = 1 * time.Minute
+func (vs *VSInst) RequestServices(ctx context.Context, key string) (*vsapi.ServicesResponse, error) {
+	vs.log.Debug("*REQUEST_SERVICES*")
+	valid, _, _ := vs.validAPIKeyAndDeets(key)
+	if !valid {
+		vs.log.Debug("RequestServices called with invalid key", "key", key)
+		return nil, vsapi.NewUnauthorizedError()
+	}
+	svcList := vsapi.ServicesList{
+		Expiration: time.Now().Add(AuthServiceListExpires).Unix(),
+		Services:   vs.actorAuthDB.ListServices(),
+	}
+	resp := vsapi.ServicesResponse{
+		Services: &svcList,
+	}
+	return &resp, nil
+}
 
 // ApproveConnection is long running and makes calls to various service.
 // We submit the task and wait for it to finish or we give up.

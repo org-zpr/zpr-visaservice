@@ -34,6 +34,7 @@ const AUTH_PREFIX_BOOTSTRAP = "zpr.ss"
 
 // See also zpr-compiler/src/zpl.rs
 const ZPR_VALIDATION2_PORT_DEFAULT = 3999
+const ZPR_OAUTH_RSA_PORT_DEFAULT = 4000
 
 // Authenticator is responsible for running all authentication on the node either
 // by calling to an external service or using local (cert-style) validation.

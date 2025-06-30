@@ -7,10 +7,11 @@ import (
 )
 
 type PushItem struct {
-	Broadcast   bool
-	NodeAddr    netip.Addr
-	Visas       []*vsapi.VisaHop
-	Revocations []*vsapi.VisaRevocation
+	Broadcast     bool
+	NodeAddr      netip.Addr
+	Visas         []*vsapi.VisaHop
+	Revocations   []*vsapi.VisaRevocation
+	AuthDBVersion uint64
 }
 
 type PushBuffer struct {

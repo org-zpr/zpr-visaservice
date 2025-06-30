@@ -84,3 +84,13 @@ func (vc *VSSCli) SendVisas(visas []*vsapi.VisaHop) error {
 		return client.InstallVisas(context.Background(), visas)
 	})
 }
+
+func (vs *VSSCli) ServicesUpdate(services []*vsapi.ServiceDescriptor) error {
+	slist := vsapi.ServicesList{
+		Expiration: 0,
+		Services:   services,
+	}
+	return vs.withClient(func(client *vsapi.VisaSupportClient) error {
+		return client.ServicesUpdate(context.Background(), &slist)
+	})
+}

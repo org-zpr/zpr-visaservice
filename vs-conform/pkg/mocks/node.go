@@ -165,6 +165,24 @@ func (n *Node) RequestVisa(apikey string, srcTether netip.Addr, l3Type int, pkt 
 	return resp, nil
 }
 
+func (n *Node) RequestServices(apikey string) (*vsapi.ServicesResponse, error) {
+	cli, err := newClient(n.vsAddr)
+	if err != nil {
+		return nil, err
+	}
+	defer cli.Close()
+	n.plog.Log(Fwd, "request_services")
+	n.zlog.Info("node->vs: REQUEST SERVICES")
+	resp, err := cli.client.RequestServices(defaultCtx, apikey)
+	if err != nil {
+		n.zlog.Infow("request services failed", "error", err)
+		return nil, fmt.Errorf("request-services failed: %w", err)
+	}
+	n.plog.Log(Rev, "services_response")
+	n.zlog.Infow("request services succeeds", "services_len", len(resp.Services.Services))
+	return resp, nil
+}
+
 // Close anything that needs to be closed.  This prepares for a clean
 // exit.
 func (n *Node) Close() {

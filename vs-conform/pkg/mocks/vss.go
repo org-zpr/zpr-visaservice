@@ -111,7 +111,12 @@ func (v *Vss) RevokeVisas(ctx context.Context, revokes []*vsapi.VisaRevocation) 
 	return nil
 }
 
-// var defaultCtx = context.Background()
+func (v *Vss) ServicesUpdate(ctx context.Context, services *vsapi.ServicesList) error {
+	v.plog.Log(Rev, "services_update")
+	v.log.Infow("VSS: ServicesUpdate", "service_count", len(services.Services))
+	// TODO: collect info for testing
+	return nil
+}
 
 type VssSvc struct {
 	transport thrift.TServerTransport
