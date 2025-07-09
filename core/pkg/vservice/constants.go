@@ -36,6 +36,8 @@ const (
 	// ZPR hard coded visa service address.
 	VisaServiceAddress = "fd5a:5052::1"
 
+	VisaServiceCN = "vs.zpr"
+
 	// AdminPort is the admin control port for visa service
 	AdminPort = 8182 // TCP
 
