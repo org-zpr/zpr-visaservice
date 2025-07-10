@@ -20,11 +20,6 @@ use apitypes::{HostRecordBrief, NodeRecordBrief, VisaDescriptor};
 use apitypes::{PolicyBundle, PolicyListEntry, PolicyVersion};
 use apitypes::{RevokeAdminRequest, RevokeAdminResponse};
 
-// Somewhat inconveniently, this must match the setting in:
-// - visaservice/mods/polio/const.go (used by the "new" visa service)
-// - zpr-prototype/pkg/snet/policy/const.go (used by the old compiler)
-const POLICY_SERIAL_VERSION: u32 = 41;
-
 #[derive(Parser)]
 #[command(version, about = "Visa Service Admin Tool", long_about = None)]
 struct Cmd {
@@ -49,6 +44,10 @@ enum SubCmd {
     /// Install a policy from a compiled policy file
     #[command()]
     Install {
+        /// Version of the ZPL compiler used to compile the policy.
+        #[arg(short = 'c', long, value_name = "X.Y.Z")]
+        compiler_version: String,
+
         #[arg(short, long, value_name = "POLICY_FILE")]
         policy: PathBuf,
     },
@@ -101,7 +100,10 @@ fn main() {
                 eprintln!("{} {}", "Error: ".red(), e);
             }
         },
-        Some(SubCmd::Install { policy }) => match install(&args.svc_url, ca_cert, &policy) {
+        Some(SubCmd::Install {
+            compiler_version,
+            policy,
+        }) => match install(&args.svc_url, ca_cert, &compiler_version, &policy) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("{} {}", "Error: ".red(), e);
@@ -198,9 +200,16 @@ fn list(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+// Push a binary policy file to the visa service.
+//
+// TODO: Ideally we would open the policy file and read the version from it.  The version
+// passed here through the API is only used to catch potential problems early. The
+// visa service will open the policy file and check the actual version itself.
+//
 fn install(
     api_url: &str,
     cert: Certificate,
+    compiler_version: &str,
     policy: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cb = reqwest::blocking::ClientBuilder::new()
@@ -238,7 +247,7 @@ fn install(
     let bundle = PolicyBundle {
         config_id: 0,
         version: "".to_string(),
-        format: format!("base64;zip;{}", POLICY_SERIAL_VERSION),
+        format: format!("base64;zip;{}", compiler_version),
         container,
     };
 
