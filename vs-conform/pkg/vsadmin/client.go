@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
-	"strconv"
 	"strings"
 
 	"zpr.org/polio"
@@ -22,7 +21,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const SerialVersion = 43
+// The conform tool is compatible with this version of the policy compiler.
+const (
+	CompilerMajorVersion    = uint32(0)
+	CompilerMinorVersion    = uint32(4)
+	CompilerPatchVersionMin = uint32(1)
+)
 
 type Client struct {
 	vsaddr netip.AddrPort
@@ -115,18 +119,14 @@ func (c *Client) deserializePolicy(format string, encap string) (*polio.Policy, 
 	if formatParts[1] != "zip" {
 		return nil, fmt.Errorf("unsupported compression format: %s", format)
 	}
-	sver, err := strconv.Atoi(formatParts[2])
-	if err != nil {
-		return nil, fmt.Errorf("invalid policy container version: %s: %w", formatParts[2], err)
-	}
-	if sver != SerialVersion {
-		return nil, fmt.Errorf("unsupported policy container version: got %d, expect %d", sver, SerialVersion)
+	if !IsCompatibleVersionStr(formatParts[2]) {
+		return nil, fmt.Errorf("incompatible policy compiler version: %s", formatParts[2])
 	}
 	pc, err := decompress(zdata)
 	if err != nil {
 		return nil, fmt.Errorf("decompress/unmarshal failed: %w", err)
 	}
-	c.zlog.Infow("policy container loaded", "version", pc.GetContainerVersion())
+	c.zlog.Infow("policy container loaded", "compiler_version", fmt.Sprintf("%d.%d.%d", pc.VersionMajor, pc.VersionMinor, pc.VersionPatch))
 	pol, err := ReleasePolicy(pc, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to release policy: %v", err)
@@ -329,6 +329,9 @@ func decompress(buf []byte) (*polio.PolicyContainer, error) {
 // non-nil checks signature.
 // Copied from core/policy/container.go
 func ReleasePolicy(pc *polio.PolicyContainer, pubkey *rsa.PublicKey) (*polio.Policy, error) {
+	if !IsCompatibleVersion(pc.VersionMajor, pc.VersionMinor, pc.VersionPatch) {
+		return nil, fmt.Errorf("policy container version mismatch, got %d.%d.%d", pc.VersionMajor, pc.VersionMinor, pc.VersionPatch)
+	}
 	if pubkey != nil {
 		hashed := sha256.Sum256(pc.Policy)
 		if err := rsa.VerifyPKCS1v15(pubkey, crypto.SHA256, hashed[:], pc.GetSignature()); err != nil {
@@ -339,12 +342,23 @@ func ReleasePolicy(pc *polio.PolicyContainer, pubkey *rsa.PublicKey) (*polio.Pol
 	if err := proto.Unmarshal(pc.GetPolicy(), polbun); err != nil {
 		return nil, err
 	}
-	if polbun.GetSerialVersion() != SerialVersion {
-		return nil, fmt.Errorf("schema version mismatch, got %d expected %d", polbun.GetSerialVersion(), SerialVersion)
-	}
 	// Restore fields that were omitted from the signature.
 	polbun.PolicyDate = pc.PolicyDate
 	polbun.PolicyRevision = pc.PolicyRevision
 	polbun.PolicyMetadata = pc.PolicyMetadata
 	return polbun, nil
+}
+
+func IsCompatibleVersion(major, minor, patch uint32) bool {
+	return major == CompilerMajorVersion &&
+		minor == CompilerMinorVersion &&
+		patch >= CompilerPatchVersionMin
+}
+
+func IsCompatibleVersionStr(version string) bool {
+	var major, minor, patch uint32
+	if _, err := fmt.Sscanf(version, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return false
+	}
+	return IsCompatibleVersion(major, minor, patch)
 }
