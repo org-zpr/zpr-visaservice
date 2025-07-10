@@ -106,10 +106,6 @@ func (p *Policy) VersionNumber() uint64 {
 	return p.bun.GetPolicyVersion()
 }
 
-func (p *Policy) GetSerialVersion() uint32 {
-	return p.bun.GetSerialVersion()
-}
-
 func (p *Policy) Size() int {
 	if p.bun == nil {
 		return 0

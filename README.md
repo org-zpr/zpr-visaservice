@@ -72,7 +72,7 @@ Returns:
 {
     "config_id": 2024070200001,
     "container": "H4sIAAAAAAAA/8 ..... (more base64 data omitted) ....QAA"
-    "format": "base64;zip;41",
+    "format": "base64;zip;0.4.1",
     "version": "1712946177"
 }
 ```
@@ -87,13 +87,12 @@ filled in as follows:
 {
     "config_id": "",
     "version": "",
-    "format": "base64;zip;41",
+    "format": "base64;zip;0.4.1",
     "container": ".... (base 64, compressed, serialzed polio.PolicyBundle) ...",
 }
 ```
 
-Note that the `41` in the `format` field should be the current serialization ID for the policy schema.
-In the code this is `SerialVersion` which can be found in `mods/polio/const.go`.
+Note that the `0.4.1` in the `format` field should be the compiler version number.
 
 If you do set `version` then the admin service will ensure that the current
 (running) policy matches the value before attempting to install the new policy.

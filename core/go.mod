@@ -35,4 +35,6 @@ require (
 
 replace zpr.org/vsapi => github.com/org-zpr/zpr-vsapi-go v0.4.1
 
-replace zpr.org/polio => github.com/org-zpr/zpr-policy-go v0.2.2
+replace zpr.org/polio => github.com/org-zpr/zpr-policy-go v0.3.0
+
+

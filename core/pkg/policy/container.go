@@ -35,9 +35,6 @@ func OpenContainedPolicyFile(fname string, pubKey *rsa.PublicKey) (*ContainedPol
 	if err != nil {
 		return nil, fmt.Errorf("failed to open policy container: %v", err)
 	}
-	if pcy.GetSerialVersion() != SerialVersion {
-		return nil, fmt.Errorf("policy schema version mismatch, got %d expect %d", pcy.GetSerialVersion(), SerialVersion)
-	}
 
 	return &ContainedPolicy{
 		Policy:    pcy,
@@ -52,9 +49,6 @@ func OpenContainedPolicy(polc *polio.PolicyContainer, pubKey *rsa.PublicKey) (*C
 	if err != nil {
 		return nil, fmt.Errorf("failed to open policy container: %v", err)
 	}
-	if pcy.GetSerialVersion() != SerialVersion {
-		return nil, fmt.Errorf("policy schema version mismatch, got %d expect %d", pcy.GetSerialVersion(), SerialVersion)
-	}
 	return &ContainedPolicy{
 		Policy:    pcy,
 		Container: polc,
@@ -66,9 +60,6 @@ func OpenContainedPolicy(polc *polio.PolicyContainer, pubKey *rsa.PublicKey) (*C
 func ContainPolicy(p *polio.Policy, key *rsa.PrivateKey) (*polio.PolicyContainer, error) {
 	var signature []byte
 	var err error
-	if p.GetSerialVersion() != SerialVersion {
-		return nil, fmt.Errorf("invalid policy schema version, got %d expected %d", p.GetSerialVersion(), SerialVersion)
-	}
 	rng := rand.Reader
 
 	// Make a copy of the policy modified so that fields we don't want included
@@ -100,19 +91,26 @@ func ContainPolicy(p *polio.Policy, key *rsa.PrivateKey) (*polio.PolicyContainer
 		}
 	}
 	return &polio.PolicyContainer{
-		ContainerVersion: ContainerVersion,
-		Policy:           pbunData,
-		PolicyVersion:    p.GetPolicyVersion(),
-		PolicyDate:       p.PolicyDate,
-		PolicyRevision:   p.PolicyRevision,
-		PolicyMetadata:   p.PolicyMetadata,
-		Signature:        signature,
+		VersionMajor:   CompilerMajorVersion,
+		VersionMinor:   CompilerMinorVersion,
+		VersionPatch:   CompilerPatchVersionMin,
+		Policy:         pbunData,
+		PolicyVersion:  p.GetPolicyVersion(),
+		PolicyDate:     p.PolicyDate,
+		PolicyRevision: p.PolicyRevision,
+		PolicyMetadata: p.PolicyMetadata,
+		Signature:      signature,
 	}, nil
 }
 
 // ReleasePolicy unwraps a policy, also checks schema version. If `pubkey` is
 // non-nil checks signature.
 func ReleasePolicy(pc *polio.PolicyContainer, pubkey *rsa.PublicKey) (*polio.Policy, error) {
+	if !IsCompatibleVersion(pc.GetVersionMajor(), pc.GetVersionMinor(), pc.GetVersionPatch()) {
+		return nil, fmt.Errorf("compiler version mismatch, got %s expected %s",
+			fmt.Sprintf("%d.%d.%d", pc.GetVersionMajor(), pc.GetVersionMinor(), pc.GetVersionPatch()),
+			fmt.Sprintf("%d.%d.%d", CompilerMajorVersion, CompilerMinorVersion, CompilerPatchVersionMin))
+	}
 	if pubkey != nil {
 		hashed := sha256.Sum256(pc.Policy)
 		if err := rsa.VerifyPKCS1v15(pubkey, crypto.SHA256, hashed[:], pc.GetSignature()); err != nil {
@@ -122,9 +120,6 @@ func ReleasePolicy(pc *polio.PolicyContainer, pubkey *rsa.PublicKey) (*polio.Pol
 	polbun := &polio.Policy{}
 	if err := proto.Unmarshal(pc.GetPolicy(), polbun); err != nil {
 		return nil, err
-	}
-	if polbun.GetSerialVersion() != SerialVersion {
-		return nil, fmt.Errorf("schema version mismatch, got %d expected %d", polbun.GetSerialVersion(), SerialVersion)
 	}
 	// Restore fields that were omitted from the signature.
 	polbun.PolicyDate = pc.PolicyDate
