@@ -344,10 +344,10 @@ func (vs *VSInst) Authenticate(ctx context.Context, req *vsapi.NodeAuthRequest) 
 		return "", fmt.Errorf("invalid actor type")
 	}
 
-	if len(req.NodeActor.Provides) < 1 {
-		// The node-actor must at least provide /zpr/<node-name>
-		vs.log.Warn("registration: authenticate for node -- missing provides")
-		return "", fmt.Errorf("missing provides")
+	// Ignore incomming povides
+	if len(req.NodeActor.Provides) > 0 {
+		vs.log.Warn("registration: authenticate for node ignores incoming provides claims")
+		req.NodeActor.Provides = nil
 	}
 
 	// For milestone 2 this auth is just placeholder.
