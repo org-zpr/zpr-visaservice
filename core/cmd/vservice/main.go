@@ -106,6 +106,7 @@ service using the visa service API.
 		if err != nil {
 			return fmt.Errorf("failed to initialize logging: %w", err)
 		}
+		serviceLog.Info(fmt.Sprintf("ZPR visa service v%s", ver.String()))
 
 		cert, err := tls.LoadX509KeyPair(config.VSCert, config.VSKey)
 		if err != nil {
@@ -118,6 +119,9 @@ service using the visa service API.
 			return fmt.Errorf("failed to load adapter certificate: %w", err)
 		}
 		cn := a_cert.Subject.CommonName
+		if cn != vservice.VisaServiceCN {
+			return fmt.Errorf("adapter certificate common name %q does not match required visa service common name %q", cn, vservice.VisaServiceCN)
+		}
 
 		authorityCert, err := loadCertFromFile(config.AuthorityCert)
 		if err != nil {
