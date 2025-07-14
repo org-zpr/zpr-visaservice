@@ -6,14 +6,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"zpr.org/vs/pkg/policy"
 	"zpr.org/polio"
+	"zpr.org/vs/pkg/policy"
 )
 
 func TestSignVerifyPolicy(t *testing.T) {
 
 	plcy := &polio.Policy{
-		SerialVersion:  policy.SerialVersion,
 		PolicyVersion:  33,
 		PolicyMetadata: "fee fie foh fum",
 	}
@@ -25,8 +24,11 @@ func TestSignVerifyPolicy(t *testing.T) {
 	require.Nil(t, err)
 	require.NotNil(t, pcont)
 
+	require.Equal(t, pcont.VersionMajor, policy.CompilerMajorVersion)
+	require.Equal(t, pcont.VersionMinor, policy.CompilerMinorVersion)
+	require.Equal(t, pcont.VersionPatch, policy.CompilerPatchVersionMin)
+
 	require.NotNil(t, pcont.GetSignature())
-	require.Equal(t, policy.ContainerVersion, pcont.GetContainerVersion())
 	require.Equal(t, uint64(33), pcont.GetPolicyVersion())
 
 	pp, err := policy.ReleasePolicy(pcont, &private.PublicKey)

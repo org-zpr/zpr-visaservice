@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -155,6 +156,9 @@ func (svc *AdminService) handleGetCurrentPolicy(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	pcontainer := pcy.Export()
+	pc_version := fmt.Sprintf("%d.%d.%d", pcontainer.GetVersionMajor(), pcontainer.GetVersionMinor(), pcontainer.GetVersionPatch())
+
 	zbuf, err := libvisa.Compress(pcy.Export())
 	if err != nil {
 		svc.log.WithError(err).Error("admin service: failed to serialized policy, aborting fetch request")
@@ -166,7 +170,7 @@ func (svc *AdminService) handleGetCurrentPolicy(w http.ResponseWriter, r *http.R
 	bundle := &PolicyBundle{
 		ConfigID:  configID,
 		Version:   pcy.Version(),
-		Format:    fmt.Sprintf("base64;zip;%d", pcy.GetSerialVersion()),
+		Format:    fmt.Sprintf("base64;zip;%v", pc_version),
 		Container: base64.StdEncoding.EncodeToString(zbuf),
 	}
 	w.Header().Add("Content-Type", "application/json")
@@ -213,10 +217,15 @@ func (svc *AdminService) handleInstallPolicy(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	expectFormat := fmt.Sprintf("base64;zip;%d", policy.SerialVersion)
-
-	if bundle.Format != expectFormat {
-		http.Error(w, "incompatible policy serialization schema", http.StatusBadRequest)
+	// The format must be of the form "base64;zip;<COMPILER_VERSION>"
+	if !strings.HasPrefix(bundle.Format, "base64;zip;") {
+		http.Error(w, "invalid policy serialization format", http.StatusBadRequest)
+		return
+	}
+	format_version := strings.TrimPrefix(bundle.Format, "base64;zip;")
+	// Version must be x.y.z
+	if !policy.IsCompatibleVersionStr(format_version) {
+		http.Error(w, "incompatible policy compiler", http.StatusBadRequest)
 		return
 	}
 

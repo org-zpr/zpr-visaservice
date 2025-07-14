@@ -122,7 +122,7 @@ func (ts *TestState) LoadPolicy() (*polio.Policy, error) {
 		return nil, fmt.Errorf("failed to get current policy using admin interface: %v", err)
 	}
 	ts.policy = pol
-	ts.Log.Infow("policy extracted from container", "serial", pol.GetSerialVersion())
+	ts.Log.Info("policy extracted from container")
 	return pol, nil
 }
 
