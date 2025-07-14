@@ -11,6 +11,7 @@ all-go: build-go
 test: test-rs test-go
 
 clean:
+	rm -rf $(RELEASE_DIR)
 	$(MAKE) -C core $@
 	$(MAKE) -C vs-admin $@
 	$(MAKE) -C vs-conform $@
@@ -34,8 +35,10 @@ test-go:
 test-rs:
 	$(MAKE) -C vs-admin test
 
-release: clean build
-	mkdir $(RELEASE_DIR)
+release:
+	$(MAKE) clean
+	$(MAKE) build
+	mkdir -p $(RELEASE_DIR)
 	cp core/build/vservice $(RELEASE_DIR)
 	cp vs-admin/target/debug/vs-admin $(RELEASE_DIR)
 	cp vs-conform/build/vs-conform $(RELEASE_DIR)
