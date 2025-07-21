@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -87,6 +88,7 @@ type ActorDB struct {
 	sync.RWMutex
 	actorsV6toHr map[Ipv6Addr]*HostRecord // Note we keep address in IPv6 format.
 	watcher      Watcher
+	addrCounter  uint64 // used to generate new addresses for actors
 }
 
 func (db *ActorDB) Dump(out logr.Logger) {
@@ -108,6 +110,7 @@ func NewActorDB(watcher Watcher) *ActorDB {
 	return &ActorDB{
 		actorsV6toHr: make(map[Ipv6Addr]*HostRecord),
 		watcher:      watcher,
+		addrCounter:  1,
 	}
 }
 
@@ -121,6 +124,22 @@ func (pr *PeerRecord) IsInSync() bool {
 	return (pr.State.WantPolicyVer > 0 || pr.State.WantConfigID > 0) &&
 		pr.State.WantPolicyVer == pr.State.LastPushPolicyVer &&
 		pr.State.WantConfigID == pr.State.LastPushConfigID
+}
+
+// TODO: This is just a placeholder/temporary function that returns incremental
+// IPv6 address in fd5a:5052:1:1::/64
+func (db *ActorDB) GetNextZPRAddress() netip.Addr {
+	addrBytes := [16]byte{
+		0xfd, 0x5a, 0x50, 0x52, // fd5a:5052
+		0x00, 0x01, 0x00, 0x01, // 0001:0001
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+	db.Lock()
+	defer db.Unlock()
+	binary.BigEndian.PutUint64(addrBytes[8:16], db.addrCounter)
+	db.addrCounter++
+	return netip.AddrFrom16(addrBytes)
 }
 
 func (db *ActorDB) Contains(addr netip.Addr) bool {

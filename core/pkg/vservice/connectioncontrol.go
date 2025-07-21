@@ -15,8 +15,10 @@ import (
 
 // ApproveConnection check connection against validation and policy.
 //
-// The EPID on the connection request is either a new one created by the node, or
-// one that the client has submitted at HELLO.
+// If the request includes a "zpr.addr" claim then that is considered a request
+// from the adapter. Note that it may be an address we have previously handed to
+// the actor/adapter.  If that claim is missing, and there is not a static address
+// set in policy, then we allocate a new address for the actor on successful validation.
 //
 // Set `bootstrap` true for self-authenticating `vs.zpr` -- the Visa Service actor.
 func (vs *VSInst) ApproveConnection(cr *vsapi.ConnectRequest, bootstrap bool) (*actor.Actor, error) {
@@ -138,8 +140,8 @@ func (vs *VSInst) validateCredentials(curpol *policy.Policy, cr *vsapi.ConnectRe
 		return nil, fmt.Errorf("exactly one authentication blob must be provided")
 	}
 
-	// The address assigned to the actor is either requested by the actor and propogated by the node
-	// into the actors claims, or it is assigned by the node, or it is not set at all (and must be set by policy).
+	// The address assigned to the actor is either requested by the actor and propagated here by the node
+	// via a zpr.addr claim, or it may be assigned in policy, finally we can just assign one ourselves.
 	var reqAddr netip.Addr
 	if epidClaim, found := cr.Claims[actor.KAttrEPID]; found {
 		reqAddr, err = netip.ParseAddr(epidClaim)
@@ -180,6 +182,12 @@ func (vs *VSInst) validateCredentials(curpol *policy.Policy, cr *vsapi.ConnectRe
 		return nil, fmt.Errorf("multiple authentication results not yet supported") // TODO
 	}
 	combinedAuth := authSuccesses[0]
+
+	if _, found := combinedAuth.Claims[actor.KAttrEPID]; !found {
+		// Need to assign an address.
+		zprAddr := vs.actorDB.GetNextZPRAddress()
+		combinedAuth.Claims[actor.KAttrEPID] = &actor.ClaimV{V: zprAddr.String(), Exp: combinedAuth.Expire}
+	}
 
 	combinedAuth.Claims[actor.KAttrAuthority] = &actor.ClaimV{V: strings.Join(combinedAuth.Prefixes, ","), Exp: combinedAuth.Expire}
 
