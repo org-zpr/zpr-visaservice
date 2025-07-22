@@ -62,6 +62,7 @@ type PeerRecord struct {
 	VisaRequestsCount    uint64
 	ConnectRequestsCount uint64
 	VSSAddr              string
+	AAAPrefix            netip.Prefix // the AAA network prefix used by this node
 	pending              *PushBuffer
 	State                struct {
 		Updating          bool
@@ -149,7 +150,7 @@ func (db *ActorDB) Contains(addr netip.Addr) bool {
 	return found
 }
 
-func (db *ActorDB) AddNode(zprAddr, tetherAddr netip.Addr, actor *actor.Actor, apiKey, vssAddr string) error {
+func (db *ActorDB) AddNode(zprAddr, tetherAddr netip.Addr, actor *actor.Actor, apiKey, vssAddr string, aaaPfx netip.Prefix) error {
 	if db.Contains(zprAddr) {
 		return ErrorActorExists
 	}
@@ -163,6 +164,7 @@ func (db *ActorDB) AddNode(zprAddr, tetherAddr netip.Addr, actor *actor.Actor, a
 	}
 	rec.Peer.APIKey = apiKey
 	rec.Peer.VSSAddr = vssAddr
+	rec.Peer.AAAPrefix = aaaPfx
 
 	db.Lock()
 	db.actorsV6toHr[zprAddr.As16()] = &rec
@@ -189,6 +191,21 @@ func (db *ActorDB) AddAdapter(zprAddr, tetherAddr netip.Addr, actor *actor.Actor
 
 	db.watcher.HandleDBActorAdded(actor)
 	return nil
+}
+
+// Runs through all the node records and returns true if any of them
+// is using an AAA network that includes the given address.
+func (db *ActorDB) IsAAAAddress(addr netip.Addr) bool {
+	db.RLock()
+	defer db.RUnlock()
+	for _, rec := range db.actorsV6toHr {
+		if rec.node {
+			if rec.Peer != nil && rec.Peer.AAAPrefix.Contains(addr) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (db *ActorDB) AddOrUpdateAdapter(addr, tetherAddr netip.Addr, agnt *actor.Actor) error {

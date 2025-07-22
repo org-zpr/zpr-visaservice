@@ -231,7 +231,7 @@ func (vs *VSInst) BackDoorInstallAPIKeyForUnitTestExp(node_addr netip.Addr, node
 	nodeActor.SetTetherAddr(node_addr)
 	nodeActor.SetAuthenticated(claims, expiration, nil, nil, cid)
 
-	apiKey, err := vs.finishAuthenticate(node_addr, nodeActor, vssAddr)
+	apiKey, err := vs.finishAuthenticate(node_addr, nodeActor, vssAddr, netip.MustParsePrefix("::/0"))
 	if err != nil {
 		return "", err
 	}
@@ -350,6 +350,16 @@ func (vs *VSInst) Authenticate(ctx context.Context, req *vsapi.NodeAuthRequest) 
 		req.NodeActor.Provides = nil
 	}
 
+	// The node must tell us the network it is using for AAA addresses
+	var aaaPfx netip.Prefix
+	if net, found := req.NodeActor.Attrs[actor.KAttrAAANet]; found {
+		aaaPfx, err = netip.ParsePrefix(net)
+		if err != nil {
+			vs.log.WithError(err).Warn("registration: node passes invalid AAA network prefix", "prefix", net)
+			return "", fmt.Errorf("invalid AAA network prefix")
+		}
+	}
+
 	// For milestone 2 this auth is just placeholder.
 	if err = verifyMilestone2HMAC(req.Challenge.ChallengeData, req.SessionID, req.Timestamp, req.Hmac); err != nil {
 		vs.log.WithError(err).Warn("registration: authenticate for node -- failed to verify HMAC")
@@ -387,6 +397,7 @@ func (vs *VSInst) Authenticate(ctx context.Context, req *vsapi.NodeAuthRequest) 
 		claims[actor.KAttrEPID] = naddr.String()
 		claims[actor.KAttrCN] = nodeCert.Subject.CommonName
 		claims[actor.KAttrRole] = "node" // does ApproveConnection set this?
+		claims[actor.KAttrAAANet] = aaaPfx.String()
 
 		blob := auth.NewZdpSelfSignedBlobUnsiged(nodeCert.Subject.CommonName, req.Challenge.ChallengeData)
 		blobStr, err := blob.Encode()
@@ -416,6 +427,11 @@ func (vs *VSInst) Authenticate(ctx context.Context, req *vsapi.NodeAuthRequest) 
 		vs.log.Info("registration: ApproveConnection successful", "actor", realNodeActor)
 	}
 
+	if !realNodeActor.IsNode() {
+		// Logic error
+		panic(fmt.Sprintf("ApproveConnection did not return a node actor: %v", realNodeActor))
+	}
+
 	// TODO: Need to fix this a bit. We used to rely on the nodes to keep the RAFT
 	//       database of connected entities.  But we are moving that function (probably
 	//       without raft) to the visa service.  So here I need to tell visa serice
@@ -439,7 +455,7 @@ func (vs *VSInst) Authenticate(ctx context.Context, req *vsapi.NodeAuthRequest) 
 		vs.log.Info("registration: got VSS service address", "vss_addr", vssServiceAddr)
 	}
 
-	apiKey, err := vs.finishAuthenticate(naddr, realNodeActor, vssServiceAddr)
+	apiKey, err := vs.finishAuthenticate(naddr, realNodeActor, vssServiceAddr, aaaPfx)
 	if err != nil {
 		vs.log.WithError(err).Warn("registration: failed to write to actor DB")
 		return "", fmt.Errorf("internal error")
@@ -454,11 +470,11 @@ func (vs *VSInst) Authenticate(ctx context.Context, req *vsapi.NodeAuthRequest) 
 }
 
 // func (vs *VSInst) finishAuthenticate(naddr netip.Addr, expiration time.Time, provides []string, vssServiceAddr string) (string, error) {
-func (vs *VSInst) finishAuthenticate(naddr netip.Addr, nodeActor *actor.Actor, vssServiceAddr string) (string, error) {
+func (vs *VSInst) finishAuthenticate(naddr netip.Addr, nodeActor *actor.Actor, vssServiceAddr string, aaaPfx netip.Prefix) (string, error) {
 	apiKey := uuid.New().String()
 
 	// Becuase ApproveConnection does not add nodes to the database... (TODO: FIXME)
-	if err := vs.actorDB.AddNode(naddr, naddr, nodeActor, apiKey, vssServiceAddr); err != nil {
+	if err := vs.actorDB.AddNode(naddr, naddr, nodeActor, apiKey, vssServiceAddr, aaaPfx); err != nil {
 		return "", err
 	}
 

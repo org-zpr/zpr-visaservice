@@ -54,9 +54,10 @@ func (vs *VSInst) renewEssentialVisasForCurrentConfig(configID, policyID uint64)
 // active policy.
 //
 // TODO: We do not pay attention to the context. If the context expires the
+// caller (dock, for example) will ignore the response.
 //
-//	caller (dock, for example) will ignore the response.
-func (vs *VSInst) doRequestVisa(ctx context.Context, requestor netip.Addr, pktData *snip.Traffic, minDuration time.Duration, expectedPolicyID uint64) (*vsapi.VisaResponse, error) {
+// `requestorAddr` is the source tether address.
+func (vs *VSInst) doRequestVisa(ctx context.Context, requestorAddr netip.Addr, pktData *snip.Traffic, minDuration time.Duration, expectedPolicyID uint64) (*vsapi.VisaResponse, error) {
 	// Packet will either be an opening request of a client to a service, or a response
 	// from a service to a client.  The addresses in the packet will be contact addresses.
 	//
@@ -84,11 +85,12 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, requestor netip.Addr, pktDa
 		vs.actorDB.Dump(vs.log) // For help debugging endpoint not found
 		return nil, ErrNoRouteToHost
 	}
+
 	if srcActor == nil || dstActor == nil {
 		// HACK: Until the node sends us a connect message when an actor connects
 		// but before they authenticate we have no knowledge of the that is about to
 		// try authenticating.  So for now we override policy and will allow any
-		// actor to talk to an installed authentication service.
+		// actor to talk to an installed authentication service IF using an AAA address.
 		var candidate *actor.Actor
 		var anonAddr netip.Addr
 		if srcActor == nil {
@@ -98,6 +100,14 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, requestor netip.Addr, pktDa
 			candidate = srcActor
 			anonAddr = pktData.DstAddr
 		}
+
+		// Proceed if `anonAddr` is an AAA address.
+		if !vs.actorDB.IsAAAAddress(anonAddr) {
+			vs.log.Info("visa denied: expected an AAA address", "source", pktData.SrcAddr, "dest", pktData.DstAddr)
+			vs.actorDB.Dump(vs.log) // For help debugging endpoint not found
+			return nil, ErrNoRouteToHost
+		}
+
 		var matchedSvc string
 		for _, sname := range curpol.GetActorAuthenticationServiceNames() {
 			if slices.Contains(candidate.GetProvides(), sname) {
@@ -114,6 +124,7 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, requestor netip.Addr, pktDa
 			}
 			return nil, ErrNoRouteToHost // oh well, we tried.
 		}
+
 		// Now we fabricate an anon actor for this visa.
 		expiration := time.Now().Add(5 * time.Minute)
 		anonActor := actor.EmptyActor()
@@ -212,7 +223,7 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, requestor netip.Addr, pktDa
 	mtSrc, mtDst := policyActorInfoFromActor(srcActor), policyActorInfoFromActor(dstActor)
 	cpols, err := curmatcher.MatchTraffic(pktData, mtSrc, mtDst)
 	if err != nil {
-		vs.visaDenied(curConfigID, "no match", pktData, requestor)
+		vs.visaDenied(curConfigID, "no match", pktData, requestorAddr)
 		vs.log.WithError(err).Info("visa denied: match failed")
 		return nil, ErrDeniedByPolicy
 	}
@@ -284,7 +295,7 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, requestor netip.Addr, pktDa
 		IssuerID: vent.v.IssuerID,
 	}
 
-	vs.visaCreated(vent.v, visaExpiration, pktData, expFlags.String(), requestor)
+	vs.visaCreated(vent.v, visaExpiration, pktData, expFlags.String(), requestorAddr)
 	if time.Until(visaExpiration) < (30 * time.Second) {
 		vs.log.Warn("visa with very short TTL", "visaID", vent.v.IssuerID, "TTL", time.Until(visaExpiration).String())
 	}

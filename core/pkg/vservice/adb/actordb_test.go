@@ -25,7 +25,7 @@ func TestCloneNodesToBriefCopiesCounts(t *testing.T) {
 	}
 	agnt := actor.NewActorFromUnsubstantiatedClaims(claims)
 
-	db.AddNode(naddr, naddr, agnt, "foo", "127.0.0.1")
+	db.AddNode(naddr, naddr, agnt, "foo", "127.0.0.1", netip.MustParsePrefix("::0/64"))
 
 	{
 		data := db.CloneNodesToBrief()
@@ -69,4 +69,21 @@ func TestGetNextZPRAddress(t *testing.T) {
 		require.False(t, addresses[addr], "Address should be unique")
 		addresses[addr] = true
 	}
+}
+
+func TestIsAAAAddress(t *testing.T) {
+	db := adb.NewActorDB(&DummyWatcher{})
+
+	// Define a AAA prefix and addresses
+	aaaPrefix := netip.MustParsePrefix("fd00:aaaa::/64")
+	insideAddr := netip.MustParseAddr("fd00:aaaa::1234")
+	outsideAddr := netip.MustParseAddr("fd00:aaab::1")
+
+	claims := map[string]string{"foo": "bar"}
+	agnt := actor.NewActorFromUnsubstantiatedClaims(claims)
+
+	db.AddNode(insideAddr, insideAddr, agnt, "foo", "127.0.0.1", aaaPrefix)
+
+	require.True(t, db.IsAAAAddress(insideAddr), "Address inside AAA prefix should be detected")
+	require.False(t, db.IsAAAAddress(outsideAddr), "Address outside AAA prefix should not be detected")
 }

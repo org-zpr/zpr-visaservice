@@ -10,6 +10,7 @@ const (
 	KAttrHash               = "zpr.hash"
 	KAttrConfigID           = "zpr.config_id"
 	KAttrCN                 = "device.zpr.adapter.cn"
+	KAttrAAANet             = "device.zpr.node.aaa_net"
 )
 
 const (

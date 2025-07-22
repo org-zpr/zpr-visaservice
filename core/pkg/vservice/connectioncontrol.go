@@ -191,13 +191,6 @@ func (vs *VSInst) validateCredentials(curpol *policy.Policy, cr *vsapi.ConnectRe
 
 	combinedAuth.Claims[actor.KAttrAuthority] = &actor.ClaimV{V: strings.Join(combinedAuth.Prefixes, ","), Exp: combinedAuth.Expire}
 
-	// TODO: How/when do we assign an address to the actor?
-
-	if _, ok := agnt.GetZPRID(); !ok {
-		vs.log.Debug("no ZPRID claim found on authenticated actor")
-		// Should be set later then in policy -- or if not it is a connection error.
-	}
-
 	_, _, cid := vs.getPolicyMatcherConfig()
 	agnt.SetAuthenticated(combinedAuth.Claims, combinedAuth.Expire, combinedAuth.Prefixes, combinedAuth.Identities, cid)
 	// TODO: We get these "credentials" from the auth service too (aok.Credentials)
