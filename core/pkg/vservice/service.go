@@ -110,9 +110,10 @@ func mustNewRandToken() []byte {
 //
 // `vsAddr` is the ZPR address of the visa service (and admin service).
 // `vsPort` is the port of the THRIFT visa service.
+// `adminAddr` is the listening address for the admin service (usually the same as `vsAddr`).
 // `adminPort` is port for HTTP admin service
 // `issuerName` is used on the JWT tokens we issue.
-func (s *VisaService) Start(issuerName string, vsAddr netip.Addr, vsPort uint16, adminPort uint16) error {
+func (s *VisaService) Start(issuerName string, vsAddr netip.Addr, vsPort uint16, adminAddr netip.Addr, adminPort uint16) error {
 	s.log.Info("starting visa service", "name", issuerName, "bootstrap_auth_duration", s.bootstrapAuthDuration.String(), "max_auth_duration", s.maxAuthDuration.String())
 	s.vsWg.Add(1)
 	defer s.vsWg.Done()
@@ -172,7 +173,7 @@ func (s *VisaService) Start(issuerName string, vsAddr netip.Addr, vsPort uint16,
 		return fmt.Errorf("failed to bootstrap visa service actor: %w", err)
 	}
 	s.log.Infom("bootstrap: installling policy - DONE")
-	return s.run(adminPort)
+	return s.run(adminAddr, adminPort)
 }
 
 func (s *VisaService) Stop() {
@@ -183,11 +184,14 @@ func (s *VisaService) Stop() {
 
 // This is the tail end of the Start function.
 // This blocks until error or call to Stop().
-func (s *VisaService) run(adminPort uint16) error {
+//
+// Good practice is to set `listenAddr` to the ZPR address of the visa service
+// as in that case ZPR itself can control connections to the admin port.
+func (s *VisaService) run(listenAddr netip.Addr, adminPort uint16) error {
 	adminservice := NewAdminService(s.log, s.keys.adminServiceTLSCreds, s.keys.policyCheckingKey, s)
 	go func() {
-		s.log.Info("starting admin service", "port", adminPort)
-		if err := adminservice.StartAdminService(s.myAddr, int(adminPort)); err != nil {
+		s.log.Debug("starting admin service", "addr", listenAddr, "port", adminPort)
+		if err := adminservice.StartAdminService(listenAddr, int(adminPort)); err != nil {
 			// The server always exits with an error.
 			s.log.WithError(err).Info("admin service exited")
 		}
