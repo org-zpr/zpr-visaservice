@@ -466,6 +466,7 @@ func (vs *VSInst) Authenticate(ctx context.Context, req *vsapi.NodeAuthRequest) 
 		Addr:    naddr,
 	}
 
+	vs.log.Debug("registration: finished authenticate successfully")
 	return apiKey, nil
 }
 
@@ -553,6 +554,7 @@ func (vs *VSInst) AuthorizeConnect(ctx context.Context, key string, request *vsa
 			Actor:        actorToVsapiActor(agnt, nil), // TODO: Tether address?
 		}
 	}
+	vs.log.Debug("authorize connect finished successfully")
 	return resp, nil
 }
 

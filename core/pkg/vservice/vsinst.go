@@ -254,6 +254,7 @@ VS_RUNLOOP:
 		select {
 		case m, ok := <-vs.vsMsgC:
 			if ok {
+				workStars := time.Now()
 				switch m.MsgType {
 				case MTNodeRegister:
 					vs.handleNodeRegister(m.Addr)
@@ -265,6 +266,10 @@ VS_RUNLOOP:
 					vs.EnqueuePushAuthDbToNodes(vs.actorAuthDB.Version())
 				default:
 					vs.log.Warn("unhandled MsgType on VS run loop", "type", m.MsgType)
+				}
+				elapsed := time.Since(workStars)
+				if elapsed > 2*time.Second {
+					vs.log.Warn("VS runloop work took too long", "elapsed", elapsed.String(), "type", m.MsgType)
 				}
 			}
 
