@@ -88,6 +88,10 @@ service using the visa service API.
 			Aliases: []string{"l"},
 			Usage:   "override the default visa service listen address with `HOST:PORT`",
 		},
+		&cli.StringFlag{
+			Name:  "admin_listen_ip",
+			Usage: "override the default admin service listen IP address with `IP`.  Potentially unsafe.  By default the admin service listens on the ZPR IP assigned to the visa service.",
+		},
 		&cli.IntFlag{
 			Name:  "admin_port",
 			Usage: "override the default admin service port with `PORT`",
@@ -170,7 +174,7 @@ service using the visa service API.
 			issuerName = uuid.New().String()
 		}
 
-		var vsAddr netip.Addr
+		var vsAddr, adminAddr netip.Addr
 		var vsPort, adminPort uint16
 
 		if listenAddr := c.String("listen_addr"); listenAddr != "" {
@@ -189,7 +193,16 @@ service using the visa service API.
 			adminPort = vservice.AdminPort // constant
 		}
 
-		err = service.Start(issuerName, vsAddr, vsPort, adminPort) // Blocking!
+		if adminIpAddr := c.String("admin_listen_ip"); adminIpAddr != "" {
+			adminAddr, err = netip.ParseAddr(adminIpAddr)
+			if err != nil {
+				return fmt.Errorf("failed to parse admin listen IP address: %w", err)
+			}
+		} else {
+			adminAddr = vsAddr // default is the same as the visa service address
+		}
+
+		err = service.Start(issuerName, vsAddr, vsPort, adminAddr, adminPort) // Blocking!
 		close(sigExitChan)
 
 		return err
