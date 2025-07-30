@@ -1,9 +1,15 @@
 package vservice
 
 import (
+	"time"
+
 	"zpr.org/polio"
 	"zpr.org/vs/pkg/actor"
 )
+
+// Time to wait for node to process auth connect response and update link_state
+// via the ReceivedAuthorizedResponse event.
+const NodeAuthConnectProcessTime = 2 * time.Second
 
 // Callback function for adb/actordb.
 //
@@ -11,6 +17,22 @@ import (
 // called from the VS thrift API which is waiting for this to return before it itself returns
 // to the client (node).
 func (vs *VSInst) HandleDBActorAdded(agnt *actor.Actor) {
+	go func(agnt *actor.Actor) {
+		// Wait 2 secs...  Arg, this hack is required becuase we are called within the
+		// authorize_connect and when we are authorizing a trusted service that the visa
+		// service will need to talk to, the visa service will create a visa that allows
+		// the VS to talk to the new service. However that visa is tied to the new
+		// service address which the node does not know yet. So when we push the visa
+		// to the node it will not be able to figure out which peer to attach it to.
+		//
+		// If we wait a bit and let the authorize_connect return the node will get the
+		// new address and update the link_state for the peer.
+		time.Sleep(NodeAuthConnectProcessTime)
+		vs.doHandleDBActorAdded(agnt)
+	}(agnt)
+}
+
+func (vs *VSInst) doHandleDBActorAdded(agnt *actor.Actor) {
 	pp, _, curConfig := vs.getPolicyMatcherConfig()
 
 	if curConfig != agnt.GetConfigID() {

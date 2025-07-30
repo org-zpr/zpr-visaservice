@@ -411,10 +411,7 @@ func (a *Authenticator) authenticateAC(dsPrefix string, epID netip.Addr, blob Bl
 }
 
 // TODO: Note that if authentication (based on key in policy) is successful, we will copy the
-// passed `epID` address here into the claims as a 'zpr.addr' claim. This is not quite correct
-// and we have not yet determined where we will make the address assignments.  For now the
-// adapter is still setting its own address and telling the node which ends up passing it
-// up here to the visa service.
+// passed `epID` address here into the claims as a 'zpr.addr' claim.
 func (a *Authenticator) authenticateSS(epID netip.Addr, blob Blob, unauthClaims map[string]string) (*ValidateResult, error) {
 
 	ssb, ok := blob.(*ZdpSelfSignedBlob)

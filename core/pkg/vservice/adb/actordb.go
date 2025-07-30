@@ -62,6 +62,8 @@ type PeerRecord struct {
 	VisaRequestsCount    uint64
 	ConnectRequestsCount uint64
 	VSSAddr              string
+	VssCallFailures      uint64       // number of successive failed VSS calls to this node (cleared on successful call)
+	AAAPrefix            netip.Prefix // the AAA network prefix used by this node
 	pending              *PushBuffer
 	State                struct {
 		Updating          bool
@@ -149,7 +151,7 @@ func (db *ActorDB) Contains(addr netip.Addr) bool {
 	return found
 }
 
-func (db *ActorDB) AddNode(zprAddr, tetherAddr netip.Addr, actor *actor.Actor, apiKey, vssAddr string) error {
+func (db *ActorDB) AddNode(zprAddr, tetherAddr netip.Addr, actor *actor.Actor, apiKey, vssAddr string, aaaPfx netip.Prefix) error {
 	if db.Contains(zprAddr) {
 		return ErrorActorExists
 	}
@@ -163,6 +165,7 @@ func (db *ActorDB) AddNode(zprAddr, tetherAddr netip.Addr, actor *actor.Actor, a
 	}
 	rec.Peer.APIKey = apiKey
 	rec.Peer.VSSAddr = vssAddr
+	rec.Peer.AAAPrefix = aaaPfx
 
 	db.Lock()
 	db.actorsV6toHr[zprAddr.As16()] = &rec
@@ -189,6 +192,21 @@ func (db *ActorDB) AddAdapter(zprAddr, tetherAddr netip.Addr, actor *actor.Actor
 
 	db.watcher.HandleDBActorAdded(actor)
 	return nil
+}
+
+// Runs through all the node records and returns true if any of them
+// is using an AAA network that includes the given address.
+func (db *ActorDB) IsAAAAddress(addr netip.Addr) bool {
+	db.RLock()
+	defer db.RUnlock()
+	for _, rec := range db.actorsV6toHr {
+		if rec.node {
+			if rec.Peer != nil && rec.Peer.AAAPrefix.Contains(addr) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (db *ActorDB) AddOrUpdateAdapter(addr, tetherAddr netip.Addr, agnt *actor.Actor) error {
@@ -355,6 +373,39 @@ func (db *ActorDB) GetPeerRecord(addr netip.Addr) *PeerRecord {
 		}
 	}
 	return nil
+}
+
+// VssCallFailure increments the failure count for a node after a failed VSS call.
+func (db *ActorDB) VssCallFailure(addr netip.Addr) {
+	db.Lock()
+	defer db.Unlock()
+	if rec, ok := db.actorsV6toHr[addr.As16()]; ok {
+		if rec.node && rec.Peer != nil {
+			rec.Peer.VssCallFailures++
+		}
+	}
+}
+
+// VssCallSuccess resets the failure count for a node after a successful VSS call.
+func (db *ActorDB) VssCallSuccess(addr netip.Addr) {
+	db.Lock()
+	defer db.Unlock()
+	if rec, ok := db.actorsV6toHr[addr.As16()]; ok {
+		if rec.node && rec.Peer != nil {
+			rec.Peer.VssCallFailures = 0
+		}
+	}
+}
+
+func (db *ActorDB) GetPeerVssCallFailures(addr netip.Addr) uint64 {
+	db.RLock()
+	defer db.RUnlock()
+	if rec, ok := db.actorsV6toHr[addr.As16()]; ok {
+		if rec.node && rec.Peer != nil {
+			return rec.Peer.VssCallFailures
+		}
+	}
+	return 0
 }
 
 func (db *ActorDB) SetNodeContactTime(addr netip.Addr, t time.Time) {

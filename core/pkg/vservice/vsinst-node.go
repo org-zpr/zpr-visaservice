@@ -13,8 +13,11 @@ import (
 	"zpr.org/vsapi"
 )
 
+const MaxVssCallFailures = 3
+
 // Called by InstallPolicy
 func (vs *VSInst) installPolicyWithVisasForNodes(pp *policy.Policy, configID uint64) error {
+	vs.log.Debug("installPolicyWithVisasForNodes starts")
 	errCount := 0
 	for _, nodeAddr := range vs.actorDB.GetNodeList() {
 		if err := vs.installPolicyWithVisasForNode(nodeAddr, pp, configID); err != nil {
@@ -31,6 +34,8 @@ func (vs *VSInst) installPolicyWithVisasForNodes(pp *policy.Policy, configID uin
 func (vs *VSInst) installPolicyWithVisasForNode(nodeAddr netip.Addr, pp *policy.Policy, configID uint64) error {
 	var visas []*vsapi.VisaHop
 	var vssPort uint16
+
+	vs.log.Debug("installPolicyWithVisasForNode starts", "node", nodeAddr, "policy_version", pp.VersionNumber(), "config_id", configID)
 
 	// We may have recently tried this operation and buffered the visas.
 	// If so, we do not want to regenerate the visas and buffer duplicates.
@@ -208,19 +213,29 @@ func (vs *VSInst) updateNode(nodeAddr netip.Addr, policyVer uint64, configID uin
 	}
 
 	client := NewVSSCli(serviceAddr)
+	successes := 0
 
 	if err := client.SendNetworkPolicy(policyVer, configID); err != nil {
 		opErr = fmt.Errorf("failed to send network policy message to node: %w", err)
+		vs.actorDB.VssCallFailure(nodeAddr)
 		goto RELEASE_UPDATE
+	} else {
+		vs.actorDB.VssCallSuccess(nodeAddr)
+		successes++
 	}
-
 	if len(visas) > 0 {
 		if err := client.SendVisas(visas); err != nil {
 			opErr = fmt.Errorf("failed to send visas to node: %w", err)
+			vs.actorDB.VssCallFailure(nodeAddr)
 			goto RELEASE_UPDATE
+		} else {
+			vs.actorDB.VssCallSuccess(nodeAddr)
+			successes++
 		}
 	}
-	vs.actorDB.SetNodeContactTime(nodeAddr, time.Now())
+	if successes > 0 {
+		vs.actorDB.SetNodeContactTime(nodeAddr, time.Now())
+	}
 
 	// Success!
 	_ = vs.actorDB.SetPeerLastPolicyState(nodeAddr, policyVer, configID)
@@ -275,6 +290,7 @@ func (vs *VSInst) pushToNodeOrBuffer(nodeAddr netip.Addr, items []*adb.PushItem)
 	}
 
 	client := NewVSSCli(serviceAddr)
+	successes := 0
 	failing := adb.PushItem{}
 
 	var revocations []*vsapi.VisaRevocation
@@ -292,6 +308,10 @@ func (vs *VSInst) pushToNodeOrBuffer(nodeAddr netip.Addr, items []*adb.PushItem)
 		if err := client.SendRevocations(revocations); err != nil {
 			failing.Revocations = append(failing.Revocations, revocations...)
 			vs.log.WithError(err).Warn("failed to send revocations to node", "node", nodeAddr)
+			vs.actorDB.VssCallFailure(nodeAddr)
+		} else {
+			vs.actorDB.VssCallSuccess(nodeAddr)
+			successes++
 		}
 	}
 
@@ -299,6 +319,10 @@ func (vs *VSInst) pushToNodeOrBuffer(nodeAddr netip.Addr, items []*adb.PushItem)
 		if err := client.SendVisas(visas); err != nil {
 			failing.Visas = append(failing.Visas, visas...)
 			vs.log.WithError(err).Warn("failed to send visas to node", "node", nodeAddr)
+			vs.actorDB.VssCallFailure(nodeAddr)
+		} else {
+			vs.actorDB.VssCallSuccess(nodeAddr)
+			successes++
 		}
 	}
 
@@ -313,11 +337,17 @@ func (vs *VSInst) pushToNodeOrBuffer(nodeAddr netip.Addr, items []*adb.PushItem)
 			vs.log.Debug("pushing auth db version to node", "node", nodeAddr, "version", authDbVersion)
 			if err := client.ServicesUpdate(vs.actorAuthDB.ListServices()); err != nil {
 				vs.log.WithError(err).Warn("failed to push auth db version to node", "node", nodeAddr, "version", authDbVersion)
+				vs.actorDB.VssCallFailure(nodeAddr)
 			} else {
 				// Update the peer record.
+				vs.actorDB.VssCallSuccess(nodeAddr)
+				successes++
 				vs.actorDB.SetPeerAuthServicesDBVersion(nodeAddr, authDbVersion)
 			}
 		}
+	}
+	if successes > 0 {
+		vs.actorDB.SetNodeContactTime(nodeAddr, time.Now())
 	}
 }
 
@@ -356,10 +386,23 @@ func (vs *VSInst) handleApproveConnection(creq *vsapi.ConnectRequest, replyC cha
 // checkNodeVSSState checks the VSS state of all nodes and sends config and policy to nodes
 // which indicate they are out of sync.
 //
+// Nodes that have too many VSS failures are disconnected.
+//
 // This should not be called by multiple routines at once.
 func (vs *VSInst) checkNodesVSSState() {
 	pp, _, configID := vs.getPolicyMatcherConfig()
 	for _, nodeAddr := range vs.actorDB.GetOutOfSyncNonUpdatingNodes() {
+
+		vssFails := vs.actorDB.GetPeerVssCallFailures(nodeAddr)
+
+		if vssFails >= MaxVssCallFailures {
+			vs.log.Warn("node has too many VSS call failures, disconnecting", "node", nodeAddr, "vss_fails", vssFails)
+			vs.actorDB.RemoveNode(nodeAddr)
+			continue
+		} else if vssFails > 0 {
+			vs.log.Warn("node has VSS call failures", "node", nodeAddr, "vss_fails", vssFails)
+		}
+
 		vs.log.Debug("checkNodesVSSState - node out of sync", "node", nodeAddr)
 		if err := vs.installPolicyWithVisasForNode(nodeAddr, pp, configID); err != nil {
 			vs.log.WithError(err).Warn("failed to install policy on node", "node", nodeAddr)
