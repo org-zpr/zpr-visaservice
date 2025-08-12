@@ -48,6 +48,17 @@ pub struct NodeRecordBrief {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
+pub struct ServiceRecord {
+    pub ctime: i64, // unix SECONDS (not millis)
+    pub cn: String,
+    pub zpr_addr: String,
+    pub ident: String,
+    pub node: bool,
+    pub services: Vec<String>,
+}
+
+#[derive(Deserialize)]
 pub struct RevokeResponse {
     pub revoked: String,
     pub count: u32,
@@ -108,6 +119,26 @@ impl fmt::Display for HostRecordBrief {
                 "".normal()
             },
         )
+    }
+}
+
+impl fmt::Display for ServiceRecord {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for svc in &self.services {
+            write!(
+                f,
+                "{:<36}  {}  @ {} {}\n",
+                svc,
+                self.cn.cyan(),
+                self.zpr_addr.yellow(),
+                if self.node {
+                    "[node]".green()
+                } else {
+                    "".normal()
+                },
+            )?;
+        }
+        Ok(())
     }
 }
 

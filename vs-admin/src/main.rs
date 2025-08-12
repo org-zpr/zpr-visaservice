@@ -16,7 +16,7 @@ use reqwest::tls::Certificate;
 use reqwest::StatusCode;
 
 use apitypes::RevokeResponse;
-use apitypes::{HostRecordBrief, NodeRecordBrief, VisaDescriptor};
+use apitypes::{HostRecordBrief, NodeRecordBrief, ServiceRecord, VisaDescriptor};
 use apitypes::{PolicyBundle, PolicyListEntry, PolicyVersion};
 use apitypes::{RevokeAdminRequest, RevokeAdminResponse};
 
@@ -70,6 +70,10 @@ enum SubCmd {
     /// List actors
     #[command()]
     Actors,
+
+    /// List services
+    #[command()]
+    Services,
 
     /// List Nodes
     #[command()]
@@ -138,6 +142,11 @@ fn main() {
         }
         Some(SubCmd::Nodes) => {
             list_nodes(&args.svc_url, ca_cert).unwrap_or_else(|e| {
+                eprintln!("{} {}", "Error: ".red(), e);
+            });
+        }
+        Some(SubCmd::Services) => {
+            list_services(&args.svc_url, ca_cert).unwrap_or_else(|e| {
                 eprintln!("{} {}", "Error: ".red(), e);
             });
         }
@@ -453,6 +462,45 @@ fn list_nodes(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error
     );
     for nr in entries {
         println!("{nr}");
+    }
+    Ok(())
+}
+
+fn list_services(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
+    let cb = reqwest::blocking::ClientBuilder::new()
+        .add_root_certificate(cert)
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(10));
+    let client = cb.build()?;
+
+    let resp = client.get(format!("{}/admin/services", api_url)).send()?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "error (status {:?}:{}) : {}",
+            resp.status(),
+            reason_for(resp.status()),
+            resp.text()?
+        )
+        .into());
+    }
+
+    let entries: Vec<ServiceRecord> = resp.json()?;
+    let mut svc_count = 0;
+    for sr in &entries {
+        svc_count += sr.services.len();
+    }
+
+    println!(
+        "{}",
+        format!(
+            "🐎 found {} service{}",
+            svc_count,
+            if svc_count == 1 { "" } else { "s" }
+        )
+        .magenta()
+    );
+    for sr in entries {
+        print!("{sr}");
     }
     Ok(())
 }

@@ -39,6 +39,7 @@ line tool which uses the admin interface.
 | DELETE | `/admin/visas/{ID}`                 |  revoke a visa by its ID |
 | GET    | `/admin/actors`                     | list connected actors    |
 | DELETE | `/admin/actors/{CN}`                | revoke an actor (and all its visas) by adapter CN |
+| GET    | `/admin/services`                   | a service-oriented list of connected actors |
 | POST   | `/admin/revokes`                    | administer the revocation table |
 | GET    | `/admin/nodes`                      | list nodes |
 
