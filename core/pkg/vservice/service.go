@@ -264,6 +264,29 @@ func (s *VisaService) ListAdapters() []*adb.HostRecordBrief {
 	return s.service.inst.actorDB.CloneToBrief()
 }
 
+type ServiceRecord struct {
+	*adb.HostRecordBrief
+	Services []string `json:"services"`
+}
+
+func (s *VisaService) ListServices() []*ServiceRecord {
+	var services []*ServiceRecord
+	for _, brec := range s.ListAdapters() {
+		actr, err := s.service.inst.actorDB.ActorAtContactAddr(brec.ZPRAddr)
+		if actr == nil || err != nil {
+			continue
+		}
+		svcs := actr.GetProvides()
+		if len(svcs) > 0 {
+			services = append(services, &ServiceRecord{
+				HostRecordBrief: brec,
+				Services:        svcs,
+			})
+		}
+	}
+	return services
+}
+
 func (s *VisaService) ListNodes() []*adb.NodeRecordBrief {
 	return s.service.inst.actorDB.CloneNodesToBrief()
 }

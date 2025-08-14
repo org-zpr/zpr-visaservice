@@ -66,6 +66,7 @@ type VSApi interface {
 	ListVisas() []*VisaDescriptor
 	ListAdapters() []*adb.HostRecordBrief
 	ListNodes() []*adb.NodeRecordBrief
+	ListServices() []*ServiceRecord
 	ClearAllRevokes() uint32
 	RevokeVisa(uint64) error
 	RevokeCN(string) uint32
@@ -109,6 +110,7 @@ func (svc *AdminService) StartAdminService(listenAddr netip.Addr, port int) erro
 	router.HandleFunc("/admin/actors/{CN}", svc.handleRevokeActorByCN).Methods("DELETE")
 	router.HandleFunc("/admin/revokes", svc.handleRevokeAdmin).Methods("POST")
 	router.HandleFunc("/admin/nodes", svc.handleListNodes).Methods("GET")
+	router.HandleFunc("/admin/services", svc.handleListServices).Methods("GET")
 
 	addrPort := netip.AddrPortFrom(listenAddr, uint16(port))
 	server := http.Server{
@@ -289,6 +291,15 @@ func (svc *AdminService) handleListNodes(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Add("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(nodeList)
+}
+
+func (svc *AdminService) handleListServices(w http.ResponseWriter, r *http.Request) {
+	services := svc.vsi.ListServices()
+	if services == nil {
+		services = []*ServiceRecord{} // return an empty array, not an empty body.
+	}
+	w.Header().Add("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(services)
 }
 
 func (svc *AdminService) handleRevokeVisaByID(w http.ResponseWriter, r *http.Request) {
