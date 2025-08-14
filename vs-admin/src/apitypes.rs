@@ -1,5 +1,6 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use colored::{Color, Colorize};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -17,7 +18,7 @@ pub struct PolicyBundle {
     pub container: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Eq)]
 pub struct VisaDescriptor {
     pub id: u64,
     pub expires: u64, // milliseconds since the epoch
@@ -25,7 +26,25 @@ pub struct VisaDescriptor {
     pub dest: String,
 }
 
-#[derive(Deserialize)]
+impl PartialEq for VisaDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Ord for VisaDescriptor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl PartialOrd for VisaDescriptor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, Deserialize, Eq)]
 #[allow(dead_code)]
 pub struct HostRecordBrief {
     pub ctime: i64, // unix SECONDS (not millis)
@@ -33,6 +52,24 @@ pub struct HostRecordBrief {
     pub zpr_addr: String,
     pub ident: String,
     pub node: bool,
+}
+
+impl PartialEq for HostRecordBrief {
+    fn eq(&self, other: &Self) -> bool {
+        self.cn == other.cn
+    }
+}
+
+impl Ord for HostRecordBrief {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cn.cmp(&other.cn)
+    }
+}
+
+impl PartialOrd for HostRecordBrief {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Deserialize)]
@@ -47,7 +84,9 @@ pub struct NodeRecordBrief {
     pub in_sync: bool,
 }
 
-#[derive(Deserialize)]
+/// For those actors with services, this is just a [HostRecordBrief] with a
+/// services list on it.
+#[derive(Debug, Deserialize, Eq)]
 #[allow(dead_code)]
 pub struct ServiceRecord {
     pub ctime: i64, // unix SECONDS (not millis)
@@ -56,6 +95,24 @@ pub struct ServiceRecord {
     pub ident: String,
     pub node: bool,
     pub services: Vec<String>,
+}
+
+impl PartialEq for ServiceRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.cn == other.cn
+    }
+}
+
+impl Ord for ServiceRecord {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cn.cmp(&other.cn)
+    }
+}
+
+impl PartialOrd for ServiceRecord {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Deserialize)]
@@ -220,5 +277,12 @@ impl fmt::Display for PolicyVersion {
             write!(f, "{}", part.color(colors[i % 4]))?;
         }
         Ok(())
+    }
+}
+
+pub fn reason_for(sc: StatusCode) -> String {
+    match sc.canonical_reason() {
+        Some(reason) => reason.to_string(),
+        None => "unknown".to_string(),
     }
 }
