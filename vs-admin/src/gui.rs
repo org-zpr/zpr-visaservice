@@ -1,0 +1,410 @@
+//use colored::Colorize;
+use crossterm::event::{self, Event, KeyCode};
+use ratatui::{
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Style, Stylize},
+    text::{Line, Text},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+};
+use ratatui::{DefaultTerminal, Frame};
+use reqwest::tls::Certificate;
+
+use chrono::{DateTime, SecondsFormat, Utc};
+use std::time::{Duration, Instant};
+
+use crate::apitypes::{reason_for, HostRecordBrief, ServiceRecord, VisaDescriptor};
+
+/// Do not hit the VS ADMIN api more than this often.
+const REFRESH_RATE: Duration = Duration::from_millis(2000);
+
+#[derive(Debug)]
+struct Gui {
+    exit: bool,
+    err_msg: Option<String>,
+    api_url: String,
+    last_updated: Option<Instant>,
+    cert: Certificate,
+    actors: Vec<HostRecordBrief>,
+    services: Vec<ServiceRecord>,
+    visas: Vec<VisaDescriptor>,
+    table_header_style: Style,
+    zpr_addr_style: Style,
+    cn_style: Style,
+    visa_id_style: Style,
+}
+
+/// Fire up the terminal based gui which is just a simple dashboard.
+/// Returns on terrible error or if user exits.
+pub fn enter_gui(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
+    let mut terminal = ratatui::init();
+    let mut g = Gui::new(api_url, cert);
+    let result = g.run(&mut terminal);
+    ratatui::restore();
+    result
+}
+
+impl Gui {
+    fn new(api_url: &str, cert: Certificate) -> Self {
+        Self {
+            exit: false,
+            err_msg: None,
+            api_url: api_url.to_string(),
+            cert,
+            actors: Vec::new(),
+            services: Vec::new(),
+            visas: Vec::new(),
+            last_updated: None,
+            table_header_style: Style::default().fg(Color::LightGreen).bg(Color::Black),
+            zpr_addr_style: Color::Yellow.into(),
+            cn_style: Color::White.into(),
+            visa_id_style: Color::White.into(),
+        }
+    }
+
+    fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn std::error::Error>> {
+        while !self.exit {
+            terminal.draw(|f| self.draw(f))?;
+            self.handle_events()?;
+            match self.refresh_state() {
+                Ok(_) => {}
+                Err(e) => {
+                    self.err_msg = Some(e.to_string());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        self.render_gui(frame, frame.area());
+    }
+
+    fn handle_events(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if event::poll(std::time::Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') => self.exit = true,
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Call the VS-API to get data.
+    fn refresh_state(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.last_updated.is_some() && self.last_updated.unwrap().elapsed() < REFRESH_RATE {
+            return Ok(());
+        }
+        self.last_updated = Some(Instant::now()); // set first here in case we error out.
+        self.err_msg = None;
+        let cb = reqwest::blocking::ClientBuilder::new()
+            .add_root_certificate(self.cert.clone())
+            .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(10));
+        let client = cb.build()?;
+
+        {
+            let resp = client
+                .get(format!("{}/admin/actors", &self.api_url))
+                .send()?;
+            if !resp.status().is_success() {
+                return Err(format!(
+                    "error (status {:?}:{}) : {}",
+                    resp.status(),
+                    reason_for(resp.status()),
+                    resp.text()?
+                )
+                .into());
+            }
+
+            self.actors = resp.json()?;
+            self.actors.sort(); // uses Ord trait
+        }
+        self.last_updated = Some(Instant::now());
+
+        {
+            let resp = client
+                .get(format!("{}/admin/services", &self.api_url))
+                .send()?;
+            if !resp.status().is_success() {
+                return Err(format!(
+                    "error (status {:?}:{}) : {}",
+                    resp.status(),
+                    reason_for(resp.status()),
+                    resp.text()?
+                )
+                .into());
+            }
+
+            self.services = resp.json()?;
+            self.services.sort(); // uses Ord trait
+        }
+
+        {
+            let resp = client
+                .get(format!("{}/admin/visas", &self.api_url))
+                .send()?;
+            if !resp.status().is_success() {
+                return Err(format!(
+                    "error (status {:?}:{}) : {}",
+                    resp.status(),
+                    reason_for(resp.status()),
+                    resp.text()?
+                )
+                .into());
+            }
+
+            self.visas = resp.json()?;
+            self.visas.sort(); // uses Ord trait
+            self.visas.reverse();
+        }
+
+        self.last_updated = Some(Instant::now());
+        Ok(())
+    }
+
+    fn render_gui(&self, frame: &mut Frame, area: Rect) {
+        let title = Line::from("  ZPR Visa Service  ".bold());
+        let instructions = Line::from(vec![
+            " Press".into(),
+            " <q> ".blue().bold(),
+            "to quit ".into(),
+        ]);
+
+        let [header_area, content_area, footer_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+
+        frame.render_widget(Paragraph::new(Text::from(title)).centered(), header_area);
+        frame.render_widget(
+            Paragraph::new(Text::from(instructions)).centered(),
+            footer_area,
+        );
+
+        if let Some(err) = &self.err_msg {
+            frame.render_widget(
+                Paragraph::new(Text::from(err.to_string().red())).block(Block::default()),
+                content_area,
+            );
+            return;
+        }
+
+        // Else proceed with our layout.
+        let [actor_area, service_area, visa_area] = Layout::vertical([
+            Constraint::Percentage(20),
+            Constraint::Percentage(30),
+            Constraint::Percentage(50),
+        ])
+        .areas(content_area);
+
+        self.render_actors(frame, actor_area);
+        self.render_services(frame, service_area);
+        self.render_visas(frame, visa_area);
+    }
+
+    fn render_services(&self, frame: &mut Frame, area: Rect) {
+        if self.services.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Text::from("No services found.").red())
+                    .block(Block::default().borders(Borders::ALL).title("Services ")),
+                area,
+            );
+            return;
+        }
+        let header = ["Service Name", "CN", "ZPR Address", ""]
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(self.table_header_style)
+            .height(1);
+        let mut row_max_lens = (0u16, 0u16, 0u16); // (SERVICE_NAME, CN, ZPR_ADDR)
+        for srec in &self.services {
+            for svcid in &srec.services {
+                if row_max_lens.0 < svcid.len() as u16 {
+                    row_max_lens.0 = svcid.len() as u16;
+                }
+            }
+            if row_max_lens.1 < srec.cn.len() as u16 {
+                row_max_lens.1 = srec.cn.len() as u16;
+            }
+            if row_max_lens.2 < srec.zpr_addr.len() as u16 {
+                row_max_lens.2 = srec.zpr_addr.len() as u16;
+            }
+        }
+
+        let mut rows = Vec::new();
+        for srec in &self.services {
+            let expanded_rows = srec.services.iter().map(|svcid| {
+                let cn = srec.cn.clone();
+                let zpr_addr = srec.zpr_addr.clone();
+                let flag = if srec.node {
+                    "[node]".light_magenta()
+                } else {
+                    "".into()
+                };
+                let cells = [
+                    Cell::from(svcid.clone()),
+                    Cell::from(cn).style(self.cn_style),
+                    Cell::from(zpr_addr).style(self.zpr_addr_style),
+                    Cell::from(flag),
+                ];
+                Row::new(cells)
+            });
+            rows.extend(expanded_rows);
+        }
+
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(row_max_lens.0 + 3),
+                Constraint::Length(row_max_lens.1 + 3),
+                Constraint::Length(row_max_lens.2 + 3),
+                Constraint::Length(6), // flag
+            ],
+        )
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Services ".bold()),
+        );
+        frame.render_widget(table, area);
+    }
+
+    fn render_actors(&self, frame: &mut Frame, area: Rect) {
+        if self.actors.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Text::from("No actors found.").red())
+                    .block(Block::default().borders(Borders::ALL).title("Actors ")),
+                area,
+            );
+            return;
+        }
+        let header = ["CN", "ZPR Address", "Join Date", ""]
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(self.table_header_style)
+            .height(1);
+        let mut row_max_lens = (0u16, 0u16); // (CN, ZPR_ADDR)
+        for actor in &self.actors {
+            if row_max_lens.0 < actor.cn.len() as u16 {
+                row_max_lens.0 = actor.cn.len() as u16;
+            }
+            if row_max_lens.1 < actor.zpr_addr.len() as u16 {
+                row_max_lens.1 = actor.zpr_addr.len() as u16;
+            }
+        }
+        let rows = self.actors.iter().map(|actor| {
+            let cn = actor.cn.clone();
+            let zpr_addr = actor.zpr_addr.clone();
+            let ts: DateTime<Utc> = DateTime::from_timestamp(actor.ctime, 0).unwrap();
+            let join_date = ts.to_rfc3339_opts(SecondsFormat::Secs, true);
+            let flag = if actor.node {
+                "[node]".light_magenta()
+            } else {
+                "".into()
+            };
+            let cells = [
+                Cell::from(cn).style(self.cn_style),
+                Cell::from(zpr_addr).style(self.zpr_addr_style),
+                Cell::from(join_date),
+                Cell::from(flag),
+            ];
+            Row::new(cells)
+        });
+        let clock_unix = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let clock = format!(" {}", clock_unix.to_rfc3339_opts(SecondsFormat::Secs, true));
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(row_max_lens.0 + 3),
+                Constraint::Length(row_max_lens.1 + 3),
+                Constraint::Length(20), // join date
+                Constraint::Length(6),  // flag
+            ],
+        )
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Actors ".bold())
+                .title(Line::from(clock.cyan()).right_aligned()),
+        );
+        frame.render_widget(table, area);
+    }
+
+    fn render_visas(&self, frame: &mut Frame, area: Rect) {
+        if self.visas.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Text::from("No visas found.").red())
+                    .block(Block::default().borders(Borders::ALL).title("Visas ")),
+                area,
+            );
+            return;
+        }
+        let header = ["ID", "Source", "", "Dest", "Expires"]
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(self.table_header_style)
+            .height(1);
+
+        // Max column lengths does not include our "->" col.
+        let mut row_max_lens = (0u16, 0u16, 0u16, 20u16); // (ID, SOURCE, DEST, EXPIRES)
+
+        // Iterate once to figure out column widths
+        for vrec in &self.visas {
+            let idstr = format!("{}", vrec.id);
+            if row_max_lens.0 < idstr.len() as u16 {
+                row_max_lens.0 = idstr.len() as u16;
+            }
+            if row_max_lens.1 < vrec.source.len() as u16 {
+                row_max_lens.1 = vrec.source.len() as u16;
+            }
+            if row_max_lens.2 < vrec.dest.len() as u16 {
+                row_max_lens.2 = vrec.dest.len() as u16;
+            }
+        }
+
+        let rows = self.visas.iter().map(|vrec| {
+            let exp_secs = (vrec.expires / 1000) as i64;
+            let exp_nanos = ((vrec.expires % 1000) * 1_000_000) as u32;
+            let dt: DateTime<Utc> = DateTime::from_timestamp(exp_secs, exp_nanos).unwrap();
+
+            let idstr = format!("{}", vrec.id);
+            let expstr = dt.to_rfc3339_opts(SecondsFormat::Secs, true);
+
+            let cells = [
+                Cell::from(idstr).style(self.visa_id_style),
+                Cell::from(vrec.source.clone()).style(self.zpr_addr_style),
+                Cell::from("->".light_magenta()),
+                Cell::from(vrec.dest.clone()).style(self.zpr_addr_style),
+                Cell::from(expstr),
+            ];
+            Row::new(cells)
+        });
+
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(row_max_lens.0 + 3),
+                Constraint::Length(row_max_lens.1 + 3),
+                Constraint::Length(3), // for the "->" column
+                Constraint::Length(row_max_lens.2 + 3),
+                Constraint::Length(row_max_lens.3),
+            ],
+        )
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Visas ".bold()),
+        );
+        frame.render_widget(table, area);
+    }
+}

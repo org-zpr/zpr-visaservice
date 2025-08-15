@@ -1,4 +1,5 @@
 mod apitypes;
+mod gui;
 
 use std::fs::File;
 use std::io::prelude::*;
@@ -13,8 +14,8 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use reqwest;
 use reqwest::tls::Certificate;
-use reqwest::StatusCode;
 
+use apitypes::reason_for;
 use apitypes::RevokeResponse;
 use apitypes::{HostRecordBrief, NodeRecordBrief, ServiceRecord, VisaDescriptor};
 use apitypes::{PolicyBundle, PolicyListEntry, PolicyVersion};
@@ -78,6 +79,10 @@ enum SubCmd {
     /// List Nodes
     #[command()]
     Nodes,
+
+    /// Enter GUI mode
+    #[command()]
+    Gui,
 }
 
 #[derive(Args)]
@@ -152,6 +157,11 @@ fn main() {
         }
         Some(SubCmd::ClearRevokes) => {
             clear_revokes(&args.svc_url, ca_cert).unwrap_or_else(|e| {
+                eprintln!("{} {}", "Error: ".red(), e);
+            });
+        }
+        Some(SubCmd::Gui) => {
+            gui::enter_gui(&args.svc_url, ca_cert).unwrap_or_else(|e| {
                 eprintln!("{} {}", "Error: ".red(), e);
             });
         }
@@ -538,11 +548,4 @@ fn clear_revokes(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::er
         println!();
     }
     Ok(())
-}
-
-fn reason_for(sc: StatusCode) -> String {
-    match sc.canonical_reason() {
-        Some(reason) => reason.to_string(),
-        None => "unknown".to_string(),
-    }
 }
