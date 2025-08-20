@@ -1,4 +1,4 @@
-VERSION ?= "0.3.1"
+VERSION ?= "0.4.0"
 PROJECT_NAME := vs
 PKG := "zpr.org/$(PROJECT_NAME)"
 PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
