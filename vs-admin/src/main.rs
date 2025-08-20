@@ -2,21 +2,21 @@ mod apitypes;
 mod gui;
 
 use std::fs::File;
-use std::io::prelude::*;
 use std::io::Read;
+use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::prelude::*;
 use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use reqwest;
 use reqwest::tls::Certificate;
 
-use apitypes::reason_for;
 use apitypes::RevokeResponse;
+use apitypes::reason_for;
 use apitypes::{HostRecordBrief, NodeRecordBrief, ServiceRecord, VisaDescriptor};
 use apitypes::{PolicyBundle, PolicyListEntry, PolicyVersion};
 use apitypes::{RevokeAdminRequest, RevokeAdminResponse};
