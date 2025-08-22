@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"zpr.org/vs/pkg/actor"
@@ -420,9 +421,8 @@ func (m *Matcher) MatchConnect(state *ConnectState) ([]string, error) {
 		actorProvides = append(actorProvides, svc.Name)
 	}
 	// If visaservice flag is set, create a "virtual" service entry.
-	if state.Visaservice {
-		actorProvides = append(actorProvides, VisaServiceName)                         // TODO: compiler must prevent this from ever being defined.
-		actorProvides = append(actorProvides, fmt.Sprintf("/zpr/%s", VisaServiceName)) // TODO: compiler must prevent this from ever being defined.
+	if state.Visaservice && !slices.Contains(actorProvides, VisaServiceName) {
+		actorProvides = append(actorProvides, VisaServiceName)
 	}
 	state.Actor.SetProvides(actorProvides)
 

@@ -7,8 +7,8 @@ import (
 // VS is compatible with this version of the policy compiler.
 const (
 	CompilerMajorVersion    = uint32(0)
-	CompilerMinorVersion    = uint32(4)
-	CompilerPatchVersionMin = uint32(1)
+	CompilerMinorVersion    = uint32(5)
+	CompilerPatchVersionMin = uint32(0)
 )
 
 const (
@@ -17,7 +17,7 @@ const (
 	NoHash           = uint32(0xFFFFFFFF)
 	AuthProtocol     = 0x6   // TCP (gRPC protocol to auth services)
 	AuthProtocolName = "TCP" // TCP (gRPC protocol to auth services)
-	VisaServiceName  = "$$zpr/visaservice"
+	VisaServiceName  = "/zpr/visaservice"
 )
 
 // As things are rapidly changing the visa service is fairly rigid about
