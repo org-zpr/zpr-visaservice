@@ -22,7 +22,8 @@ clean:
 %.bin: %.zpl %.zplc
 	$(ZPLC) $<
 
+rebuild: clean all
 
-.PHONY: all clean
+.PHONY: all clean rebuild
 
 .DEFAULT_GOAL: info

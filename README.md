@@ -11,6 +11,8 @@ Run `make` to build.  To run the tests do `make test`.
 After a successful build the `vservice` binary will be found in
 `core/build`.
 
+When compiler is updated you may need to rebuild the pregenerated policy
+files used for testing.  Do that with: `make ZPLC=/path/to/zplc pregen`.
 
 
 ## Visa Service Admin API

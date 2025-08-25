@@ -119,48 +119,6 @@ func TestRequestVisa(t *testing.T) {
 	naddr := netip.MustParseAddr("fd5a:5052:90de::1")
 	nodeAuthReq := helloAndGenNodeAuthReq(t, svc, naddr)
 
-	/*
-		authKey, err := rsa.GenerateKey(rand.Reader, 2048)
-		require.Nil(t, err)
-
-		authsvc := auth.NewAuthenticator(logr.NewTestLogger(),
-			naddr,
-			1000*time.Hour,
-			"vs.zpr",
-			authKey)
-		svc.SetAuthSvc(authsvc)
-
-		{
-			pfile := filepath.Join("testdata", "vsinst-test.bin")
-			cp, err := policy.OpenContainedPolicyFile(pfile, nil)
-			require.Nil(t, err)
-			polplcy := cp.Policy
-			plcy := policy.NewPolicyFromPol(polplcy, logr.NewTestLogger())
-			svc.InstallPolicy(1234, 0, plcy)
-		}
-
-		hresp, err := svc.Hello(context.Background())
-		require.Nil(t, err)
-
-		timestamp := time.Now().Unix()
-		sig := createMilestone2HMAC(hresp.Challenge.ChallengeData, hresp.SessionID, timestamp)
-		agnt := &vsapi.Actor{
-			ActorType:   vsapi.ActorType_NODE,
-			AuthExpires: time.Now().Unix() + 11400, // +4hrs
-			ZprAddr:     naddr.AsSlice(),
-			TetherAddr:  naddr.AsSlice(),
-			Ident:       uuid.New().String(),
-		}
-		nodeAuthReq := &vsapi.NodeAuthRequest{
-			SessionID: hresp.SessionID,
-			Challenge: hresp.Challenge,
-			Timestamp: timestamp,
-			NodeCert:  []byte(nodeNoiseCert),
-			Hmac:      sig[:],
-			NodeActor: agnt,
-		}
-	*/
-
 	// Authenticate performs async ops so service needs to be running.
 	go svc.Start(netip.MustParseAddr("127.0.0.1"), 0)
 	defer svc.Stop()

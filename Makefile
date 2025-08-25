@@ -44,4 +44,9 @@ release:
 	cp vs-conform/build/vs-conform $(RELEASE_DIR)
 	cd $(RELEASE_DIR) && tar zcvf ../$(RELEASE_TGZ) .
 
-.PHONY: all all-rs all-go test clean build build-go build-rs test-go test-rs release
+pregen:
+	$(MAKE) -C integration-test/pregen rebuild
+	$(MAKE) -C core pregen-rebuild
+
+
+.PHONY: all all-rs all-go test clean build build-go build-rs test-go test-rs release pregen

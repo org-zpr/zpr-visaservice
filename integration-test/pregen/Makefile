@@ -24,6 +24,8 @@ clean:
 	$(ZPLC) -k $(KEY) $<
 
 
-.PHONY: all clean
+rebuild: clean all
+
+.PHONY: all clean rebuild
 
 .DEFAULT_GOAL: info
