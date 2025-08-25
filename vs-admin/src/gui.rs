@@ -1,18 +1,18 @@
 //use colored::Colorize;
 use crossterm::event::{self, Event, KeyCode};
+use ratatui::{DefaultTerminal, Frame};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Text},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
-use ratatui::{DefaultTerminal, Frame};
 use reqwest::tls::Certificate;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::time::{Duration, Instant};
 
-use crate::apitypes::{reason_for, HostRecordBrief, ServiceRecord, VisaDescriptor};
+use crate::apitypes::{HostRecordBrief, ServiceRecord, VisaDescriptor, reason_for};
 
 /// Do not hit the VS ADMIN api more than this often.
 const REFRESH_RATE: Duration = Duration::from_millis(2000);

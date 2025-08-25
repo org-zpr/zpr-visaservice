@@ -11,7 +11,7 @@ import (
 	"zpr.org/polio"
 )
 
-const KAttrCN = "device.zpr.adapter.cn"
+const KAttrCN = "endpoint.zpr.adapter.cn"
 
 var zeroAddr = netip.Addr{}
 
