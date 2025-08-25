@@ -1,7 +1,6 @@
 ZPLC ?= zplc
-KEY := zpr-rsa-key.pem
-
-OBJS := conform-policy.bin
+SOURCES := $(wildcard *.zpl)
+OBJS := $(SOURCES:.zpl=.bin)
 
 info:
 	@echo Makefile to help with compiling the ZPR policies
@@ -21,8 +20,7 @@ clean:
 
 
 %.bin: %.zpl %.zplc
-	$(ZPLC) -k $(KEY) $<
-
+	$(ZPLC) $<
 
 rebuild: clean all
 

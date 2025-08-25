@@ -86,6 +86,19 @@ type PeerSyncDetails struct {
 
 type Ipv6Addr [16]byte
 
+func (a Ipv6Addr) String() string {
+	return fmt.Sprintf("%x:%x:%x:%x:%x:%x:%x:%x",
+		binary.BigEndian.Uint16(a[0:2]),
+		binary.BigEndian.Uint16(a[2:4]),
+		binary.BigEndian.Uint16(a[4:6]),
+		binary.BigEndian.Uint16(a[6:8]),
+		binary.BigEndian.Uint16(a[8:10]),
+		binary.BigEndian.Uint16(a[10:12]),
+		binary.BigEndian.Uint16(a[12:14]),
+		binary.BigEndian.Uint16(a[14:16]),
+	)
+}
+
 type ActorDB struct {
 	sync.RWMutex
 	actorsV6toHr map[Ipv6Addr]*HostRecord // Note we keep address in IPv6 format.

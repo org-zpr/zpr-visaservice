@@ -17,7 +17,7 @@ else
 endif
 
 
-.PHONY: all build vservice test clean dist-clean
+.PHONY: all build vservice test clean dist-clean pregen-rebuild
 
 all: build
 
@@ -38,6 +38,8 @@ clean:
 
 dist-clean: clean
 
+pregen-rebuild:
+	$(MAKE) -C pkg/vservice/testdata rebuild
 
 .DEFAULT_GOAL := all
 
