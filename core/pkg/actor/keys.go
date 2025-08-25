@@ -9,8 +9,8 @@ const (
 	KAttrVisaServiceAdapter = "zpr.visa_service_adapter" // true or false
 	KAttrHash               = "zpr.hash"
 	KAttrConfigID           = "zpr.config_id"
-	KAttrCN                 = "device.zpr.adapter.cn"
-	KAttrAAANet             = "device.zpr.node.aaa_net"
+	KAttrCN                 = "endpoint.zpr.adapter.cn"
+	KAttrAAANet             = "endpoint.zpr.node.aaa_net"
 )
 
 const (
@@ -21,7 +21,7 @@ type Namespace int
 
 const (
 	NsUser Namespace = iota + 1
-	NsDevice
+	NsEndpoint
 	NsService
 )
 
@@ -29,8 +29,8 @@ func (n Namespace) String() string {
 	switch n {
 	case NsUser:
 		return "user"
-	case NsDevice:
-		return "device"
+	case NsEndpoint:
+		return "endpoint"
 	case NsService:
 		return "service"
 	default:
@@ -42,8 +42,8 @@ func ParseNamespace(s string) (Namespace, bool) {
 	switch s {
 	case "user":
 		return NsUser, true
-	case "device":
-		return NsDevice, true
+	case "endpoint":
+		return NsEndpoint, true
 	case "service":
 		return NsService, true
 	default:
