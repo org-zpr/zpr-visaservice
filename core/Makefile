@@ -40,6 +40,7 @@ dist-clean: clean
 
 pregen-rebuild:
 	$(MAKE) -C pkg/vservice/testdata rebuild
+	$(MAKE) -C pkg/policy/testdata rebuild
 
 .DEFAULT_GOAL := all
 
