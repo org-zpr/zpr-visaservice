@@ -451,46 +451,47 @@ func (m *Matcher) MatchTraffic(td *snip.Traffic, srcActor, dstActor *ActorInfo) 
 POLICYLOOP:
 	for _, pcy := range polset {
 
-		clientAttrs := srcActor.ActorAttrs
+		clientAttrs, serviceAttrs := srcActor.ActorAttrs, dstActor.ActorAttrs
 		if !pcy.FWD {
-			clientAttrs = dstActor.ActorAttrs
+			clientAttrs, serviceAttrs = serviceAttrs, clientAttrs
 		}
 
 		m.log.Debug("[MX] checking policy", "ID", pcy.CPol.GetId(), "FWD?", pcy.FWD)
 		m.log.Debugf("[MX] -- actor claims attributes: %v", formatClaimedAttrs(clientAttrs))
+		if len(serviceAttrs) > 0 {
+			m.log.Debugf("[MX] -- service actor claims attributes: %v", formatClaimedAttrs(serviceAttrs))
+		}
 		if len(clientAttrs) == 0 {
 			m.log.Warn("[MX] client actor has no attributes") // probably indicates some sort of bug
 		}
 
-		// Build a map of claimed attribute keys to sets of values (broken out
-		// from comma-separated lists) using integer codes.
-		claimCodes := make(map[uint32]map[uint32]bool) // key code -> val code -> true
-		for key, val := range clientAttrs {
-			keyCode, exists := m.keyMap[key]
-			if !exists {
-				continue // attribute key not referenced by any policy
-			}
-			if _, exists := claimCodes[keyCode]; !exists {
-				claimCodes[keyCode] = make(map[uint32]bool)
-			}
-			valFields := strings.Split(val.V, ",")
-			for _, valField := range valFields {
-				valFieldCode, exists := m.valMap[valField]
-				if !exists {
-					continue // attribute value (field) not referenced by any policy
+		// For this policy (pcy) to apply, all client-side conditions must be met.
+		if len(pcy.CPol.GetCliConditions()) > 0 {
+			// Build a map of claimed attribute keys to sets of values (broken out
+			// from comma-separated lists) using integer codes.
+			cliClaimCodes := m.buildClaimCodes(clientAttrs)
+			for _, conds := range pcy.CPol.GetCliConditions() {
+				if gotMatch, i, err := matchAttrExprs(conds.GetAttrExprs(), cliClaimCodes, m.blankValIdx); err != nil {
+					m.log.Debugf("[MX] -- failed to evaluate attribute expression %v: %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]), err)
+					continue POLICYLOOP
+				} else if !gotMatch {
+					m.log.Debugf("[MX] -- policy fails match on attribute expression %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]))
+					continue POLICYLOOP
 				}
-				claimCodes[keyCode][valFieldCode] = true
 			}
 		}
 
-		// For this policy (pcy) to apply, all conditions must be met.
-		for _, conds := range pcy.CPol.GetConditions() {
-			if gotMatch, i, err := matchAttrExprs(conds.GetAttrExprs(), claimCodes, m.blankValIdx); err != nil {
-				m.log.Debugf("[MX] -- failed to evaluate attribute expression %v: %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]), err)
-				continue POLICYLOOP
-			} else if !gotMatch {
-				m.log.Debugf("[MX] -- policy fails match on attribute expression %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]))
-				continue POLICYLOOP
+		// For this policy to match, all service side conditions must be met
+		if len(pcy.CPol.GetSvcConditions()) > 0 {
+			svcClaimCodes := m.buildClaimCodes(serviceAttrs)
+			for _, conds := range pcy.CPol.GetSvcConditions() {
+				if gotMatch, i, err := matchAttrExprs(conds.GetAttrExprs(), svcClaimCodes, m.blankValIdx); err != nil {
+					m.log.Debugf("[MX] -- failed to evaluate service attribute expression %v: %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]), err)
+					continue POLICYLOOP
+				} else if !gotMatch {
+					m.log.Debugf("[MX] -- policy fails match on service attribute expression %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]))
+					continue POLICYLOOP
+				}
 			}
 		}
 
@@ -512,6 +513,32 @@ POLICYLOOP:
 	}
 
 	return cpols, nil
+}
+
+// buildClaimCodes builds a map structure using integer offsets for all the attributes in
+// the provided `actorAttrs` claims.  Format of the returns map is `key code -> val code -> true`.
+func (m *Matcher) buildClaimCodes(actorAttrs map[string]*actor.ClaimV) map[uint32]map[uint32]bool {
+	// Build a map of claimed attribute keys to sets of values (broken out
+	// from comma-separated lists) using integer codes.
+	cliClaimCodes := make(map[uint32]map[uint32]bool) // key code -> val code -> true
+	for key, val := range actorAttrs {
+		keyCode, exists := m.keyMap[key]
+		if !exists {
+			continue // attribute key not referenced by any policy
+		}
+		if _, exists := cliClaimCodes[keyCode]; !exists {
+			cliClaimCodes[keyCode] = make(map[uint32]bool)
+		}
+		valFields := strings.Split(val.V, ",")
+		for _, valField := range valFields {
+			valFieldCode, exists := m.valMap[valField]
+			if !exists {
+				continue // attribute value (field) not referenced by any policy
+			}
+			cliClaimCodes[keyCode][valFieldCode] = true
+		}
+	}
+	return cliClaimCodes
 }
 
 func (m *Matcher) policiesForScope(td *snip.Traffic, srcActor, dstActor *ActorInfo) []*MatchedPolicy {
