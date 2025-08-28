@@ -1315,14 +1315,6 @@ func TestMatchesServiceAttrs(t *testing.T) {
 	m, err := policy.NewMatcher(p, 1, logr.NewTestLogger())
 	require.Nil(t, err)
 
-	// Now connect a client
-	/*
-		client := actor.NewActorFromUnsubstantiatedClaims(nil)
-		claims := mkClaims("zpr.addr", "fd5a:5052:2::101", time.Hour)
-		claims["user.bas_id"] = mkClaim("1234", time.Hour)
-		client.SetAuthenticated(claims, time.Time{}, nil, nil, 1)
-	*/
-
 	td := &snip.Traffic{
 		Proto:   snip.ProtocolTCP,
 		SrcAddr: netip.MustParseAddr("fd5a:5052:1::100"), // some client

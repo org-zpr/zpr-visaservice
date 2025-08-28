@@ -472,10 +472,10 @@ POLICYLOOP:
 			cliClaimCodes := m.buildClaimCodes(clientAttrs)
 			for _, conds := range pcy.CPol.GetCliConditions() {
 				if gotMatch, i, err := matchAttrExprs(conds.GetAttrExprs(), cliClaimCodes, m.blankValIdx); err != nil {
-					m.log.Debugf("[MX] -- failed to evaluate attribute expression %v: %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]), err)
+					m.log.Debugf("[MX] -- failed to evaluate client attribute expression %v: %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]), err)
 					continue POLICYLOOP
 				} else if !gotMatch {
-					m.log.Debugf("[MX] -- policy fails match on attribute expression %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]))
+					m.log.Debugf("[MX] -- policy fails match on client attribute expression %v", formatAttrExpr(m.policy, conds.GetAttrExprs()[i]))
 					continue POLICYLOOP
 				}
 			}
@@ -520,14 +520,14 @@ POLICYLOOP:
 func (m *Matcher) buildClaimCodes(actorAttrs map[string]*actor.ClaimV) map[uint32]map[uint32]bool {
 	// Build a map of claimed attribute keys to sets of values (broken out
 	// from comma-separated lists) using integer codes.
-	cliClaimCodes := make(map[uint32]map[uint32]bool) // key code -> val code -> true
+	claimCodes := make(map[uint32]map[uint32]bool) // key code -> val code -> true
 	for key, val := range actorAttrs {
 		keyCode, exists := m.keyMap[key]
 		if !exists {
 			continue // attribute key not referenced by any policy
 		}
-		if _, exists := cliClaimCodes[keyCode]; !exists {
-			cliClaimCodes[keyCode] = make(map[uint32]bool)
+		if _, exists := claimCodes[keyCode]; !exists {
+			claimCodes[keyCode] = make(map[uint32]bool)
 		}
 		valFields := strings.Split(val.V, ",")
 		for _, valField := range valFields {
@@ -535,10 +535,10 @@ func (m *Matcher) buildClaimCodes(actorAttrs map[string]*actor.ClaimV) map[uint3
 			if !exists {
 				continue // attribute value (field) not referenced by any policy
 			}
-			cliClaimCodes[keyCode][valFieldCode] = true
+			claimCodes[keyCode][valFieldCode] = true
 		}
 	}
-	return cliClaimCodes
+	return claimCodes
 }
 
 func (m *Matcher) policiesForScope(td *snip.Traffic, srcActor, dstActor *ActorInfo) []*MatchedPolicy {
