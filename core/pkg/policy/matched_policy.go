@@ -35,8 +35,9 @@ func NewMinimalMatchedPolicy(protocol uint32, destPort uint16, forward bool) *Ma
 					},
 				},
 			},
-			Conditions:  nil,
-			Constraints: nil,
+			CliConditions: nil,
+			SvcConditions: nil,
+			Constraints:   nil,
 		},
 		FWD: forward,
 	}

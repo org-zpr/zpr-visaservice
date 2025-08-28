@@ -1,4 +1,4 @@
-VERSION ?= "0.4.0"
+VERSION ?= "0.5.0"
 PROJECT_NAME := vs
 PKG := "zpr.org/$(PROJECT_NAME)"
 PKG_LIST := $(shell go list ${PKG}/... | grep -v /vendor/)
@@ -40,6 +40,7 @@ dist-clean: clean
 
 pregen-rebuild:
 	$(MAKE) -C pkg/vservice/testdata rebuild
+	$(MAKE) -C pkg/policy/testdata rebuild
 
 .DEFAULT_GOAL := all
 

@@ -1,9 +1,16 @@
 package policy_test
 
 import (
+	"net/netip"
+	"path/filepath"
+	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"zpr.org/vs/pkg/actor"
+	snip "zpr.org/vs/pkg/ip"
+	"zpr.org/vs/pkg/logr"
+	"zpr.org/vs/pkg/policy"
 )
 
 func mkClaim(val string, ttl time.Duration) *actor.ClaimV {
@@ -1275,11 +1282,9 @@ communications:
 
 */
 
-/* TODO: FIX THIS! - Forgot to commit the source zpl (MK has on home computer)
-
 // See https://github.com/org-zpr/zpr-core/issues/746
 func TestActorConnectUsingM3Policy(t *testing.T) {
-	pfile := filepath.Join("testdata", "oci-m3-full-access.bin")
+	pfile := filepath.Join("testdata", "m3-full-access.bin")
 	cp, err := policy.OpenContainedPolicyFile(pfile, nil)
 	require.Nil(t, err)
 	p := cp.Policy
@@ -1290,7 +1295,7 @@ func TestActorConnectUsingM3Policy(t *testing.T) {
 	// Now connect a client
 	client := actor.NewActorFromUnsubstantiatedClaims(nil)
 	claims := mkClaims("zpr.addr", "fd5a:5052:2::101", time.Hour)
-	claims["zpr.adapter.cn"] = mkClaim("mathias.zpr.org", time.Hour)
+	claims["endpoint.zpr.adapter.cn"] = mkClaim("mathias.zpr.org", time.Hour)
 	client.SetAuthenticated(claims, time.Time{}, nil, nil, 1)
 
 	state, err := policy.NewConnectState(client, nil, netip.Addr{}, logr.NewTestLogger())
@@ -1300,4 +1305,51 @@ func TestActorConnectUsingM3Policy(t *testing.T) {
 	require.Len(t, attrs, 1)
 	require.Empty(t, state.Services)
 }
-*/
+
+func TestMatchesServiceAttrs(t *testing.T) {
+	pfile := filepath.Join("testdata", "test-service-attrs.bin")
+	cp, err := policy.OpenContainedPolicyFile(pfile, nil)
+	require.Nil(t, err)
+	p := cp.Policy
+
+	m, err := policy.NewMatcher(p, 1, logr.NewTestLogger())
+	require.Nil(t, err)
+
+	td := &snip.Traffic{
+		Proto:   snip.ProtocolTCP,
+		SrcAddr: netip.MustParseAddr("fd5a:5052:1::100"), // some client
+		SrcPort: 23576,
+		DstAddr: netip.MustParseAddr("fd5a:5052:1::101"), // web service
+		DstPort: 80,
+		Flags:   uint32(0x02), // SYN
+	}
+
+	// WebService access is permitted to color:green users ONLY if the service has a content:green
+	// attribute.
+	//
+	// For first test, do not include a content:green attribute on the service -- should fail.
+
+	sourceActor := policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":   mkClaim("fd5a:5052:1::100", time.Hour),
+			"user.color": mkClaim("green", time.Hour),
+		},
+		ActorProvides: []string{"http"},
+	}
+	destActor := policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":    mkClaim("fd5a:5052:1::101", time.Hour),
+			"user.bas_id": mkClaim("1234", time.Hour),
+		},
+		ActorProvides: []string{"WebService"},
+	}
+	_, err = m.MatchTraffic(td, &sourceActor, &destActor)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no match")
+
+	// Now we include the service side attribute and it should match:
+	destActor.ActorAttrs["service.content"] = mkClaim("green", time.Hour)
+	policies, err := m.MatchTraffic(td, &sourceActor, &destActor)
+	require.Nil(t, err)
+	require.Len(t, policies, 1)
+}
