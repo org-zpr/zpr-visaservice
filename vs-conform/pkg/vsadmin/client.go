@@ -24,7 +24,7 @@ import (
 // The conform tool is compatible with this version of the policy compiler.
 const (
 	CompilerMajorVersion    = uint32(0)
-	CompilerMinorVersion    = uint32(6)
+	CompilerMinorVersion    = uint32(7)
 	CompilerPatchVersionMin = uint32(0)
 )
 
