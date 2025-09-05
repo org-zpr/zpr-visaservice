@@ -301,22 +301,21 @@ type PidFile struct {
 
 // NewPidFile writes a pid file
 func NewPidFile(appname string, path []string) (*PidFile, error) {
-	datadir := ""
+	fpath := ""
 	if len(path) == 0 {
-		datadir = os.Getenv("XDG_DATA_HOME")
+		datadir := os.Getenv("XDG_DATA_HOME")
 		if datadir == "" {
 			datadir = os.Getenv("HOME")
 			if datadir == "" {
 				datadir = "/var/run"
 			} else {
-				datadir = filepath.Join(datadir, ".local", "share", "zpr")
+				datadir = filepath.Join(datadir, ".local", "share")
 			}
 		}
+		fpath = filepath.Join(datadir, "zpr", "vservice.pid")
 	} else {
-		datadir = filepath.Join(path...)
+		fpath = filepath.Join(path...)
 	}
-
-	fpath := filepath.Join(datadir, "vservice.pid")
 
 	odir := filepath.Dir(fpath)
 	if err := os.MkdirAll(odir, 0755); err != nil {
