@@ -222,10 +222,17 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, requestorAddr netip.Addr, p
 
 	mtSrc, mtDst := policyActorInfoFromActor(srcActor), policyActorInfoFromActor(dstActor)
 	cpols, err := curmatcher.MatchTraffic(pktData, mtSrc, mtDst)
-	if err != nil {
+	if err != nil || len(cpols) == 0 {
 		vs.visaDenied(curConfigID, "no match", pktData, requestorAddr)
 		vs.log.WithError(err).Info("visa denied: match failed")
 		return nil, ErrDeniedByPolicy
+	}
+	// If the results includes a NEVER ALLOW, this is a deny. The matcher either returns all ALLOWS or all DENIES
+	// so we just need to check the first one.
+	if !cpols[0].CPol.Allow {
+		vs.visaDenied(curConfigID, "never allowed", pktData, requestorAddr)
+		vs.log.WithError(err).Info("visa denied: never allowed")
+		return nil, ErrNeverAllowed
 	}
 
 	// We set a temporary ID on it, giving it a final ID when we add it into our table.
