@@ -96,6 +96,11 @@ service using the visa service API.
 			Name:  "admin_port",
 			Usage: "override the default admin service port with `PORT`",
 		},
+		&cli.StringSliceFlag{
+			Name:    "pid_path",
+			Aliases: []string{"pp"},
+			Usage:   "set a custom path for the PID file",
+		},
 	}
 
 	app.Action = func(c *cli.Context) error {
@@ -132,7 +137,7 @@ service using the visa service API.
 			return fmt.Errorf("failed to load authority certificate: %w", err)
 		}
 
-		pidf, err := NewPidFile("vservice")
+		pidf, err := NewPidFile("vservice", c.StringSlice("pid_path"))
 		if err != nil {
 			serviceLog.WithError(err).Warnm("failed to write pid file")
 		} else {
@@ -294,18 +299,24 @@ type PidFile struct {
 	fpath string
 }
 
-// NewPidFile writes a pid file in the default location.
-func NewPidFile(appname string) (*PidFile, error) {
-	datadir := os.Getenv("XDG_DATA_HOME")
-	if datadir == "" {
-		datadir = os.Getenv("HOME")
+// NewPidFile writes a pid file
+func NewPidFile(appname string, path []string) (*PidFile, error) {
+	fpath := ""
+	if len(path) == 0 {
+		datadir := os.Getenv("XDG_DATA_HOME")
 		if datadir == "" {
-			datadir = "/var/run"
-		} else {
-			datadir = filepath.Join(datadir, ".local", "share")
+			datadir = os.Getenv("HOME")
+			if datadir == "" {
+				datadir = "/var/run"
+			} else {
+				datadir = filepath.Join(datadir, ".local", "share")
+			}
 		}
+		fpath = filepath.Join(datadir, "zpr", "vservice.pid")
+	} else {
+		fpath = filepath.Join(path...)
 	}
-	fpath := filepath.Join(datadir, "zpr", "vservice.pid")
+
 	odir := filepath.Dir(fpath)
 	if err := os.MkdirAll(odir, 0755); err != nil {
 		return nil, err
