@@ -25,6 +25,7 @@ import (
 var (
 	ErrNoRouteToHost  = errors.New("no route to host")
 	ErrDeniedByPolicy = errors.New("denied by policy")
+	ErrNeverAllowed   = errors.New("never allowed")
 	ErrVSMisconfigure = errors.New("visa service misconfigured")
 	ErrAuthExpired    = errors.New("auth expired")
 	ErrVisaNotFound   = errors.New("visa not found")

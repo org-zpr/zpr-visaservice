@@ -1353,3 +1353,42 @@ func TestMatchesServiceAttrs(t *testing.T) {
 	require.Nil(t, err)
 	require.Len(t, policies, 1)
 }
+
+func TestMatchesServiceAttrsNever(t *testing.T) {
+	pfile := filepath.Join("testdata", "test-service-attrs.bin")
+	cp, err := policy.OpenContainedPolicyFile(pfile, nil)
+	require.Nil(t, err)
+	p := cp.Policy
+
+	m, err := policy.NewMatcher(p, 1, logr.NewTestLogger())
+	require.Nil(t, err)
+
+	td := &snip.Traffic{
+		Proto:   snip.ProtocolTCP,
+		SrcAddr: netip.MustParseAddr("fd5a:5052:1::100"), // some client
+		SrcPort: 23576,
+		DstAddr: netip.MustParseAddr("fd5a:5052:1::101"), // web service
+		DstPort: 80,
+		Flags:   uint32(0x02), // SYN
+	}
+
+	sourceActor := policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":   mkClaim("fd5a:5052:1::100", time.Hour),
+			"user.color": mkClaim("orange", time.Hour),
+		},
+		ActorProvides: []string{},
+	}
+	destActor := policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":        mkClaim("fd5a:5052:1::101", time.Hour),
+			"user.bas_id":     mkClaim("1234", time.Hour),
+			"service.content": mkClaim("green", time.Hour),
+		},
+		ActorProvides: []string{"WebService"},
+	}
+	pols, err := m.MatchTraffic(td, &sourceActor, &destActor)
+	require.Nil(t, err)
+	require.Len(t, pols, 1)
+	require.False(t, pols[0].CPol.Allow)
+}

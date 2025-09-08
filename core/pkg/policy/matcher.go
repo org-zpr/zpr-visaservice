@@ -438,12 +438,31 @@ func (m *Matcher) MatchConnect(state *ConnectState) ([]string, error) {
 //
 // Returns (LINE_REF, IS_FWD_MATCH, ERROR)
 func (m *Matcher) MatchTraffic(td *snip.Traffic, srcActor, dstActor *ActorInfo) (cpols []*MatchedPolicy, err error) {
-	polset := m.policiesForScope(td, srcActor, dstActor)
-	m.log.Debugf("[MX] MatchTraffic found %d candidate policies based on scope", len(polset))
-	if len(polset) == 0 {
+	polset_allows, polset_denies := m.policiesForScope(td, srcActor, dstActor)
+	m.log.Debugf("[MX] MatchTraffic found %d candidate policies based on scope", len(polset_allows)+len(polset_denies))
+	if len(polset_allows) == 0 && len(polset_denies) == 0 {
 		return nil, errNoMatchScope
 	}
+	if len(polset_allows) == 0 {
+		return nil, errNoMatch
+	}
 
+	// First try denies, then allows.
+	cp, err := m.matchTrafficAgainstPolicies(td, srcActor, dstActor, polset_denies)
+	if err != nil && !errors.Is(err, errNoMatchConditions) {
+		m.log.WithError(err).Debug("[MX] error occurrred while processing deny policies")
+		return nil, err
+	}
+	if len(cp) > 0 {
+		// Did match a deny -- up to caller to deal with that.
+		m.log.Debug("[MX] traffic matched a DENY policy", "matched_count", len(cp))
+		return cp, nil
+	}
+
+	return m.matchTrafficAgainstPolicies(td, srcActor, dstActor, polset_allows)
+}
+
+func (m *Matcher) matchTrafficAgainstPolicies(td *snip.Traffic, srcActor, dstActor *ActorInfo, polset []*MatchedPolicy) (cpols []*MatchedPolicy, err error) {
 	// The policy attributes must match the _connecting_ actor.
 	// If this is client->server then we are checking the client.
 	// If this is server->client again, we are checking client.
@@ -541,8 +560,9 @@ func (m *Matcher) buildClaimCodes(actorAttrs map[string]*actor.ClaimV) map[uint3
 	return claimCodes
 }
 
-func (m *Matcher) policiesForScope(td *snip.Traffic, srcActor, dstActor *ActorInfo) []*MatchedPolicy {
-	var pset []*MatchedPolicy
+// Returns (ALLOWS, DENIES)
+func (m *Matcher) policiesForScope(td *snip.Traffic, srcActor, dstActor *ActorInfo) ([]*MatchedPolicy, []*MatchedPolicy) {
+	var allowed_pset, denied_pset []*MatchedPolicy
 
 	// HACK - The prototype compiler will allow for ICMPv4 and ICMPv6, but it always writes
 	//        the scope protocol as ICMPv6 since the prototype ZPL does not differentiate.
@@ -564,7 +584,13 @@ func (m *Matcher) policiesForScope(td *snip.Traffic, srcActor, dstActor *ActorIn
 				m.log.Debug("[MX]  -- found protocol in match table", "portCount", len(portIdx))
 				if set, merr := m.matchy(td, true, portIdx, dstActor); len(set) > 0 { // FORWARD !
 					m.log.Debugf("[MX]  -- -- matched %d policies on FWD", len(set))
-					pset = append(pset, set...)
+					for _, matched_pol := range set {
+						if matched_pol.CPol.Allow {
+							allowed_pset = append(allowed_pset, matched_pol)
+						} else {
+							denied_pset = append(denied_pset, matched_pol)
+						}
+					}
 				} else if merr != nil {
 					m.log.Debug("[MX] -- -- scope match failed", "reason", merr.Error(), "dir", "FWD")
 				}
@@ -583,15 +609,23 @@ func (m *Matcher) policiesForScope(td *snip.Traffic, srcActor, dstActor *ActorIn
 			if portIdx, match := protIdx[tdProtoNum]; match {
 				if set, merr := m.matchy(td, false, portIdx, dstActor); len(set) > 0 { // REVERSE !
 					m.log.Debugf("[MX]  -- -- matched %d policies on REV", len(set))
-					pset = append(pset, set...)
+					for _, matched_pol := range set {
+						if matched_pol.CPol.Allow {
+							allowed_pset = append(allowed_pset, matched_pol)
+						} else {
+							denied_pset = append(denied_pset, matched_pol)
+						}
+					}
 				} else if merr != nil {
 					m.log.Debug("[MX] -- -- scope match failed", "reason", merr.Error(), "dir", "REV")
 				}
 			}
 		}
 	}
-	m.log.Debug("[MX] matcher - policiesForScope completes", "matched_policy_count", len(pset))
-	return pset
+	m.log.Debug("[MX] matcher - policiesForScope completes",
+		"matched_allowed_policy_count", len(allowed_pset),
+		"matched_denied_policy_count", len(denied_pset))
+	return allowed_pset, denied_pset
 }
 
 // matchy try to match the traffic to the policy based on scope.
