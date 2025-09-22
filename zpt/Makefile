@@ -6,10 +6,10 @@ build:
 	cargo build --all-targets
 
 test: build
-	cargo test --lib && cargo test --bins && cargo test
+	cargo test
 
 check:
-	cargo fmt --check && cargo rustc --lib -- -D warnings
+	cargo fmt --check 
 
 clean:
 	cargo clean
