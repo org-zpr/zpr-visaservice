@@ -43,29 +43,35 @@ pub struct Hit {
     /// Caller can use this to find the ZPL line and the conditions.
     match_idx: usize,
 
-    /// If TRUE this the Hit was on the "forward" client->service direction.
-    forward: bool,
+    /// If 'Forward' then this the Hit was on the "forward" client->service direction.
+    direction: Direction,
 
     /// If there is a signal attached to this permission it is returned here.
     signal: Option<Signal>,
 }
 
 impl Hit {
-    fn new_no_signal(index: usize, forward: bool) -> Self {
+    fn new_no_signal(index: usize, direction: Direction) -> Self {
         Hit {
             match_idx: index,
-            forward,
+            direction,
             signal: None,
         }
     }
     #[allow(dead_code)]
-    fn new_with_signal(index: usize, forward: bool, signal: Signal) -> Self {
+    fn new_with_signal(index: usize, direction: Direction, signal: Signal) -> Self {
         Hit {
             match_idx: index,
-            forward,
+            direction,
             signal: Some(signal),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Forward,
+    Reverse,
 }
 
 /// VisaProps is most of the information needed to create a visa.
@@ -206,23 +212,31 @@ impl EvalContext {
         match request.protocol {
             // For TCP/UDP if request was using a high numberd "client" port, grant the visa for
             // any client port.
-            ip_proto::TCP | ip_proto::UDP => {
-                if hit.forward {
+            //
+            // THIS IS NOT REQUIRED BY ZDP AND MAY NOT BE WHAT WE WANT.
+            //
+            //    This is an example of a "handler" related to the protocol.
+            //    We should amend or remove if we don't want this behavior.
+            //    Here only because this was in the prototype.
+            //
+            ip_proto::TCP | ip_proto::UDP => match hit.direction {
+                Direction::Forward => {
                     if request.source_port > 1023 {
                         match_source_port = 0;
                     } else {
                         match_source_port = request.source_port;
                     }
                     match_dest_port = request.dest_port;
-                } else {
+                }
+                Direction::Reverse => {
                     if request.dest_port > 1023 {
                         match_dest_port = 0;
                     } else {
                         match_dest_port = request.dest_port;
                     }
                     match_source_port = request.source_port;
-                };
-            }
+                }
+            },
             _ => {
                 return Err(EvalError::UnsupportedProtocol(
                     "only TCP/UDP protocols supported at the moment".into(),
@@ -275,7 +289,7 @@ impl EvalContext {
                     if self.match_policy_conditions(src_actor, dst_actor, &com_policy) {
                         // TODO: Signal is not yet spported in v2 binary.
                         debug!("policy #{i} hits FWD");
-                        hits.push(Hit::new_no_signal(i, true));
+                        hits.push(Hit::new_no_signal(i, Direction::Forward));
                     }
                 }
                 Some(ScopeMatchType::Reverse) => {
@@ -291,7 +305,7 @@ impl EvalContext {
                     if self.match_policy_conditions(dst_actor, src_actor, &com_policy) {
                         // TODO: Signal is not yet spported in v2 binary.
                         debug!("policy #{i} hits REV");
-                        hits.push(Hit::new_no_signal(i, false));
+                        hits.push(Hit::new_no_signal(i, Direction::Reverse));
                     }
                 }
                 None => (),
@@ -542,7 +556,7 @@ mod test {
             EvalDecision::Allow(hits) => {
                 assert_eq!(hits.len(), 1);
                 assert_eq!(hits[0].match_idx, 1);
-                assert!(hits[0].forward);
+                assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected allow decision, not {:?}", decision),
         }
@@ -555,7 +569,7 @@ mod test {
             EvalDecision::Deny(hits) => {
                 assert_eq!(hits.len(), 1);
                 assert_eq!(hits[0].match_idx, 0);
-                assert!(hits[0].forward);
+                assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected deny decision, not {:?}", decision),
         }
