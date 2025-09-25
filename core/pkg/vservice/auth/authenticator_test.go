@@ -1,5 +1,16 @@
 package auth_test
 
+import (
+	"net/netip"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"zpr.org/vs/pkg/actor"
+	"zpr.org/vs/pkg/logr"
+	"zpr.org/vs/pkg/vservice/auth"
+)
+
 /* TODO: Need to update and recompile the test data
 
 const BAS_CN = "bas.zpr.org"
@@ -53,3 +64,84 @@ func TestAuthenticateWithSelfSignedBlob(t *testing.T) {
 }
 
 */
+
+func TestKeyAndNsForAttrSpec(t *testing.T) {
+
+	auth := auth.NewAuthenticator(logr.NewTestLogger(),
+		netip.MustParseAddr("127.0.0.1"),
+		1000*time.Hour,
+		"vs.zpr",
+		nil)
+
+	// Test basic user namespace
+	zpl_attr, ns, ok := auth.KeyAndNsForAttrSpec("user.email")
+	require.True(t, ok)
+	require.Equal(t, "email", zpl_attr)
+	require.Equal(t, actor.NsUser, ns)
+
+	// Test endpoint namespace
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("endpoint.hostname")
+	require.True(t, ok)
+	require.Equal(t, "hostname", zpl_attr)
+	require.Equal(t, actor.NsEndpoint, ns)
+
+	// Test service namespace
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("service.port")
+	require.True(t, ok)
+	require.Equal(t, "port", zpl_attr)
+	require.Equal(t, actor.NsService, ns)
+
+	// Test with tag marker (#)
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("#user.role")
+	require.True(t, ok)
+	require.Equal(t, "role", zpl_attr)
+	require.Equal(t, actor.NsUser, ns)
+
+	// Test with multi marker ({})
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("user.groups{}")
+	require.True(t, ok)
+	require.Equal(t, "groups", zpl_attr)
+	require.Equal(t, actor.NsUser, ns)
+
+	// Test with all markers combined
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("#endpoint.interfaces{}")
+	require.True(t, ok)
+	require.Equal(t, "interfaces", zpl_attr)
+	require.Equal(t, actor.NsEndpoint, ns)
+
+	// Test complex attribute names
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("user.full_name")
+	require.True(t, ok)
+	require.Equal(t, "full_name", zpl_attr)
+	require.Equal(t, actor.NsUser, ns)
+
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("service.api-version")
+	require.True(t, ok)
+	require.Equal(t, "api-version", zpl_attr)
+	require.Equal(t, actor.NsService, ns)
+
+	// Test invalid cases - no dot separator
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("useremail")
+	require.False(t, ok)
+	require.Equal(t, "", zpl_attr)
+	require.Equal(t, actor.Namespace(0), ns)
+
+	// Test invalid namespace
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("invalid.attr")
+	require.False(t, ok)
+	require.Equal(t, "", zpl_attr)
+	require.Equal(t, actor.Namespace(0), ns)
+
+	// Test empty string
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("")
+	require.False(t, ok)
+	require.Equal(t, "", zpl_attr)
+	require.Equal(t, actor.Namespace(0), ns)
+
+	// Test only namespace without attribute
+	zpl_attr, ns, ok = auth.KeyAndNsForAttrSpec("user.")
+	require.True(t, ok)
+	require.Equal(t, "", zpl_attr)
+	require.Equal(t, actor.NsUser, ns)
+
+}

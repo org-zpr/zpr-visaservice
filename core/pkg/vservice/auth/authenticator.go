@@ -206,7 +206,7 @@ func (a *Authenticator) AddDatasourceProvider(service string, contactAddr netip.
 	urlp.Path = "/token"
 	fixedValidateUri := urlp.String()
 
-	nsMap := a.createNamespaceMap(service, psvc.GetAttrs(), psvc.GetIdAttrs())
+	nsMap := a.createNamespaceMap(service, psvc.GetAttrMap(), psvc.GetIdAttrs())
 
 	// TODO: Update this when we implement Query
 
@@ -235,40 +235,58 @@ func (a *Authenticator) AddDatasourceProvider(service string, contactAddr netip.
 
 // createNamespaceMap creates a map of attribute keys to their namespaces and identity status based
 // on information held in policy for the trusted service.
-func (a *Authenticator) createNamespaceMap(service string, attrs []string, idAttrs []string) map[string]AttrInfo {
+//
+// The returned map maps service attribute names to AttrInfo which the ZPL name plus its namespace and
+// weather or not its an identity attribute.
+func (a *Authenticator) createNamespaceMap(service string, attrMap map[string]string, idAttrs []string) map[string]AttrInfo {
 	nsMap := make(map[string]AttrInfo)
-	for _, attrWithPfx := range attrs {
-		key, ns, ok := a.keyAndNsForAttr(attrWithPfx)
+
+	// Map has:  servie-raw-attr-name -> zpl-attribute-name-including-namespace
+	//
+	// For example,
+	//    "bas-id" -> "user.bas_id"
+	//    "red" -> "#user.red" <-- tag
+	//    "roles" -> "user.role{}" <-- multi-valued
+	//
+	// The list of identity attributes uses the service-raw-attr-name not the
+	// zpl name.  Eg , ["bas-id"].
+	//
+
+	for ts_attr_name, zpl_attr_spec := range attrMap {
+		// For now we are dropping the knowledge of tags or multi-valued attributes.
+		zpl_attr_name, ns, ok := a.KeyAndNsForAttrSpec(zpl_attr_spec)
 		if !ok {
-			a.log.Warn("failed to parse prefix from attribute in policy", "attr", attrWithPfx, "service", service)
+			a.log.Warn("failed to parse prefix from attribute in policy", "attr", zpl_attr_spec, "service", service)
 			continue
 		}
-		nsMap[key] = AttrInfo{
+		nsMap[ts_attr_name] = AttrInfo{
 			namespace: ns,
+			zplname:   zpl_attr_name,
 			identity:  false,
 		}
 	}
-	for _, attrWithPfx := range idAttrs {
-		key, ns, ok := a.keyAndNsForAttr(attrWithPfx)
-		if !ok {
-			a.log.Warn("failed to parse prefix from identity attribute in policy", "attr", attrWithPfx, "service", service)
-			continue
-		}
-		if ai, found := nsMap[key]; found {
-			// If we already have this key, just set the identity flag.
+	for _, ts_attr_name := range idAttrs {
+		if ai, found := nsMap[ts_attr_name]; found {
 			ai.identity = true
-			nsMap[key] = ai
+			nsMap[ts_attr_name] = ai
 		} else {
-			nsMap[key] = AttrInfo{
-				namespace: ns,
-				identity:  true,
-			}
+			a.log.Warn("identity attribute not found in list of returned attributes", "attr", ts_attr_name, "service", service)
 		}
 	}
 	return nsMap
 }
 
-func (a *Authenticator) keyAndNsForAttr(attr string) (string, actor.Namespace, bool) {
+// An AttrSpec is an attribute name that is decorated with some info about
+// whether it is a tag or multi-valued.
+//
+// Attribute also should have its class domain on the front.
+//
+// Tags start with '#', mutli value ends with '{}'.
+//
+// Returns (ZPL_ATTR_NAME, NAMSPACE, PARSE_OK)
+func (a *Authenticator) KeyAndNsForAttrSpec(attr string) (string, actor.Namespace, bool) {
+	attr = strings.TrimPrefix(attr, "#")
+	attr = strings.TrimSuffix(attr, "{}")
 	pfxstr, rest, ok := strings.Cut(attr, ".")
 	if !ok {
 		return "", 0, false // no prefix
