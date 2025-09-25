@@ -246,6 +246,12 @@ func (vs *VSInst) doRequestVisa(ctx context.Context, requestorAddr netip.Addr, p
 		builder.WithClientActorIdent(dstActor.GetIdentity())
 	}
 
+	for i := range cpols {
+		if cpols[i].CPol.IsSignal {
+			vs.log.Info("Signal", "msg", cpols[i].CPol.Signal.Msg, "to", cpols[i].CPol.Signal.Svc)
+		}
+	}
+
 	// In order to compute expiration I need two things from the visaConfig:
 	//  1. The Lifetime value (if any -- this is from a duration constraint)
 	//  2. The Cap "period" - a time.Duration
