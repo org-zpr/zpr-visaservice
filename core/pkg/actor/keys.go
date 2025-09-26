@@ -11,6 +11,7 @@ const (
 	KAttrConfigID           = "zpr.config_id"
 	KAttrCN                 = "endpoint.zpr.adapter.cn"
 	KAttrAAANet             = "endpoint.zpr.node.aaa_net"
+	KAttrServices           = "zpr.services" // comma-separated list of service names provided.
 )
 
 const (
