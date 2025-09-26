@@ -424,6 +424,10 @@ func (m *Matcher) MatchConnect(state *ConnectState) ([]string, error) {
 	if state.Visaservice && !slices.Contains(actorProvides, VisaServiceName) {
 		actorProvides = append(actorProvides, VisaServiceName)
 	}
+	if len(actorProvides) > 0 {
+		state.Actor.SetAuthedClaim(actor.KAttrServices,
+			&actor.ClaimV{V: strings.Join(actorProvides, ","), Exp: state.Actor.GetAuthExpires()})
+	}
 	state.Actor.SetProvides(actorProvides)
 
 	return matchedActorKeys, nil
@@ -476,7 +480,7 @@ POLICYLOOP:
 		}
 
 		m.log.Debug("[MX] checking policy", "ID", pcy.CPol.GetId(), "FWD?", pcy.FWD)
-		m.log.Debugf("[MX] -- actor claims attributes: %v", formatClaimedAttrs(clientAttrs))
+		m.log.Debugf("[MX] -- client actor claims attributes: %v", formatClaimedAttrs(clientAttrs))
 		if len(serviceAttrs) > 0 {
 			m.log.Debugf("[MX] -- service actor claims attributes: %v", formatClaimedAttrs(serviceAttrs))
 		}

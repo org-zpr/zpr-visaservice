@@ -1392,3 +1392,140 @@ func TestMatchesServiceAttrsNever(t *testing.T) {
 	require.Len(t, pols, 1)
 	require.False(t, pols[0].CPol.Allow)
 }
+
+func TestServiceLHSSuccess(t *testing.T) {
+	pfile := filepath.Join("testdata", "test-lhs-service.bin")
+	cp, err := policy.OpenContainedPolicyFile(pfile, nil)
+	require.Nil(t, err)
+	p := cp.Policy
+
+	m, err := policy.NewMatcher(p, 1, logr.NewTestLogger())
+	require.Nil(t, err)
+
+	td := &snip.Traffic{
+		Proto:   snip.ProtocolTCP,
+		SrcAddr: netip.MustParseAddr("fd5a:5052:1::100"),
+		SrcPort: 23576,
+		DstAddr: netip.MustParseAddr("fd5a:5052:1::101"),
+		DstPort: 80,
+		Flags:   uint32(0x02), // SYN
+	}
+
+	// According to policy to access the DbService either:
+	// 1- client must be the WebService
+	// 2- client must be a service wih content:green attribute & WebSerice must have content:brown
+
+	// Case 1 - WebService -> DbService
+	sourceActor := policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":          mkClaim("fd5a:5052:1::100", time.Hour),
+			"user.color":        mkClaim("orange", time.Hour),
+			"user.bas_id":       mkClaim("1234", time.Hour),
+			actor.KAttrServices: mkClaim("WebService", time.Hour),
+		},
+		ActorProvides: []string{"WebService"},
+	}
+	destActor := policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":          mkClaim("fd5a:5052:1::101", time.Hour),
+			"user.bas_id":       mkClaim("4567", time.Hour),
+			"service.content":   mkClaim("brown", time.Hour),
+			actor.KAttrServices: mkClaim("DbService", time.Hour),
+		},
+		ActorProvides: []string{"DbService"},
+	}
+	pols, err := m.MatchTraffic(td, &sourceActor, &destActor)
+	require.Nil(t, err)
+	require.Len(t, pols, 1)
+	require.True(t, pols[0].CPol.Allow)
+
+	// Case 1a - make sure works with multiple provides.
+	sourceActor = policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":          mkClaim("fd5a:5052:1::100", time.Hour),
+			"user.color":        mkClaim("orange", time.Hour),
+			"user.bas_id":       mkClaim("1234", time.Hour),
+			actor.KAttrServices: mkClaim("WebService,FooService", time.Hour),
+		},
+		ActorProvides: []string{"WebService", "FooService"},
+	}
+	pols, err = m.MatchTraffic(td, &sourceActor, &destActor)
+	require.Nil(t, err)
+	require.Len(t, pols, 1)
+	require.True(t, pols[0].CPol.Allow)
+
+	// Case 2 - "green" -> "brown"
+	sourceActor = policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":          mkClaim("fd5a:5052:1::100", time.Hour),
+			"user.color":        mkClaim("orange", time.Hour),
+			"user.bas_id":       mkClaim("1000", time.Hour),
+			"service.content":   mkClaim("green", time.Hour),
+			actor.KAttrServices: mkClaim("FooService", time.Hour),
+		},
+		ActorProvides: []string{"FooService"},
+	}
+	pols, err = m.MatchTraffic(td, &sourceActor, &destActor)
+	require.Nil(t, err)
+	require.Len(t, pols, 1)
+	require.True(t, pols[0].CPol.Allow)
+
+}
+
+func TestServiceLHSFail(t *testing.T) {
+	pfile := filepath.Join("testdata", "test-lhs-service.bin")
+	cp, err := policy.OpenContainedPolicyFile(pfile, nil)
+	require.Nil(t, err)
+	p := cp.Policy
+
+	m, err := policy.NewMatcher(p, 1, logr.NewTestLogger())
+	require.Nil(t, err)
+
+	td := &snip.Traffic{
+		Proto:   snip.ProtocolTCP,
+		SrcAddr: netip.MustParseAddr("fd5a:5052:1::100"),
+		SrcPort: 23576,
+		DstAddr: netip.MustParseAddr("fd5a:5052:1::101"),
+		DstPort: 80,
+		Flags:   uint32(0x02), // SYN
+	}
+
+	// According to policy to access the DbService either:
+	// 1- client must be the WebService
+	// 2- client must be a service wih content:green attribute & WebSerice must have content:brown
+
+	// Case 1 negative - FooService -> DbService
+	sourceActor := policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":          mkClaim("fd5a:5052:1::100", time.Hour),
+			"user.color":        mkClaim("orange", time.Hour),
+			"user.bas_id":       mkClaim("1000", time.Hour),
+			actor.KAttrServices: mkClaim("FooService", time.Hour),
+		},
+		ActorProvides: []string{"FooService"},
+	}
+	destActor := policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":          mkClaim("fd5a:5052:1::101", time.Hour),
+			"user.bas_id":       mkClaim("4567", time.Hour),
+			"service.content":   mkClaim("brown", time.Hour),
+			actor.KAttrServices: mkClaim("DbService", time.Hour),
+		},
+		ActorProvides: []string{"DbService"},
+	}
+	_, err = m.MatchTraffic(td, &sourceActor, &destActor)
+	require.ErrorContains(t, err, "no matching rule")
+
+	// Case 2 negative - not-a-service -> "brown"
+	sourceActor = policy.ActorInfo{
+		ActorAttrs: map[string]*actor.ClaimV{
+			"zpr.addr":        mkClaim("fd5a:5052:1::100", time.Hour),
+			"user.color":      mkClaim("orange", time.Hour),
+			"user.bas_id":     mkClaim("1000", time.Hour),
+			"service.content": mkClaim("green", time.Hour),
+		},
+		ActorProvides: []string{},
+	}
+	_, err = m.MatchTraffic(td, &sourceActor, &destActor)
+	require.ErrorContains(t, err, "no matching rule")
+}
