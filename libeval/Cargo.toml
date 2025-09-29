@@ -1,0 +1,16 @@
+[package]
+name = "libeval"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Packet/Actor evaluator library; a component of the ZPR visa service"
+
+[dependencies]
+bytes = "1.10.1"
+capnp = "0.21.5"
+thiserror = "2.0.16"
+tracing = "0.1.41"
+zpr-policy = { git = "https://github.com/org-zpr/zpr-policy-rs.git", tag = "v0.8.2", features = ["v2"] }
+
+[dev-dependencies]
+tracing-subscriber = "0.3.20"
