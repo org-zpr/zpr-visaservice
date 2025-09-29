@@ -42,7 +42,7 @@ impl PacketDesc {
         PacketDesc {
             source_addr: source_addr.parse().unwrap(),
             dest_addr: dest_addr.parse().unwrap(),
-            protocol: 6,
+            protocol: ip_proto::TCP,
             source_port,
             dest_port,
             comm_flags: CommFlag::BiDirectional,

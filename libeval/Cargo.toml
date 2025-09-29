@@ -2,6 +2,8 @@
 name = "libeval"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Packet/Actor evaluator library; a component of the ZPR visa service"
 
 [dependencies]
 bytes = "1.10.1"

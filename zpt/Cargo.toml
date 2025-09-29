@@ -2,6 +2,8 @@
 name = "zpt"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Command line tool for interacting with the visa service evaluator library"
 
 [dependencies]
 bytes = "1.10.1"
