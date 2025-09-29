@@ -1,7 +1,6 @@
 # -*- mode: toml -*-
 
 [nodes."node.zpr.org"]
-key = "DNBguc3HqkzfLys68PWm2CnWSA/IhAIFiHFII9cFrFo="
 provider = [ ["endpoint.zpr.adapter.cn", "node.zpr.org"]]
 zpr_address = "fd5a:5052:90de::1"
 interfaces = ["in1"]
@@ -21,12 +20,10 @@ icmp_codes = [ 128, 129 ]
 
 [protocols.http]
 l4protocol = "iana.TCP"
-l7protocol = "http"
 port = 80
 
 [protocols.https]
 l4protocol = "iana.TCP"
-l7protocol = "https"
 port = 443
 
 [services.NextCloud]

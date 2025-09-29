@@ -62,6 +62,7 @@ func (f *DSFeatures) ShortStr() string {
 
 type AttrInfo struct {
 	namespace actor.Namespace
+	zplname   string
 	identity  bool
 }
 
@@ -186,11 +187,13 @@ func (vs *Directory) Validate(dsPrefix string, msg *ZdpAuthCodeBlob, revokes []*
 	// attribute (returns & identity) information from the policy.  The claims
 	// returned above are raw, eg if the policy says the service returns "user.id"
 	// then the claim will have an "id" value in it (no namespace).
+
 	claims := make(map[string]*actor.ClaimV)
 	for attrName, cv := range rawClaims {
 		if info, found := v.nsMap[attrName]; found {
-			newName := fmt.Sprintf("%s.%s", info.namespace, attrName)
+			newName := fmt.Sprintf("%s.%s", info.namespace, info.zplname)
 			// TODO: For now ignoring identity bit
+			// TODO: Also ignoring stuff like is-a tag or is multi-valued.
 			claims[newName] = cv
 		} else {
 			// Attribute from service not listed in policy, warn.
