@@ -27,6 +27,14 @@ pub struct Attribute {
 }
 
 impl Attribute {
+    pub fn get_key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn get_value(&self) -> &str {
+        &self.value
+    }
+
     // Treat value as a comma-separated list and check if it contains v.
     fn value_has(&self, v: &str) -> bool {
         self.value.split(',').any(|s| s.trim() == v)
@@ -57,6 +65,10 @@ impl Actor {
             attrs: Vec::new(),
             provider: false,
         }
+    }
+
+    pub fn attrs_iter(&self) -> std::slice::Iter<'_, Attribute> {
+        self.attrs.iter()
     }
 
     pub fn add_attr(&mut self, key: &str, value: &str, expires_in: Duration) {
