@@ -1,4 +1,4 @@
-use libeval::zpr_policy::{ZprPolicy, ZprPolicyError};
+use libeval::zpr_policy::ZprPolicyError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,8 +23,6 @@ pub enum PioError {
 
 #[derive(Debug, Error)]
 pub enum ParseError {
-    #[error("Parse error: {0}")]
-    ParseError(String),
     #[error("Unknown instruction")]
     UnknownInstruction,
     #[error("Unexpected end of input")]
@@ -39,8 +37,6 @@ pub enum ZptError {
     Io(#[from] std::io::Error),
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
-    #[error("Invalid policy format: {0}")]
-    InvalidFormat(String),
     #[error("ZPR policy error: {0}")]
     ZprPolicy(#[from] ZprPolicyError),
 }

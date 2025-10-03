@@ -32,7 +32,7 @@ impl Repl {
 
     /// Run a read-eval-print loop.
     pub fn run(&mut self) -> Result<(), ZptError> {
-        let mut input = String::new();
+        let mut input;
         loop {
             match self.read_command()? {
                 Command::Line(s) => input = s,

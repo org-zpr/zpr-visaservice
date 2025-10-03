@@ -6,11 +6,12 @@ mod zmachine;
 
 use clap::Parser;
 use colored::Colorize;
-use error::ZptError;
-
 use std::path::{Path, PathBuf};
+use tracing::Level;
+use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
 
 use crate::repl::Repl;
+use error::ZptError;
 
 #[derive(Parser, Debug)]
 #[command(name = "zpt")]
@@ -19,10 +20,17 @@ struct Cli {
     /// Path to a ZPT instructions file.
     #[arg(short, long, value_name = "INSTRUCTIONS")]
     input: Option<PathBuf>,
+
+    /// Enable the the log output from libeval
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 fn main() {
     let cli = Cli::parse();
+    if cli.verbose {
+        enable_logger();
+    }
     if cli.input.is_none() {
         match Repl::new().run() {
             Ok(_) => {}
@@ -58,4 +66,11 @@ fn run_file(input: &Path) -> Result<(), ZptError> {
     */
 
     Ok(())
+}
+
+fn enable_logger() {
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_thread_ids(true))
+        .with(LevelFilter::from_level(Level::DEBUG))
+        .init();
 }

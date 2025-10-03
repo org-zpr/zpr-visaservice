@@ -1,6 +1,9 @@
 //! z-machine is the ZPT execution machine which executes ZPT "programs" line by
 //! line.  Program lines either update state or sends API calls to the executor.
 
+use colored::Colorize;
+use rand::prelude::*;
+use rand::rand_core::le;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -15,11 +18,11 @@ const DEF_SOURCE_ADDR: &str = "fd5a:5052:3000::1";
 const DEF_DEST_ADDR: &str = "fd5a:5052:3000::2";
 
 /// IP Protocol is 8 bits.
-type ip_proto_t = u8;
+type IpProtoT = u8;
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    Help,
+    Help(Option<String>), // String holds additional args present after "help"
     Load(PathBuf),
     Set {
         name: String,
@@ -27,7 +30,7 @@ pub enum Instruction {
         value: String,
     },
     Eval {
-        prot: ip_proto_t,
+        prot: IpProtoT,
         source_expr: ActorExpr,
         dest_expr: ActorExpr,
         extra: Option<InstrExtra>,
@@ -44,7 +47,7 @@ pub enum ActorExpr {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InstrExtra {
     TcpFlags(u8),
-    IcmpType(u8),
+    IcmpTypeCode(u8, u8),
 }
 
 #[derive(Default)]
@@ -54,14 +57,14 @@ pub struct State {
     actor_db: HashMap<String, Actor>,
 }
 
-pub struct ZMachine {}
-
-enum PortRequirement {
-    ErrorIfMissing(String),  // error with a message
-    ErrorIfProvided(String), // error with a message
-    HighPortIfMissing,       // pick a random high (>1024) port
-    DefaultIfMissing(u16),   // pick a specific default port
+#[allow(dead_code)]
+enum PortMissingBehavior {
+    Error(String),    // if missing, error with a message
+    HighPort,         // pick a random high (>1024) port
+    DefaultPort(u16), // pick a specific default port
 }
+
+pub struct ZMachine {}
 
 impl ZMachine {
     pub fn new() -> Self {
@@ -110,8 +113,18 @@ impl ZMachine {
                 state.dump_db();
                 Ok(())
             }
-            Instruction::Help => {
+            Instruction::Help(None) => {
                 self.print_help();
+                Ok(())
+            }
+            Instruction::Help(Some(topic)) => {
+                match topic.to_lowercase().as_str() {
+                    "tcp" => self.print_help_tcp(),
+                    "icmp" => self.print_help_icmp(),
+                    _ => {
+                        println!("unknown help topic: '{}'", topic);
+                    }
+                }
                 Ok(())
             }
         }
@@ -132,40 +145,115 @@ impl ZMachine {
         println!();
         println!("Miscellaneous commands:");
         println!("  help                - Show this help message.");
+        println!("  help tcp            - Help with tcp flag format.");
+        println!("  help icmp           - Help with icmp type and code format.");
         println!("  exit, quit, q, ^C   - Exit the REPL.");
         println!();
     }
 
+    fn print_help_tcp(&self) {
+        println!("TCP flags:");
+        println!("  [S] syn");
+        println!("  [P] push");
+        println!("  [R] reset");
+        println!("  [F] fin");
+        println!("  [.] ack");
+        println!("  Ack '.' can be combined with the other flags, eg [S.] for a SYN-ACK.");
+        println!();
+    }
+
+    fn print_help_icmp(&self) {
+        println!("ICMP type and code:");
+        println!("  You can specify ICMP type and code in one of three ways:");
+        println!("    - <type>:<code>   both 8-bit decimal values");
+        println!(
+            "    - 0x<typecode>    16 bit hex encoded, big-endian value with type in high byte, code in low byte"
+        );
+        println!("    - <type-name>     eg, 'echo-request' (and code is set to zero)");
+        println!();
+        println!("  Common ICMPv6 types:");
+        println!("    1   destination-unreachable");
+        println!("    2   packet-too-big");
+        println!("    3   time-exceeded");
+        println!("    4   parameter-problem");
+        println!("   128  echo-request");
+        println!("   129  echo-reply");
+        println!();
+        println!("  If code is not specified, it defaults to zero.");
+        println!();
+    }
+
     fn eval_tcp(
+        &self,
+        state: &State,
+        source_expr: &ActorExpr,
+        dest_expr: &ActorExpr,
+        _extra: Option<InstrExtra>,
+    ) -> Result<(), MachineError> {
+        let (src_actor, src_port) =
+            self.resolve_actor_and_port(state, source_expr, PortMissingBehavior::HighPort)?;
+        let (dst_actor, dst_port) = self.resolve_actor_and_port(
+            state,
+            dest_expr,
+            PortMissingBehavior::Error("destination port required for TCP".to_string()),
+        )?;
+
+        // TODO: Someting interesting with TCP flags?
+
+        let pd = PacketDesc::new_tcp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
+        self.do_eval(state, src_actor, dst_actor, &pd)
+    }
+
+    fn eval_udp(
+        &self,
+        state: &State,
+        source_expr: &ActorExpr,
+        dest_expr: &ActorExpr,
+    ) -> Result<(), MachineError> {
+        let (src_actor, src_port) =
+            self.resolve_actor_and_port(state, source_expr, PortMissingBehavior::HighPort)?;
+        let (dst_actor, dst_port) = self.resolve_actor_and_port(
+            state,
+            dest_expr,
+            PortMissingBehavior::Error("destination port required for UDP".to_string()),
+        )?;
+
+        let pd = PacketDesc::new_udp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
+        self.do_eval(state, src_actor, dst_actor, &pd)
+    }
+
+    fn eval_icmp(
         &self,
         state: &mut State,
         source_expr: &ActorExpr,
         dest_expr: &ActorExpr,
         extra: Option<InstrExtra>,
     ) -> Result<(), MachineError> {
-        let (src_actor, src_port) = self.resolve_actor(state, source_expr)?;
-        let src_port = match src_port {
-            Some(p) => p,
-            None => 31337, // TODO: pick a random high number port
-        };
-        let (dst_actor, dst_port) = self.resolve_actor(state, dest_expr)?;
-        let dst_port = match dst_port {
-            Some(p) => p,
-            None => {
+        let (icmp_type, icmp_code) = match extra {
+            Some(InstrExtra::IcmpTypeCode(t, c)) => (t, c),
+            _ => {
                 return Err(MachineError::ExecutionError(
-                    "destination port required for TCP".to_string(),
+                    "Invalid extra for ICMP; expected at least type".to_string(),
                 ));
             }
         };
+        let src_actor = self.resolve_actor_no_port(state, source_expr)?;
+        let dst_actor = self.resolve_actor_no_port(state, dest_expr)?;
+        let pd = PacketDesc::new_icmpv6_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, icmp_type, icmp_code);
+        self.do_eval(state, src_actor, dst_actor, &pd)
+    }
 
-        // TODO: Someting interesting with TCP flags?
-
-        let pd = PacketDesc::new_tcp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
-
+    fn do_eval(
+        &self,
+        state: &State,
+        src_actor: &Actor,
+        dst_actor: &Actor,
+        pd: &PacketDesc,
+    ) -> Result<(), MachineError> {
         if let Some(ctx) = state.ctx.as_ref() {
             match ctx.eval_request(src_actor, dst_actor, &pd) {
                 Ok(decision) => {
-                    println!("decision: {:?}", decision);
+                    println!("decision: {}", format!("{:?}", decision).green());
                 }
                 Err(e) => {
                     return Err(MachineError::ExecutionError(format!(
@@ -182,11 +270,13 @@ impl ZMachine {
         Ok(())
     }
 
-    fn resolve_actor<'a>(
+    /// For TCP/UDP.
+    fn resolve_actor_and_port<'a>(
         &self,
         state: &'a State,
         expr: &ActorExpr,
-    ) -> Result<(&'a Actor, Option<u16>), MachineError> {
+        port_missing: PortMissingBehavior,
+    ) -> Result<(&'a Actor, u16), MachineError> {
         let (actor, port) = match expr {
             ActorExpr::ActorName(name) => (
                 state.get_actor(name).ok_or_else(|| {
@@ -202,30 +292,40 @@ impl ZMachine {
                 Some(*pnum),
             ),
         };
-        Ok((actor, port))
+
+        if port.is_none() {
+            match port_missing {
+                PortMissingBehavior::Error(msg) => {
+                    return Err(MachineError::ExecutionError(msg));
+                }
+                PortMissingBehavior::HighPort => {
+                    let high_port = rand::rng().random_range(1025..=65535);
+                    return Ok((actor, high_port));
+                }
+                PortMissingBehavior::DefaultPort(default_port) => {
+                    return Ok((actor, default_port));
+                }
+            }
+        }
+
+        Ok((actor, port.unwrap()))
     }
 
-    fn eval_udp(
+    /// For ICMP
+    fn resolve_actor_no_port<'a>(
         &self,
-        state: &mut State,
-        source_expr: &ActorExpr,
-        dest_expr: &ActorExpr,
-    ) -> Result<(), MachineError> {
-        Err(MachineError::ExecutionError(
-            "UDP not yet implemented".to_string(),
-        ))
-    }
+        state: &'a State,
+        expr: &ActorExpr,
+    ) -> Result<&'a Actor, MachineError> {
+        match expr {
+            ActorExpr::ActorName(name) => Ok(state
+                .get_actor(name)
+                .ok_or_else(|| MachineError::ExecutionError(format!("unknown actor: {name}")))?),
 
-    fn eval_icmp(
-        &self,
-        state: &mut State,
-        source_expr: &ActorExpr,
-        dest_expr: &ActorExpr,
-        extra: Option<InstrExtra>,
-    ) -> Result<(), MachineError> {
-        Err(MachineError::ExecutionError(
-            "ICMP not yet implemented".to_string(),
-        ))
+            ActorExpr::ActorNameAndPort(name, pnum) => Err(MachineError::ExecutionError(format!(
+                "port not allowed here: {name}.{pnum}"
+            )))?,
+        }
     }
 }
 
