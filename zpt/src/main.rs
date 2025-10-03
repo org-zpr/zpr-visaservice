@@ -6,6 +6,8 @@ mod zmachine;
 
 use clap::Parser;
 use colored::Colorize;
+
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use tracing::Level;
 use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
@@ -13,11 +15,17 @@ use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
 use crate::repl::Repl;
 use error::ZptError;
 
+/// ZPT - ZPR Policy Tester
+///
+/// A command-line tool to test policies against specific communication patterns.
+///
+/// You can run this interactively (default) or provide a file (or STDIN) with
+/// ZPT instructions.
 #[derive(Parser, Debug)]
 #[command(name = "zpt")]
 #[command(version, verbatim_doc_comment)]
 struct Cli {
-    /// Path to a ZPT instructions file.
+    /// Path to a ZPT instructions file (use '-' for stdin)
     #[arg(short, long, value_name = "INSTRUCTIONS")]
     input: Option<PathBuf>,
 
@@ -41,7 +49,7 @@ fn main() {
         };
     } else {
         let input = cli.input.as_ref().unwrap();
-        match run_file(input) {
+        match run_file_or_stdin(input) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("{}: {e}", "Error".red());
@@ -52,20 +60,16 @@ fn main() {
     std::process::exit(0);
 }
 
-fn run_file(input: &Path) -> Result<(), ZptError> {
-    println!(
-        "loading instructions from: {}",
-        input.to_string_lossy().green()
-    );
+fn run_file_or_stdin(input: &Path) -> Result<(), ZptError> {
+    let instructions = if input.to_string_lossy() == "-" {
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)?;
+        buffer
+    } else {
+        std::fs::read_to_string(input)?
+    };
 
-    /*
-    let _zp = load_policy(&cli.policy).unwrap_or_else(|e| {
-        eprintln!("{}: {e}", "Error loading policy".red());
-        std::process::exit(1);
-    });
-    */
-
-    Ok(())
+    Repl::new().run_script(instructions.lines())
 }
 
 fn enable_logger() {

@@ -30,6 +30,16 @@ impl Repl {
         }
     }
 
+    fn is_exit(&self, trimmed_input: &str) -> bool {
+        trimmed_input.eq_ignore_ascii_case("exit")
+            || trimmed_input.eq_ignore_ascii_case("quit")
+            || trimmed_input.eq_ignore_ascii_case("q")
+    }
+
+    fn is_empty(&self, trimmed_input: &str) -> bool {
+        trimmed_input.is_empty() || trimmed_input.starts_with('#')
+    }
+
     /// Run a read-eval-print loop.
     pub fn run(&mut self) -> Result<(), ZptError> {
         let mut input;
@@ -46,12 +56,11 @@ impl Repl {
             if trimmed.is_empty() {
                 continue;
             }
-
-            if trimmed.eq_ignore_ascii_case("exit")
-                || trimmed.eq_ignore_ascii_case("quit")
-                || trimmed.eq_ignore_ascii_case("q")
-            {
+            if self.is_exit(trimmed) {
                 break;
+            }
+            if self.is_empty(trimmed) {
+                continue;
             }
             match parser::parse(trimmed) {
                 Ok(instruction) => match self.machine.execute(&instruction, &mut self.state) {
@@ -60,6 +69,26 @@ impl Repl {
                 },
                 Err(e) => eprintln!("{}: {}", "Error".red(), e),
             };
+        }
+        Ok(())
+    }
+
+    pub fn run_script<'a, I>(&mut self, lines_iter: I) -> Result<(), ZptError>
+    where
+        I: Iterator<Item = &'a str>,
+    {
+        for line in lines_iter {
+            let trimmed = line.trim();
+            if self.is_empty(trimmed) {
+                continue;
+            }
+            println!(">  {}", format!("{trimmed}").dimmed());
+            if self.is_exit(trimmed) {
+                break;
+            }
+
+            let instr = parser::parse(trimmed)?;
+            self.machine.execute(&instr, &mut self.state)?;
         }
         Ok(())
     }

@@ -3,7 +3,6 @@
 
 use colored::Colorize;
 use rand::prelude::*;
-use rand::rand_core::le;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,7 +10,7 @@ use std::time::Duration;
 use crate::error::{MachineError, PioError};
 use crate::pio;
 use libeval::actor::Actor;
-use libeval::eval::EvalContext;
+use libeval::eval::{EvalContext, EvalDecision};
 use libeval::packet::{self, PacketDesc};
 
 const DEF_SOURCE_ADDR: &str = "fd5a:5052:3000::1";
@@ -90,7 +89,7 @@ impl ZMachine {
                 // Evaluate the protocol action from source to destination.
                 // This may involve sending packets or simulating network actions.
                 // Handle errors related to invalid expressions or unsupported protocols.
-                if state.ctx.is_none() {
+                if !state.has_policy() {
                     return Err(MachineError::ExecutionError(
                         "No policy loaded. Use 'load <path>' to load a policy.".to_string(),
                     ));
@@ -250,10 +249,10 @@ impl ZMachine {
         dst_actor: &Actor,
         pd: &PacketDesc,
     ) -> Result<(), MachineError> {
-        if let Some(ctx) = state.ctx.as_ref() {
+        if let Some(ctx) = state.get_ctx() {
             match ctx.eval_request(src_actor, dst_actor, &pd) {
                 Ok(decision) => {
-                    println!("decision: {}", format!("{:?}", decision).green());
+                    self.present_decision(state, &decision, pd);
                 }
                 Err(e) => {
                     return Err(MachineError::ExecutionError(format!(
@@ -268,6 +267,43 @@ impl ZMachine {
             ));
         }
         Ok(())
+    }
+
+    fn present_decision(&self, state: &State, decision: &EvalDecision, pd: &PacketDesc) {
+        match decision {
+            EvalDecision::Allow(hits) => {
+                println!("{}", "Decision: ALLOW".green());
+                for (hitnum, hit) in hits.iter().enumerate() {
+                    print!(
+                        "{}",
+                        format!(
+                            "  [hit {}]  Matched rule: #{} direction: {}",
+                            hitnum, hit.match_idx, hit.direction
+                        )
+                        .cyan()
+                    );
+                    if let Some(ref sig) = hit.signal {
+                        println!("      Signal: '{}' to {}", sig.message, sig.service);
+                    } else {
+                        println!();
+                    }
+                    match state.get_ctx().as_ref().unwrap().visa_info_for_hit(hit, pd) {
+                        Err(e) => println!("ERROR requesting visa: {}", e),
+                        Ok(props) => {
+                            println!("      # {}", props.get_zpl().magenta());
+                            println!("      {props}");
+                        }
+                    }
+                }
+            }
+            EvalDecision::Deny(_hits) => {
+                // TODO: Show more info about the DENY
+                println!("{}", "Decision: DENY".red());
+            }
+            EvalDecision::NoMatch(reason) => {
+                println!("{}: {}", "Decision: NO MATCH".red(), reason);
+            }
+        }
     }
 
     /// For TCP/UDP.
@@ -334,11 +370,19 @@ impl State {
         State::default()
     }
 
+    pub fn get_ctx(&self) -> Option<&EvalContext> {
+        self.ctx.as_ref()
+    }
+
+    pub fn has_policy(&self) -> bool {
+        self.ctx.is_some()
+    }
+
     pub fn dump_db(&self) {
         println!("Actor database:");
         for (name, actor) in &self.actor_db {
             println!("  [{}]", name);
-            for (i, attr) in actor.attrs_iter().enumerate() {
+            for attr in actor.attrs_iter() {
                 println!("     {:?}", attr); // TODO: Add a display func to Attribute.
             }
         }

@@ -39,4 +39,8 @@ pub enum ZptError {
     Capnp(#[from] capnp::Error),
     #[error("ZPR policy error: {0}")]
     ZprPolicy(#[from] ZprPolicyError),
+    #[error("Machine error: {0}")]
+    Machine(#[from] MachineError),
+    #[error("Parse error: {0}")]
+    Parse(#[from] ParseError),
 }

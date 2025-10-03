@@ -289,7 +289,7 @@ fn parse_ip_preamble(
     // Parse source
     let (src_actor, src_port) = parse_actor_port(src_part)?;
     let source_expr = match src_port {
-        Some(port) => {
+        Some(_port) => {
             return Err(ParseError::InvalidFormat(format!(
                 "unexpected port in source actor for {ctx} expression"
             )));
@@ -299,7 +299,7 @@ fn parse_ip_preamble(
     // Parse destination
     let (dst_actor, dst_port) = parse_actor_port(dst_part)?;
     let dest_expr = match dst_port {
-        Some(port) => {
+        Some(_port) => {
             return Err(ParseError::InvalidFormat(format!(
                 "unexpected port in destination actor for {ctx} expression"
             )));
