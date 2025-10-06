@@ -85,7 +85,6 @@ impl ZMachine {
                 } else {
                     path.to_path_buf()
                 };
-                println!("computed path = {}", path.display());
                 state.load_policy(&path)?;
                 Ok(())
             }
