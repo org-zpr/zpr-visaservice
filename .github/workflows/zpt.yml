@@ -30,15 +30,26 @@ jobs:
     steps:
     - uses: actions/checkout@v5
 
+    - name: Setup Git credentials
+      timeout-minutes: 1
+      run: |
+        echo 'echo $ZPR_CICD_RO_TOKEN' > "$HOME/.git-askpass"
+        chmod +x "$HOME/.git-askpass"
+        echo "GIT_ASKPASS=$HOME/.git-askpass" >> "$GITHUB_ENV"
+
     - run: rustup toolchain install stable --profile minimal
 
     - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2
+      env:
+        ZPR_CICD_RO_TOKEN: ${{ secrets.ZPR_CICD_RO_TOKEN }}
       with:
         workspaces: zpt
 
     - name: Build ZPT
       timeout-minutes: 5
       working-directory: zpt
+      env:
+        ZPR_CICD_RO_TOKEN: ${{ secrets.ZPR_CICD_RO_TOKEN }}
       run: cargo build --verbose
 
     - name: ZPT Test
