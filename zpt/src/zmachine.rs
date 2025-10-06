@@ -1,6 +1,7 @@
 //! z-machine is the ZPT execution machine which executes ZPT "programs" line by
 //! line.  Program lines either update state or sends API calls to the executor.
 
+use chrono::{DateTime, Local, SecondsFormat};
 use colored::Colorize;
 use rand::prelude::*;
 use std::collections::HashMap;
@@ -63,11 +64,13 @@ enum PortMissingBehavior {
     DefaultPort(u16), // pick a specific default port
 }
 
-pub struct ZMachine {}
+pub struct ZMachine {
+    eval_counter: usize,
+}
 
 impl ZMachine {
     pub fn new() -> Self {
-        ZMachine {}
+        ZMachine { eval_counter: 0 }
     }
 
     pub fn execute(&mut self, ins: &Instruction, state: &mut State) -> Result<(), MachineError> {
@@ -86,6 +89,7 @@ impl ZMachine {
                 dest_expr,
                 extra,
             } => {
+                self.eval_counter += 1;
                 // Evaluate the protocol action from source to destination.
                 // This may involve sending packets or simulating network actions.
                 // Handle errors related to invalid expressions or unsupported protocols.
@@ -272,7 +276,11 @@ impl ZMachine {
     fn present_decision(&self, state: &State, decision: &EvalDecision, pd: &PacketDesc) {
         match decision {
             EvalDecision::Allow(hits) => {
-                println!("{}", "Decision: ALLOW".green());
+                println!(
+                    "{}: {}",
+                    format!("eval {}", self.eval_counter).yellow(),
+                    "Decision ALLOW".green()
+                );
                 for (hitnum, hit) in hits.iter().enumerate() {
                     print!(
                         "{}",
@@ -290,18 +298,27 @@ impl ZMachine {
                     match state.get_ctx().as_ref().unwrap().visa_info_for_hit(hit, pd) {
                         Err(e) => println!("ERROR requesting visa: {}", e),
                         Ok(props) => {
-                            println!("      # {}", props.get_zpl().magenta());
-                            println!("      {props}");
+                            println!("     {}   {}", "zpl".dimmed(), props.get_zpl().magenta());
+                            println!("    {}   {props}", "visa".dimmed());
                         }
                     }
                 }
             }
             EvalDecision::Deny(_hits) => {
                 // TODO: Show more info about the DENY
-                println!("{}", "Decision: DENY".red());
+                println!(
+                    "{}: {}",
+                    format!("eval {}", self.eval_counter).yellow(),
+                    "Decision DENY".red()
+                );
             }
             EvalDecision::NoMatch(reason) => {
-                println!("{}: {}", "Decision: NO MATCH".red(), reason);
+                println!(
+                    "{}: {} - {}",
+                    format!("eval {}", self.eval_counter).yellow(),
+                    "Decision NO MATCH".red(),
+                    reason.cyan()
+                );
             }
         }
     }
@@ -380,10 +397,20 @@ impl State {
 
     pub fn dump_db(&self) {
         println!("Actor database:");
+        if self.actor_db.is_empty() {
+            println!("  (empty)");
+            return;
+        }
         for (name, actor) in &self.actor_db {
             println!("  [{}]", name);
             for attr in actor.attrs_iter() {
-                println!("     {:?}", attr); // TODO: Add a display func to Attribute.
+                let dt: DateTime<Local> = attr.get_expires().into();
+                println!(
+                    "     {}:{} (exp {})",
+                    attr.get_key(),
+                    attr.get_value(),
+                    dt.to_rfc3339_opts(SecondsFormat::Secs, false)
+                );
             }
         }
     }
