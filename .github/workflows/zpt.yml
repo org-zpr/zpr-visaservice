@@ -38,6 +38,7 @@ jobs:
 
     - name: Build ZPT
       timeout-minutes: 5
+      working-directory: zpt
       run: cargo build --verbose
 
     - name: ZPT Test
