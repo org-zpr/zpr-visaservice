@@ -35,5 +35,11 @@ jobs:
   integ-test:
     name: zpt-test
     needs: [build-zpt]
-    run: integration-test/zpt-test.sh
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: zpt integ test
+        run: integration-test/zpt-test.sh
 
