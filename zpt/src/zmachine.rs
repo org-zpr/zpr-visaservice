@@ -65,18 +65,28 @@ enum PortMissingBehavior {
 }
 
 pub struct ZMachine {
+    base_path: PathBuf,
     eval_counter: usize,
 }
 
 impl ZMachine {
-    pub fn new() -> Self {
-        ZMachine { eval_counter: 0 }
+    pub fn new(base_path: &Path) -> Self {
+        ZMachine {
+            base_path: base_path.to_path_buf(),
+            eval_counter: 0,
+        }
     }
 
     pub fn execute(&mut self, ins: &Instruction, state: &mut State) -> Result<(), MachineError> {
         match ins {
             Instruction::Load(path) => {
-                state.load_policy(path)?;
+                let path = if path.is_relative() {
+                    self.base_path.join(path)
+                } else {
+                    path.to_path_buf()
+                };
+                println!("computed path = {}", path.display());
+                state.load_policy(&path)?;
                 Ok(())
             }
             Instruction::Set { name, key, value } => {

@@ -57,4 +57,36 @@ impl PacketDesc {
             comm_flags: CommFlag::BiDirectional,
         }
     }
+
+    pub fn new_udp_req(
+        source_addr: &str,
+        dest_addr: &str,
+        source_port: u16,
+        dest_port: u16,
+    ) -> Self {
+        PacketDesc {
+            source_addr: source_addr.parse().unwrap(),
+            dest_addr: dest_addr.parse().unwrap(),
+            protocol: ip_proto::UDP,
+            source_port,
+            dest_port,
+            comm_flags: CommFlag::BiDirectional,
+        }
+    }
+
+    pub fn new_icmpv6_req(
+        source_addr: &str,
+        dest_addr: &str,
+        icmp_type: u8,
+        icmp_code: u8,
+    ) -> Self {
+        PacketDesc {
+            source_addr: source_addr.parse().unwrap(),
+            dest_addr: dest_addr.parse().unwrap(),
+            protocol: ip_proto::IPV6_ICMP,
+            source_port: icmp_type as u16,
+            dest_port: icmp_code as u16,
+            comm_flags: CommFlag::UniDirectional,
+        }
+    }
 }

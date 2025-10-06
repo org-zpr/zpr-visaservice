@@ -1,6 +1,7 @@
 use colored::Colorize;
 
 use std::io::{self, Write};
+use std::path::Path;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, read};
 use crossterm::terminal::{self, disable_raw_mode, enable_raw_mode};
@@ -22,9 +23,9 @@ enum Command {
 }
 
 impl Repl {
-    pub fn new() -> Self {
+    pub fn new(base_path: &Path) -> Self {
         Repl {
-            machine: ZMachine::new(),
+            machine: ZMachine::new(base_path),
             state: State::new(),
             history: Vec::new(),
         }

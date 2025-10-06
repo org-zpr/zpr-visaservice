@@ -35,6 +35,10 @@ impl Attribute {
         &self.value
     }
 
+    pub fn get_expires(&self) -> SystemTime {
+        self.expires_at
+    }
+
     // Treat value as a comma-separated list and check if it contains v.
     fn value_has(&self, v: &str) -> bool {
         self.value.split(',').any(|s| s.trim() == v)

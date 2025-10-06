@@ -2,6 +2,7 @@ use crate::actor::Actor;
 use crate::packet::{PacketDesc, ip_proto};
 use crate::zpr_policy::ZprPolicy;
 use ::polio::policy_capnp;
+use std::fmt;
 
 use std::net;
 use thiserror::Error;
@@ -41,13 +42,13 @@ pub enum EvalError {
 pub struct Hit {
     /// Index into the policies for the matching policy.
     /// Caller can use this to find the ZPL line and the conditions.
-    match_idx: usize,
+    pub match_idx: usize,
 
     /// If 'Forward' then this the Hit was on the "forward" client->service direction.
-    direction: Direction,
+    pub direction: Direction,
 
     /// If there is a signal attached to this permission it is returned here.
-    signal: Option<Signal>,
+    pub signal: Option<Signal>,
 }
 
 impl Hit {
@@ -74,6 +75,15 @@ pub enum Direction {
     Reverse,
 }
 
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Direction::Forward => write!(f, "FWD"),
+            Direction::Reverse => write!(f, "REV"),
+        }
+    }
+}
+
 /// VisaProps is most of the information needed to create a visa.
 /// Does not set an expiration unless one is part of a policy constraint.
 #[derive(Debug)]
@@ -87,6 +97,50 @@ pub struct VisaProps {
     constraints: Option<Vec<Constraint>>,
     comm_opts: Option<Vec<CommOpt>>,
     zpl: String,
+}
+
+/// Just a bunch of accessors to help keep API clean.
+impl VisaProps {
+    pub fn get_source_addr(&self) -> net::IpAddr {
+        self.source_addr
+    }
+    pub fn get_dest_addr(&self) -> net::IpAddr {
+        self.dest_addr
+    }
+    pub fn get_protocol(&self) -> u8 {
+        self.protocol
+    }
+    pub fn get_source_port(&self) -> u16 {
+        self.source_port
+    }
+    pub fn get_dest_port(&self) -> u16 {
+        self.dest_port
+    }
+    pub fn get_constraints(&self) -> Option<&[Constraint]> {
+        self.constraints.as_deref()
+    }
+    pub fn get_comm_opts(&self) -> Option<&[CommOpt]> {
+        self.comm_opts.as_deref()
+    }
+    pub fn get_zpl(&self) -> &str {
+        &self.zpl
+    }
+}
+
+/// Canonical "short-form" visa stringer.
+impl fmt::Display for VisaProps {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}]:{} -> [{}]:{} proto {} [opts:{:?}]",
+            self.source_addr,
+            self.source_port,
+            self.dest_addr,
+            self.dest_port,
+            self.protocol,
+            self.comm_opts
+        )
+    }
 }
 
 /// Policy may include constraints on the permission.
@@ -107,8 +161,8 @@ pub enum CommOpt {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Signal {
-    message: String,
-    service: String,
+    pub message: String,
+    pub service: String,
 }
 
 // TODO: Not yet sure if this is useful. Maybe the context can build up

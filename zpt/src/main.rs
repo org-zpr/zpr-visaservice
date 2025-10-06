@@ -7,6 +7,7 @@ mod zmachine;
 use clap::Parser;
 use colored::Colorize;
 
+use std::env;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use tracing::Level;
@@ -39,8 +40,9 @@ fn main() {
     if cli.verbose {
         enable_logger();
     }
+    let cwd = env::current_dir().unwrap_or(PathBuf::from("."));
     if cli.input.is_none() {
-        match Repl::new().run() {
+        match Repl::new(&cwd).run() {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("{}: {e}", "Error".red());
@@ -49,7 +51,7 @@ fn main() {
         };
     } else {
         let input = cli.input.as_ref().unwrap();
-        match run_file_or_stdin(input) {
+        match run_file_or_stdin(input, &cwd) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("{}: {e}", "Error".red());
@@ -60,7 +62,7 @@ fn main() {
     std::process::exit(0);
 }
 
-fn run_file_or_stdin(input: &Path) -> Result<(), ZptError> {
+fn run_file_or_stdin(input: &Path, cwd: &Path) -> Result<(), ZptError> {
     let instructions = if input.to_string_lossy() == "-" {
         let mut buffer = String::new();
         io::stdin().read_to_string(&mut buffer)?;
@@ -68,8 +70,12 @@ fn run_file_or_stdin(input: &Path) -> Result<(), ZptError> {
     } else {
         std::fs::read_to_string(input)?
     };
-
-    Repl::new().run_script(instructions.lines())
+    let base_path = if let Some(parent) = input.parent() {
+        parent.to_path_buf()
+    } else {
+        cwd.to_path_buf()
+    };
+    Repl::new(&base_path).run_script(instructions.lines())
 }
 
 fn enable_logger() {
