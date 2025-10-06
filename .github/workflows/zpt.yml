@@ -21,7 +21,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-vs:
+  build-zpt:
     name: ${{ matrix.target }}
     strategy:
       matrix:
@@ -31,3 +31,9 @@ jobs:
       name: ${{ matrix.target }}
       path: ./${{ matrix.target }}
     secrets: inherit
+
+  integ-test:
+    name: zpt-test
+    needs: [build-zpt]
+    run: integration-test/zpt-test.sh
+
