@@ -21,23 +21,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-zpt:
-    name: ${{ matrix.target }}
-    strategy:
-      matrix:
-        target: [zpt]
-    uses: org-zpr/zpr-dev-tools/.github/workflows/rust-containerized-build-test.yml@c4bf03c27fc14ac08cdb1b8a8c49de91f21786a7
-    with:
-      name: ${{ matrix.target }}
-      path: ./${{ matrix.target }}
-    secrets: inherit
-
   integ-test:
     name: zpt-test
-    needs: [build-zpt]
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v5
@@ -46,36 +34,15 @@ jobs:
 
     - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2
       with:
-        workspaces: |
-          zpt
+        workspaces: zpt
 
-    - name: Set workspace as safe
-      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-    - name: Setup Git credentials
-      timeout-minutes: 1
-      run: |
-        echo 'echo $ZPR_CICD_RO_TOKEN' > "$HOME/.git-askpass"
-        chmod +x "$HOME/.git-askpass"
-        echo "GIT_ASKPASS=$HOME/.git-askpass" >> "$GITHUB_ENV"
-        go env -w GOPRIVATE="github.com/org-zpr/*"
-
-    - uses: actions/download-artifact@v5
-      with:
-        pattern: zpt-*${{ matrix.os }}
-        merge-multiple: true
-
-    - name: Build
-      timeout-minutes: 10
-      env:
-        ZPR_CICD_RO_TOKEN: ${{ secrets.ZPR_CICD_RO_TOKEN }}
-      run: |
-        tar -xvf zpt.tar
+    - name: Build ZPT
+      timeout-minutes: 5
+      run: cargo build --verbose
 
     - name: ZPT Test
       timeout-minutes: 5
-      run: |
-        integration-test/zpt-test.sh
+      run: ./integration-test/zpt-test.sh
 
 
 
