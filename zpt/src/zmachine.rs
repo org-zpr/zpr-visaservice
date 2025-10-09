@@ -153,7 +153,7 @@ impl ZMachine {
         println!("Eval commands:");
         println!("  eval TCP <src_actor>.<src_port> > <dst_actor>.<dst_port> [flags]");
         println!("  eval UDP <src_actor> > <dst_actor>");
-        println!("  eval ICMP <src_actor> > <dst_actor> [type]");
+        println!("  eval ICMP6 <src_actor> > <dst_actor> <type>");
         println!();
         println!("Miscellaneous commands:");
         println!("  help                - Show this help message.");

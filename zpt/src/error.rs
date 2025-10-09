@@ -1,4 +1,5 @@
 use libeval::zpr_policy::ZprPolicyError;
+use rustyline::error::ReadlineError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -43,4 +44,6 @@ pub enum ZptError {
     Machine(#[from] MachineError),
     #[error("Parse error: {0}")]
     Parse(#[from] ParseError),
+    #[error("REPL error: {0}")]
+    Repl(#[from] ReadlineError),
 }
