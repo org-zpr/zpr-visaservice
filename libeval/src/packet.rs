@@ -6,6 +6,15 @@ pub mod ip_proto {
     pub const IPV6_ICMP: u8 = 58;
 }
 
+pub mod tcp {
+    pub const FIN: u8 = 0x01;
+    pub const SYN: u8 = 0x02;
+    pub const RST: u8 = 0x04;
+    pub const PSH: u8 = 0x08;
+    pub const ACK: u8 = 0x10;
+    pub const URG: u8 = 0x20;
+}
+
 /// A description of a packet between a sender and reciever.
 #[allow(dead_code)]
 pub struct PacketDesc {
@@ -46,6 +55,38 @@ impl PacketDesc {
             source_port,
             dest_port,
             comm_flags: CommFlag::BiDirectional,
+        }
+    }
+
+    pub fn new_udp_req(
+        source_addr: &str,
+        dest_addr: &str,
+        source_port: u16,
+        dest_port: u16,
+    ) -> Self {
+        PacketDesc {
+            source_addr: source_addr.parse().unwrap(),
+            dest_addr: dest_addr.parse().unwrap(),
+            protocol: ip_proto::UDP,
+            source_port,
+            dest_port,
+            comm_flags: CommFlag::BiDirectional,
+        }
+    }
+
+    pub fn new_icmpv6_req(
+        source_addr: &str,
+        dest_addr: &str,
+        icmp_type: u8,
+        icmp_code: u8,
+    ) -> Self {
+        PacketDesc {
+            source_addr: source_addr.parse().unwrap(),
+            dest_addr: dest_addr.parse().unwrap(),
+            protocol: ip_proto::IPV6_ICMP,
+            source_port: icmp_type as u16,
+            dest_port: icmp_code as u16,
+            comm_flags: CommFlag::UniDirectional,
         }
     }
 }

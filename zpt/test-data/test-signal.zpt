@@ -1,0 +1,13 @@
+load test-signal.bin2
+
+# This make alice an employee
+set alice user.bas_id:1000
+set alice user.color:red
+
+set db zpr.services:database
+set db user.bas_id:1233
+
+eval TCP alice > db.80 [S]
+
+eval ICMP6 alice > db echo-request
+

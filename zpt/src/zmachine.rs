@@ -1,0 +1,455 @@
+//! z-machine is the ZPT execution machine which executes ZPT "programs" line by
+//! line.  Program lines either update state or sends API calls to the executor.
+
+use chrono::{DateTime, Local, SecondsFormat};
+use colored::Colorize;
+use rand::prelude::*;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use crate::error::{MachineError, PioError};
+use crate::pio;
+use libeval::actor::Actor;
+use libeval::eval::{EvalContext, EvalDecision};
+use libeval::packet::{self, PacketDesc};
+
+const DEF_SOURCE_ADDR: &str = "fd5a:5052:3000::1";
+const DEF_DEST_ADDR: &str = "fd5a:5052:3000::2";
+
+/// IP Protocol is 8 bits.
+type IpProtoT = u8;
+
+#[derive(Debug, Clone)]
+pub enum Instruction {
+    Help(Option<String>), // String holds additional args present after "help"
+    Load(PathBuf),
+    Set {
+        name: String,
+        key: String,
+        value: String,
+    },
+    Eval {
+        prot: IpProtoT,
+        source_expr: ActorExpr,
+        dest_expr: ActorExpr,
+        extra: Option<InstrExtra>,
+    },
+    Dumpdb,
+}
+
+#[derive(Debug, Clone)]
+pub enum ActorExpr {
+    ActorName(String),
+    ActorNameAndPort(String, u16),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InstrExtra {
+    TcpFlags(u8),
+    IcmpTypeCode(u8, u8),
+}
+
+#[derive(Default)]
+pub struct State {
+    ctx: Option<EvalContext>,
+    policy_path: Option<PathBuf>,
+    actor_db: HashMap<String, Actor>,
+}
+
+#[allow(dead_code)]
+enum PortMissingBehavior {
+    Error(String),    // if missing, error with a message
+    HighPort,         // pick a random high (>1024) port
+    DefaultPort(u16), // pick a specific default port
+}
+
+pub struct ZMachine {
+    base_path: PathBuf,
+    eval_counter: usize,
+}
+
+impl ZMachine {
+    pub fn new(base_path: &Path) -> Self {
+        ZMachine {
+            base_path: base_path.to_path_buf(),
+            eval_counter: 0,
+        }
+    }
+
+    pub fn execute(&mut self, ins: &Instruction, state: &mut State) -> Result<(), MachineError> {
+        match ins {
+            Instruction::Load(path) => {
+                let path = if path.is_relative() {
+                    self.base_path.join(path)
+                } else {
+                    path.to_path_buf()
+                };
+                state.load_policy(&path)?;
+                Ok(())
+            }
+            Instruction::Set { name, key, value } => {
+                state.set_actor_attribute(name, key, value)?;
+                Ok(())
+            }
+            Instruction::Eval {
+                prot,
+                source_expr,
+                dest_expr,
+                extra,
+            } => {
+                self.eval_counter += 1;
+                // Evaluate the protocol action from source to destination.
+                // This may involve sending packets or simulating network actions.
+                // Handle errors related to invalid expressions or unsupported protocols.
+                if !state.has_policy() {
+                    return Err(MachineError::ExecutionError(
+                        "No policy loaded. Use 'load <path>' to load a policy.".to_string(),
+                    ));
+                }
+                match *prot {
+                    packet::ip_proto::TCP => self.eval_tcp(state, source_expr, dest_expr, *extra),
+                    packet::ip_proto::UDP => self.eval_udp(state, source_expr, dest_expr),
+                    packet::ip_proto::IPV6_ICMP => {
+                        self.eval_icmp(state, source_expr, dest_expr, *extra)
+                    }
+                    _ => {
+                        return Err(MachineError::ExecutionError(format!(
+                            "Unsupported protocol: {}",
+                            prot
+                        )));
+                    }
+                }
+            }
+            Instruction::Dumpdb => {
+                state.dump_db();
+                Ok(())
+            }
+            Instruction::Help(None) => {
+                self.print_help();
+                Ok(())
+            }
+            Instruction::Help(Some(topic)) => {
+                match topic.to_lowercase().as_str() {
+                    "tcp" => self.print_help_tcp(),
+                    "icmp" => self.print_help_icmp(),
+                    _ => {
+                        println!("unknown help topic: '{}'", topic);
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn print_help(&self) {
+        println!("Policy commands:");
+        println!("  load <path>          - Load a ZPR policy from the specified file path.");
+        println!();
+        println!("Actor commands:");
+        println!("  set <actor> <k>:<v>  - Set attribute <k> to value <v> for actor <actor>.");
+        println!("  dumpdb               - Dump the current actor database.");
+        println!();
+        println!("Eval commands:");
+        println!("  eval TCP <src_actor>.<src_port> > <dst_actor>.<dst_port> [flags]");
+        println!("  eval UDP <src_actor> > <dst_actor>");
+        println!("  eval ICMP6 <src_actor> > <dst_actor> <type>");
+        println!();
+        println!("Miscellaneous commands:");
+        println!("  help                - Show this help message.");
+        println!("  help tcp            - Help with tcp flag format.");
+        println!("  help icmp           - Help with icmp type and code format.");
+        println!("  exit, quit, q, ^C   - Exit the REPL.");
+        println!();
+    }
+
+    fn print_help_tcp(&self) {
+        println!("TCP flags:");
+        println!("  [S] syn");
+        println!("  [P] push");
+        println!("  [R] reset");
+        println!("  [F] fin");
+        println!("  [.] ack");
+        println!("  Ack '.' can be combined with the other flags, eg [S.] for a SYN-ACK.");
+        println!();
+    }
+
+    fn print_help_icmp(&self) {
+        println!("ICMP type and code:");
+        println!("  You can specify ICMP type and code in one of three ways:");
+        println!("    - <type>:<code>   both 8-bit decimal values");
+        println!(
+            "    - 0x<typecode>    16 bit hex encoded, big-endian value with type in high byte, code in low byte"
+        );
+        println!("    - <type-name>     eg, 'echo-request' (and code is set to zero)");
+        println!();
+        println!("  Common ICMPv6 types:");
+        println!("    1   destination-unreachable");
+        println!("    2   packet-too-big");
+        println!("    3   time-exceeded");
+        println!("    4   parameter-problem");
+        println!("   128  echo-request");
+        println!("   129  echo-reply");
+        println!();
+        println!("  If code is not specified, it defaults to zero.");
+        println!();
+    }
+
+    fn eval_tcp(
+        &self,
+        state: &State,
+        source_expr: &ActorExpr,
+        dest_expr: &ActorExpr,
+        _extra: Option<InstrExtra>,
+    ) -> Result<(), MachineError> {
+        let (src_actor, src_port) =
+            self.resolve_actor_and_port(state, source_expr, PortMissingBehavior::HighPort)?;
+        let (dst_actor, dst_port) = self.resolve_actor_and_port(
+            state,
+            dest_expr,
+            PortMissingBehavior::Error("destination port required for TCP".to_string()),
+        )?;
+
+        // TODO: Someting interesting with TCP flags?
+
+        let pd = PacketDesc::new_tcp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
+        self.do_eval(state, src_actor, dst_actor, &pd)
+    }
+
+    fn eval_udp(
+        &self,
+        state: &State,
+        source_expr: &ActorExpr,
+        dest_expr: &ActorExpr,
+    ) -> Result<(), MachineError> {
+        let (src_actor, src_port) =
+            self.resolve_actor_and_port(state, source_expr, PortMissingBehavior::HighPort)?;
+        let (dst_actor, dst_port) = self.resolve_actor_and_port(
+            state,
+            dest_expr,
+            PortMissingBehavior::Error("destination port required for UDP".to_string()),
+        )?;
+
+        let pd = PacketDesc::new_udp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
+        self.do_eval(state, src_actor, dst_actor, &pd)
+    }
+
+    fn eval_icmp(
+        &self,
+        state: &mut State,
+        source_expr: &ActorExpr,
+        dest_expr: &ActorExpr,
+        extra: Option<InstrExtra>,
+    ) -> Result<(), MachineError> {
+        let (icmp_type, icmp_code) = match extra {
+            Some(InstrExtra::IcmpTypeCode(t, c)) => (t, c),
+            _ => {
+                return Err(MachineError::ExecutionError(
+                    "Invalid extra for ICMP; expected at least type".to_string(),
+                ));
+            }
+        };
+        let src_actor = self.resolve_actor_no_port(state, source_expr)?;
+        let dst_actor = self.resolve_actor_no_port(state, dest_expr)?;
+        let pd = PacketDesc::new_icmpv6_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, icmp_type, icmp_code);
+        self.do_eval(state, src_actor, dst_actor, &pd)
+    }
+
+    fn do_eval(
+        &self,
+        state: &State,
+        src_actor: &Actor,
+        dst_actor: &Actor,
+        pd: &PacketDesc,
+    ) -> Result<(), MachineError> {
+        if let Some(ctx) = state.get_ctx() {
+            match ctx.eval_request(src_actor, dst_actor, &pd) {
+                Ok(decision) => {
+                    self.present_decision(state, &decision, pd);
+                }
+                Err(e) => {
+                    return Err(MachineError::ExecutionError(format!(
+                        "policy evaluation error: {}",
+                        e
+                    )));
+                }
+            }
+        } else {
+            return Err(MachineError::ExecutionError(
+                "No policy loaded. Use 'load <path>' to load a policy.".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn present_decision(&self, state: &State, decision: &EvalDecision, pd: &PacketDesc) {
+        match decision {
+            EvalDecision::Allow(hits) => {
+                println!(
+                    "{}: {}",
+                    format!("eval {}", self.eval_counter).yellow(),
+                    "Decision ALLOW".green()
+                );
+                for (hitnum, hit) in hits.iter().enumerate() {
+                    print!(
+                        "{}",
+                        format!(
+                            "  [hit {}]  Matched rule: #{} direction: {}",
+                            hitnum, hit.match_idx, hit.direction
+                        )
+                        .cyan()
+                    );
+                    if let Some(ref sig) = hit.signal {
+                        println!("      Signal: '{}' to {}", sig.message, sig.service);
+                    } else {
+                        println!();
+                    }
+                    match state.get_ctx().as_ref().unwrap().visa_info_for_hit(hit, pd) {
+                        Err(e) => println!("ERROR requesting visa: {}", e),
+                        Ok(props) => {
+                            println!("     {}   {}", "zpl".dimmed(), props.get_zpl().magenta());
+                            println!("    {}   {props}", "visa".dimmed());
+                        }
+                    }
+                }
+            }
+            EvalDecision::Deny(_hits) => {
+                // TODO: Show more info about the DENY
+                println!(
+                    "{}: {}",
+                    format!("eval {}", self.eval_counter).yellow(),
+                    "Decision DENY".red()
+                );
+            }
+            EvalDecision::NoMatch(reason) => {
+                println!(
+                    "{}: {} - {}",
+                    format!("eval {}", self.eval_counter).yellow(),
+                    "Decision NO MATCH".red(),
+                    reason.cyan()
+                );
+            }
+        }
+    }
+
+    /// For TCP/UDP.
+    fn resolve_actor_and_port<'a>(
+        &self,
+        state: &'a State,
+        expr: &ActorExpr,
+        port_missing: PortMissingBehavior,
+    ) -> Result<(&'a Actor, u16), MachineError> {
+        let (actor, port) = match expr {
+            ActorExpr::ActorName(name) => (
+                state.get_actor(name).ok_or_else(|| {
+                    MachineError::ExecutionError(format!("unknown actor: {name}"))
+                })?,
+                None,
+            ),
+
+            ActorExpr::ActorNameAndPort(name, pnum) => (
+                state.get_actor(name).ok_or_else(|| {
+                    MachineError::ExecutionError(format!("unknown actor: {name}"))
+                })?,
+                Some(*pnum),
+            ),
+        };
+
+        if port.is_none() {
+            match port_missing {
+                PortMissingBehavior::Error(msg) => {
+                    return Err(MachineError::ExecutionError(msg));
+                }
+                PortMissingBehavior::HighPort => {
+                    let high_port = rand::rng().random_range(1025..=65535);
+                    return Ok((actor, high_port));
+                }
+                PortMissingBehavior::DefaultPort(default_port) => {
+                    return Ok((actor, default_port));
+                }
+            }
+        }
+
+        Ok((actor, port.unwrap()))
+    }
+
+    /// For ICMP
+    fn resolve_actor_no_port<'a>(
+        &self,
+        state: &'a State,
+        expr: &ActorExpr,
+    ) -> Result<&'a Actor, MachineError> {
+        match expr {
+            ActorExpr::ActorName(name) => Ok(state
+                .get_actor(name)
+                .ok_or_else(|| MachineError::ExecutionError(format!("unknown actor: {name}")))?),
+
+            ActorExpr::ActorNameAndPort(name, pnum) => Err(MachineError::ExecutionError(format!(
+                "port not allowed here: {name}.{pnum}"
+            )))?,
+        }
+    }
+}
+
+impl State {
+    pub fn new() -> Self {
+        State::default()
+    }
+
+    pub fn get_ctx(&self) -> Option<&EvalContext> {
+        self.ctx.as_ref()
+    }
+
+    pub fn has_policy(&self) -> bool {
+        self.ctx.is_some()
+    }
+
+    pub fn dump_db(&self) {
+        println!("Actor database:");
+        if self.actor_db.is_empty() {
+            println!("  (empty)");
+            return;
+        }
+        for (name, actor) in &self.actor_db {
+            println!("  [{}]", name);
+            for attr in actor.attrs_iter() {
+                let dt: DateTime<Local> = attr.get_expires().into();
+                println!(
+                    "     {}:{} (exp {})",
+                    attr.get_key(),
+                    attr.get_value(),
+                    dt.to_rfc3339_opts(SecondsFormat::Secs, false)
+                );
+            }
+        }
+    }
+
+    pub fn load_policy(&mut self, path: &Path) -> Result<(), PioError> {
+        let policy = pio::load_policy(path)?;
+        self.ctx = Some(EvalContext::new(policy));
+        self.policy_path = Some(path.to_path_buf());
+        // todo: centralized way to report status, eg "loaded XYZ"
+        Ok(())
+    }
+
+    pub fn set_actor_attribute(
+        &mut self,
+        actor_name: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), MachineError> {
+        let actor = self
+            .actor_db
+            .entry(actor_name.to_string())
+            .or_insert_with(|| Actor::new());
+
+        // TODO: Attribute allows duplicate attribute keys -- it should not.
+
+        actor.add_attr(key, value, Duration::from_secs(3600)); // TODO: Expiration
+        Ok(())
+    }
+
+    pub fn get_actor(&self, name: &str) -> Option<&Actor> {
+        self.actor_db.get(name)
+    }
+}
