@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{MachineError, PioError};
-use crate::out::{OutFmt, OutputFormatter};
+use crate::out::OutputFormatter;
 use crate::pio;
 use libeval::actor::Actor;
 use libeval::eval::{EvalContext, EvalDecision};
@@ -66,19 +66,22 @@ enum PortMissingBehavior {
 pub struct ZMachine {
     base_path: PathBuf,
     eval_counter: usize,
-    outfmt: OutFmt,
 }
 
 impl ZMachine {
-    pub fn new(base_path: &Path, outfmt: &OutFmt) -> Self {
+    pub fn new(base_path: &Path) -> Self {
         ZMachine {
             base_path: base_path.to_path_buf(),
             eval_counter: 0,
-            outfmt: *outfmt,
         }
     }
 
-    pub fn execute(&mut self, ins: &Instruction, state: &mut State) -> Result<(), MachineError> {
+    pub fn execute(
+        &mut self,
+        ins: &Instruction,
+        state: &mut State,
+        outfmt: &mut Box<dyn OutputFormatter>,
+    ) -> Result<(), MachineError> {
         match ins {
             Instruction::Load(path) => {
                 let path = if path.is_relative() {
@@ -109,10 +112,12 @@ impl ZMachine {
                     ));
                 }
                 match *prot {
-                    packet::ip_proto::TCP => self.eval_tcp(state, source_expr, dest_expr, *extra),
-                    packet::ip_proto::UDP => self.eval_udp(state, source_expr, dest_expr),
+                    packet::ip_proto::TCP => {
+                        self.eval_tcp(state, source_expr, dest_expr, *extra, outfmt)
+                    }
+                    packet::ip_proto::UDP => self.eval_udp(state, source_expr, dest_expr, outfmt),
                     packet::ip_proto::IPV6_ICMP => {
-                        self.eval_icmp(state, source_expr, dest_expr, *extra)
+                        self.eval_icmp(state, source_expr, dest_expr, *extra, outfmt)
                     }
                     _ => {
                         return Err(MachineError::ExecutionError(format!(
@@ -123,7 +128,7 @@ impl ZMachine {
                 }
             }
             Instruction::Dumpdb => {
-                state.dump_db(&self.outfmt);
+                state.dump_db(outfmt);
                 Ok(())
             }
             Instruction::Help(None) => {
@@ -135,8 +140,7 @@ impl ZMachine {
                     "tcp" => self.print_help_tcp(),
                     "icmp" => self.print_help_icmp(),
                     _ => {
-                        self.outfmt
-                            .write_error(&format!("unknown help topic: '{topic}'"));
+                        outfmt.write_error(&format!("unknown help topic: '{topic}'"));
                     }
                 }
                 Ok(())
@@ -198,11 +202,12 @@ impl ZMachine {
     }
 
     fn eval_tcp(
-        &self,
+        &mut self,
         state: &State,
         source_expr: &ActorExpr,
         dest_expr: &ActorExpr,
         _extra: Option<InstrExtra>,
+        outfmt: &mut Box<dyn OutputFormatter>,
     ) -> Result<(), MachineError> {
         let (src_actor, src_port) =
             self.resolve_actor_and_port(state, source_expr, PortMissingBehavior::HighPort)?;
@@ -215,14 +220,15 @@ impl ZMachine {
         // TODO: Someting interesting with TCP flags?
 
         let pd = PacketDesc::new_tcp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
-        self.do_eval(state, src_actor, dst_actor, &pd)
+        self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
     }
 
     fn eval_udp(
-        &self,
+        &mut self,
         state: &State,
         source_expr: &ActorExpr,
         dest_expr: &ActorExpr,
+        outfmt: &mut Box<dyn OutputFormatter>,
     ) -> Result<(), MachineError> {
         let (src_actor, src_port) =
             self.resolve_actor_and_port(state, source_expr, PortMissingBehavior::HighPort)?;
@@ -233,15 +239,16 @@ impl ZMachine {
         )?;
 
         let pd = PacketDesc::new_udp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
-        self.do_eval(state, src_actor, dst_actor, &pd)
+        self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
     }
 
     fn eval_icmp(
-        &self,
+        &mut self,
         state: &mut State,
         source_expr: &ActorExpr,
         dest_expr: &ActorExpr,
         extra: Option<InstrExtra>,
+        outfmt: &mut Box<dyn OutputFormatter>,
     ) -> Result<(), MachineError> {
         let (icmp_type, icmp_code) = match extra {
             Some(InstrExtra::IcmpTypeCode(t, c)) => (t, c),
@@ -254,20 +261,21 @@ impl ZMachine {
         let src_actor = self.resolve_actor_no_port(state, source_expr)?;
         let dst_actor = self.resolve_actor_no_port(state, dest_expr)?;
         let pd = PacketDesc::new_icmpv6_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, icmp_type, icmp_code);
-        self.do_eval(state, src_actor, dst_actor, &pd)
+        self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
     }
 
     fn do_eval(
-        &self,
+        &mut self,
         state: &State,
         src_actor: &Actor,
         dst_actor: &Actor,
         pd: &PacketDesc,
+        outfmt: &mut Box<dyn OutputFormatter>,
     ) -> Result<(), MachineError> {
         if let Some(ctx) = state.get_ctx() {
             match ctx.eval_request(src_actor, dst_actor, &pd) {
                 Ok(decision) => {
-                    self.present_decision(state, &decision, pd);
+                    self.present_decision(state, &decision, pd, outfmt);
                 }
                 Err(e) => {
                     return Err(MachineError::ExecutionError(format!(
@@ -284,7 +292,13 @@ impl ZMachine {
         Ok(())
     }
 
-    fn present_decision(&self, state: &State, decision: &EvalDecision, pd: &PacketDesc) {
+    fn present_decision(
+        &mut self,
+        state: &State,
+        decision: &EvalDecision,
+        pd: &PacketDesc,
+        outfmt: &mut Box<dyn OutputFormatter>,
+    ) {
         match decision {
             EvalDecision::Allow(hits) => {
                 let mut vprops = Vec::new();
@@ -293,24 +307,24 @@ impl ZMachine {
                         state.get_ctx().as_ref().unwrap().visa_info_for_hit(hit, pd);
                     vprops.push(vprop_or_error);
                 }
-                self.outfmt.write_allow(self.eval_counter, hits, &vprops);
+                outfmt.write_allow(self.eval_counter, hits, &vprops);
             }
             EvalDecision::Deny(hits) => {
-                self.outfmt.write_deny(self.eval_counter, hits);
+                outfmt.write_deny(self.eval_counter, hits);
             }
             EvalDecision::NoMatch(reason) => {
-                self.outfmt.write_no_match(self.eval_counter, reason);
+                outfmt.write_no_match(self.eval_counter, reason);
             }
         }
     }
 
     /// For TCP/UDP.
-    fn resolve_actor_and_port<'a>(
+    fn resolve_actor_and_port<'s>(
         &self,
-        state: &'a State,
+        state: &'s State,
         expr: &ActorExpr,
         port_missing: PortMissingBehavior,
-    ) -> Result<(&'a Actor, u16), MachineError> {
+    ) -> Result<(&'s Actor, u16), MachineError> {
         let (actor, port) = match expr {
             ActorExpr::ActorName(name) => (
                 state.get_actor(name).ok_or_else(|| {
@@ -346,11 +360,11 @@ impl ZMachine {
     }
 
     /// For ICMP
-    fn resolve_actor_no_port<'a>(
+    fn resolve_actor_no_port<'s>(
         &self,
-        state: &'a State,
+        state: &'s State,
         expr: &ActorExpr,
-    ) -> Result<&'a Actor, MachineError> {
+    ) -> Result<&'s Actor, MachineError> {
         match expr {
             ActorExpr::ActorName(name) => Ok(state
                 .get_actor(name)
@@ -376,7 +390,7 @@ impl State {
         self.ctx.is_some()
     }
 
-    pub fn dump_db(&self, outfmt: &OutFmt) {
+    pub fn dump_db(&self, outfmt: &mut Box<dyn OutputFormatter>) {
         outfmt.write_actor_db(&self.actor_db);
     }
 

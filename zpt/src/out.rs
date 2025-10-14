@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 
 use chrono::{DateTime, Local, SecondsFormat};
 use colored::Colorize;
@@ -6,115 +7,77 @@ use colored::Colorize;
 use libeval::actor::Actor;
 use libeval::eval::{EvalError, Hit, VisaProps};
 
-/// OutFmt for controlling how ZPT emits output text.
-#[derive(Clone, Copy, Debug)]
-pub enum OutFmt {
-    /// Produces human-readable output with fun colors.
-    Human,
-
-    /// Produces JSONL output suitable for machine parsing.
-    Json,
-}
-
 /// The OutputFormatter defines a bunch of very specific output functions
 /// tied to the running of ZPT.
 pub trait OutputFormatter {
     /// Print an error message
-    fn write_error(&self, msg: &str);
+    fn write_error(&mut self, msg: &str);
 
     /// Echo an input line (from file or stdin) on the output. NOP for json.
-    fn write_echo_line(&self, line: &str);
+    fn write_echo_line(&mut self, line: &str);
 
     /// Write an ALLOW eval decision with details.
     fn write_allow(
-        &self,
+        &mut self,
         instr_num: usize,
         hits: &[Hit],
         vprop_results: &[Result<VisaProps, EvalError>],
     );
 
     /// Write a DENY eval decision with details.
-    fn write_deny(&self, instr_num: usize, hits: &[Hit]);
+    fn write_deny(&mut self, instr_num: usize, hits: &[Hit]);
 
     /// Write a NO MATCH eval decision with details.
-    fn write_no_match(&self, instr_num: usize, reason: &str);
+    fn write_no_match(&mut self, instr_num: usize, reason: &str);
 
     /// Write the current actor database.
-    fn write_actor_db(&self, db: &HashMap<String, Actor>);
+    fn write_actor_db(&mut self, db: &HashMap<String, Actor>);
 }
 
-impl OutputFormatter for OutFmt {
-    fn write_error(&self, msg: &str) {
-        match self {
-            OutFmt::Human => human::write_error(msg),
-            OutFmt::Json => json::write_error(msg),
-        }
+pub struct JsonFormatter<WOut: Write> {
+    out: WOut,
+}
+
+pub struct HumanFormatter<WOut: Write> {
+    out: WOut,
+}
+
+impl<WOut: Write> HumanFormatter<WOut> {
+    pub fn new(out: WOut) -> Self {
+        HumanFormatter { out }
+    }
+}
+
+impl<WOut: Write> JsonFormatter<WOut> {
+    pub fn new(out: WOut) -> Self {
+        JsonFormatter { out }
+    }
+}
+
+impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
+    fn write_error(&mut self, msg: &str) {
+        let _ = writeln!(self.out, "{}: {msg}", "Error".red());
     }
 
-    fn write_echo_line(&self, line: &str) {
-        match self {
-            OutFmt::Human => human::write_echo_line(line),
-            OutFmt::Json => json::write_echo_line(line),
-        }
+    fn write_echo_line(&mut self, line: &str) {
+        let _ = writeln!(self.out, ">  {}", line.dimmed());
     }
 
     fn write_allow(
-        &self,
+        &mut self,
         instr_num: usize,
         hits: &[Hit],
         vprop_results: &[Result<VisaProps, EvalError>],
     ) {
-        match self {
-            OutFmt::Human => human::write_allow(instr_num, hits, vprop_results),
-            OutFmt::Json => json::write_allow(instr_num, hits, vprop_results),
-        }
-    }
-
-    fn write_deny(&self, instr_num: usize, hits: &[Hit]) {
-        match self {
-            OutFmt::Human => human::write_deny(instr_num, hits),
-            OutFmt::Json => json::write_deny(instr_num, hits),
-        }
-    }
-
-    fn write_no_match(&self, instr_num: usize, reason: &str) {
-        match self {
-            OutFmt::Human => human::write_no_match(instr_num, reason),
-            OutFmt::Json => json::write_no_match(instr_num, reason),
-        }
-    }
-
-    fn write_actor_db(&self, db: &HashMap<String, Actor>) {
-        match self {
-            OutFmt::Human => human::write_actor_db(db),
-            OutFmt::Json => json::write_actor_db(db),
-        }
-    }
-}
-
-mod human {
-    use super::*;
-
-    pub fn write_error(msg: &str) {
-        eprintln!("{}: {msg}", "Error".red());
-    }
-
-    pub fn write_echo_line(line: &str) {
-        println!(">  {}", line.dimmed());
-    }
-
-    pub fn write_allow(
-        instr_num: usize,
-        hits: &[Hit],
-        vprop_results: &[Result<VisaProps, EvalError>],
-    ) {
-        println!(
+        let _ = writeln!(
+            self.out,
             "{}: {}",
             format!("eval {}", instr_num).yellow(),
             "Decision ALLOW".green()
         );
         for (hitnum, hit) in hits.iter().enumerate() {
-            print!(
+            let _ = write!(
+                self.out,
                 "{}",
                 format!(
                     "  [hit {}]  Matched rule: #{} direction: {}",
@@ -123,31 +86,51 @@ mod human {
                 .cyan()
             );
             if let Some(ref sig) = hit.signal {
-                println!("      Signal: '{}' to {}", sig.message, sig.service);
+                let _ = writeln!(
+                    self.out,
+                    "      Signal: '{}' to {}",
+                    sig.message, sig.service
+                );
             } else {
-                println!();
+                let _ = writeln!(self.out);
             }
-            match &vprop_results[hitnum] {
-                Err(e) => println!("ERROR requesting visa: {}", e),
-                Ok(props) => {
-                    println!("     {}   {}", "zpl".dimmed(), props.get_zpl().magenta());
-                    println!("    {}   {props}", "visa".dimmed());
+            match vprop_results.get(hitnum) {
+                Some(Ok(props)) => {
+                    let _ = writeln!(
+                        self.out,
+                        "     {}   {}",
+                        "zpl".dimmed(),
+                        props.get_zpl().magenta()
+                    );
+                    let _ = writeln!(self.out, "    {}   {props}", "visa".dimmed());
+                }
+                Some(Err(e)) => {
+                    let _ = writeln!(self.out, "ERROR requesting visa: {}", e);
+                }
+                None => {
+                    let _ = writeln!(
+                        self.out,
+                        "ERROR: No visa properties found for hit {}",
+                        hitnum
+                    );
                 }
             }
         }
     }
 
-    pub fn write_deny(instr_num: usize, _hits: &[Hit]) {
+    fn write_deny(&mut self, instr_num: usize, _hits: &[Hit]) {
         // TODO: Show more info about the DENY
-        println!(
+        let _ = writeln!(
+            self.out,
             "{}: {}",
             format!("eval {}", instr_num).yellow(),
             "Decision DENY".red()
         );
     }
 
-    pub fn write_no_match(instr_num: usize, reason: &str) {
-        println!(
+    fn write_no_match(&mut self, instr_num: usize, reason: &str) {
+        let _ = writeln!(
+            self.out,
             "{}: {} - {}",
             format!("eval {}", instr_num).yellow(),
             "Decision NO MATCH".red(),
@@ -155,17 +138,18 @@ mod human {
         );
     }
 
-    pub fn write_actor_db(db: &HashMap<String, Actor>) {
-        println!("Actor database:");
+    fn write_actor_db(&mut self, db: &HashMap<String, Actor>) {
+        let _ = writeln!(self.out, "Actor database:");
         if db.is_empty() {
-            println!("  (empty)");
+            let _ = writeln!(self.out, "  (empty)");
             return;
         }
         for (name, actor) in db {
-            println!("  [{}]", name);
+            let _ = writeln!(self.out, "  [{}]", name);
             for attr in actor.attrs_iter() {
                 let dt: DateTime<Local> = attr.get_expires().into();
-                println!(
+                let _ = writeln!(
+                    self.out,
                     "     {}:{} (exp {})",
                     attr.get_key(),
                     attr.get_value(),
@@ -177,13 +161,12 @@ mod human {
 }
 
 mod json {
-
     use super::*;
     use serde::Serialize;
 
     #[derive(Serialize)]
     #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-    enum Decision {
+    pub enum Decision {
         Allow,
         Deny,
         NoMatch,
@@ -191,120 +174,125 @@ mod json {
 
     #[derive(Serialize)]
     #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-    enum MsgType {
+    pub enum MsgType {
         Error,
         Eval,
         DumpDb,
     }
 
     #[derive(Serialize)]
-    struct JError {
-        kind: MsgType,
-        error: String,
+    pub struct JError {
+        pub kind: MsgType,
+        pub error: String,
     }
 
     #[derive(Serialize)]
-    struct JDeny<'a> {
-        kind: MsgType,
-        instruction: usize,
-        decision: Decision,
-        hit: &'a Hit,
+    pub struct JDeny<'a> {
+        pub kind: MsgType,
+        pub instruction: usize,
+        pub decision: Decision,
+        pub hit: &'a Hit,
     }
 
     #[derive(Serialize)]
     #[serde(tag = "visa_status", rename_all = "snake_case")]
-    enum VisaOutcome<'a> {
+    pub enum VisaOutcome<'a> {
         Success(&'a VisaProps),
         Error(String),
     }
 
     #[derive(Serialize)]
-    struct JAllow<'a> {
-        kind: MsgType,
-        instruction: usize,
-        decision: Decision,
-        hit: &'a Hit,
-        visa: VisaOutcome<'a>,
+    pub struct JAllow<'a> {
+        pub kind: MsgType,
+        pub instruction: usize,
+        pub decision: Decision,
+        pub hit: &'a Hit,
+        pub visa: VisaOutcome<'a>,
     }
 
     #[derive(Serialize)]
-    struct JNoMatch {
-        kind: MsgType,
-        instruction: usize,
-        decision: Decision,
-        reason: String,
+    pub struct JNoMatch {
+        pub kind: MsgType,
+        pub instruction: usize,
+        pub decision: Decision,
+        pub reason: String,
     }
 
     #[derive(Serialize)]
-    struct JActorDB<'a> {
-        kind: MsgType,
-        actors: &'a HashMap<String, Actor>,
+    pub struct JActorDB<'a> {
+        pub kind: MsgType,
+        pub actors: &'a HashMap<String, Actor>,
     }
+}
 
-    pub fn write_error(msg: &str) {
-        let e = JError {
-            kind: MsgType::Error,
+impl<WOut: Write> OutputFormatter for JsonFormatter<WOut> {
+    fn write_error(&mut self, msg: &str) {
+        let e = json::JError {
+            kind: json::MsgType::Error,
             error: msg.to_string(),
         };
-        let _ = serde_json::to_writer(std::io::stderr(), &e);
+        let _ = serde_json::to_writer(&mut self.out, &e);
         eprintln!();
     }
 
-    pub fn write_echo_line(_line: &str) {} // NOP
+    fn write_echo_line(&mut self, _line: &str) {} // NOP
 
-    pub fn write_allow(
+    fn write_allow(
+        &mut self,
         instr_num: usize,
         hits: &[Hit],
         vprop_results: &[Result<VisaProps, EvalError>],
     ) {
         for (i, hit) in hits.iter().enumerate() {
             let voutcome = match vprop_results.get(i) {
-                Some(Ok(vp)) => VisaOutcome::Success(vp),
-                Some(Err(e)) => VisaOutcome::Error(e.to_string()),
-                None => VisaOutcome::Error("Internal error: missing visa outcome".to_string()),
+                Some(Ok(vp)) => json::VisaOutcome::Success(vp),
+                Some(Err(e)) => json::VisaOutcome::Error(e.to_string()),
+                None => {
+                    json::VisaOutcome::Error("Internal error: missing visa outcome".to_string())
+                }
             };
-            let a = JAllow {
-                kind: MsgType::Eval,
+            let a = json::JAllow {
+                kind: json::MsgType::Eval,
                 instruction: instr_num,
-                decision: Decision::Allow,
+                decision: json::Decision::Allow,
                 hit: hit,
                 visa: voutcome,
             };
-            let _ = serde_json::to_writer(std::io::stdout(), &a);
+            let _ = serde_json::to_writer(&mut self.out, &a);
             println!();
         }
     }
 
-    pub fn write_deny(instr_num: usize, hits: &[Hit]) {
+    fn write_deny(&mut self, instr_num: usize, hits: &[Hit]) {
         for hit in hits {
-            let d = JDeny {
-                kind: MsgType::Eval,
+            let d = json::JDeny {
+                kind: json::MsgType::Eval,
                 instruction: instr_num,
-                decision: Decision::Deny,
+                decision: json::Decision::Deny,
                 hit: hit,
             };
-            let _ = serde_json::to_writer(std::io::stdout(), &d);
+            let _ = serde_json::to_writer(&mut self.out, &d);
             println!();
         }
     }
 
-    pub fn write_no_match(instr_num: usize, reason: &str) {
-        let nm = JNoMatch {
-            kind: MsgType::Eval,
+    fn write_no_match(&mut self, instr_num: usize, reason: &str) {
+        let nm = json::JNoMatch {
+            kind: json::MsgType::Eval,
             instruction: instr_num,
-            decision: Decision::NoMatch,
+            decision: json::Decision::NoMatch,
             reason: reason.to_string(),
         };
-        let _ = serde_json::to_writer(std::io::stdout(), &nm);
+        let _ = serde_json::to_writer(&mut self.out, &nm);
         println!();
     }
 
-    pub fn write_actor_db(b: &HashMap<String, Actor>) {
-        let adb = JActorDB {
-            kind: MsgType::DumpDb,
+    fn write_actor_db(&mut self, b: &HashMap<String, Actor>) {
+        let adb = json::JActorDB {
+            kind: json::MsgType::DumpDb,
             actors: b,
         };
-        let _ = serde_json::to_writer(std::io::stdout(), &adb);
+        let _ = serde_json::to_writer(&mut self.out, &adb);
         println!();
     }
 }

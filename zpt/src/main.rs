@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use tracing::Level;
 use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
 
-use crate::out::{OutFmt, OutputFormatter};
+use crate::out::{HumanFormatter, JsonFormatter, OutputFormatter};
 use crate::repl::Repl;
 use error::ZptError;
 
@@ -45,14 +45,14 @@ fn main() {
     if cli.verbose {
         enable_logger();
     }
-    let outfmt = if cli.json {
-        OutFmt::Json
+    let mut outfmt = if cli.json {
+        Box::new(JsonFormatter::new(std::io::stdout())) as Box<dyn OutputFormatter>
     } else {
-        OutFmt::Human
+        Box::new(HumanFormatter::new(std::io::stdout())) as Box<dyn OutputFormatter>
     };
     let cwd = env::current_dir().unwrap_or(PathBuf::from("."));
     if cli.input.is_none() {
-        match Repl::new(&cwd, &outfmt).run() {
+        match Repl::new(&cwd, &mut outfmt).run() {
             Ok(_) => {}
             Err(e) => {
                 outfmt.write_error(&e.to_string());
@@ -61,7 +61,7 @@ fn main() {
         };
     } else {
         let input = cli.input.as_ref().unwrap();
-        match run_file_or_stdin(input, &cwd, &outfmt) {
+        match run_file_or_stdin(input, &cwd, &mut outfmt) {
             Ok(_) => {}
             Err(e) => {
                 outfmt.write_error(&e.to_string());
@@ -72,7 +72,11 @@ fn main() {
     std::process::exit(0);
 }
 
-fn run_file_or_stdin(input: &Path, cwd: &Path, outfmt: &OutFmt) -> Result<(), ZptError> {
+fn run_file_or_stdin(
+    input: &Path,
+    cwd: &Path,
+    outfmt: &mut Box<dyn OutputFormatter>,
+) -> Result<(), ZptError> {
     let instructions = if input.to_string_lossy() == "-" {
         let mut buffer = String::new();
         io::stdin().read_to_string(&mut buffer)?;
