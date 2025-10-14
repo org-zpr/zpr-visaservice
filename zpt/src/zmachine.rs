@@ -1,14 +1,13 @@
 //! z-machine is the ZPT execution machine which executes ZPT "programs" line by
 //! line.  Program lines either update state or sends API calls to the executor.
 
-use chrono::{DateTime, Local, SecondsFormat};
-use colored::Colorize;
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{MachineError, PioError};
+use crate::out::{OutFmt, OutputFormatter};
 use crate::pio;
 use libeval::actor::Actor;
 use libeval::eval::{EvalContext, EvalDecision};
@@ -67,13 +66,15 @@ enum PortMissingBehavior {
 pub struct ZMachine {
     base_path: PathBuf,
     eval_counter: usize,
+    outfmt: OutFmt,
 }
 
 impl ZMachine {
-    pub fn new(base_path: &Path) -> Self {
+    pub fn new(base_path: &Path, outfmt: &OutFmt) -> Self {
         ZMachine {
             base_path: base_path.to_path_buf(),
             eval_counter: 0,
+            outfmt: *outfmt,
         }
     }
 
@@ -122,7 +123,7 @@ impl ZMachine {
                 }
             }
             Instruction::Dumpdb => {
-                state.dump_db();
+                state.dump_db(&self.outfmt);
                 Ok(())
             }
             Instruction::Help(None) => {
@@ -134,7 +135,8 @@ impl ZMachine {
                     "tcp" => self.print_help_tcp(),
                     "icmp" => self.print_help_icmp(),
                     _ => {
-                        println!("unknown help topic: '{}'", topic);
+                        self.outfmt
+                            .write_error(&format!("unknown help topic: '{topic}'"));
                     }
                 }
                 Ok(())
@@ -285,49 +287,19 @@ impl ZMachine {
     fn present_decision(&self, state: &State, decision: &EvalDecision, pd: &PacketDesc) {
         match decision {
             EvalDecision::Allow(hits) => {
-                println!(
-                    "{}: {}",
-                    format!("eval {}", self.eval_counter).yellow(),
-                    "Decision ALLOW".green()
-                );
-                for (hitnum, hit) in hits.iter().enumerate() {
-                    print!(
-                        "{}",
-                        format!(
-                            "  [hit {}]  Matched rule: #{} direction: {}",
-                            hitnum, hit.match_idx, hit.direction
-                        )
-                        .cyan()
-                    );
-                    if let Some(ref sig) = hit.signal {
-                        println!("      Signal: '{}' to {}", sig.message, sig.service);
-                    } else {
-                        println!();
-                    }
-                    match state.get_ctx().as_ref().unwrap().visa_info_for_hit(hit, pd) {
-                        Err(e) => println!("ERROR requesting visa: {}", e),
-                        Ok(props) => {
-                            println!("     {}   {}", "zpl".dimmed(), props.get_zpl().magenta());
-                            println!("    {}   {props}", "visa".dimmed());
-                        }
-                    }
+                let mut vprops = Vec::new();
+                for hit in hits {
+                    let vprop_or_error =
+                        state.get_ctx().as_ref().unwrap().visa_info_for_hit(hit, pd);
+                    vprops.push(vprop_or_error);
                 }
+                self.outfmt.write_allow(self.eval_counter, hits, &vprops);
             }
-            EvalDecision::Deny(_hits) => {
-                // TODO: Show more info about the DENY
-                println!(
-                    "{}: {}",
-                    format!("eval {}", self.eval_counter).yellow(),
-                    "Decision DENY".red()
-                );
+            EvalDecision::Deny(hits) => {
+                self.outfmt.write_deny(self.eval_counter, hits);
             }
             EvalDecision::NoMatch(reason) => {
-                println!(
-                    "{}: {} - {}",
-                    format!("eval {}", self.eval_counter).yellow(),
-                    "Decision NO MATCH".red(),
-                    reason.cyan()
-                );
+                self.outfmt.write_no_match(self.eval_counter, reason);
             }
         }
     }
@@ -404,24 +376,8 @@ impl State {
         self.ctx.is_some()
     }
 
-    pub fn dump_db(&self) {
-        println!("Actor database:");
-        if self.actor_db.is_empty() {
-            println!("  (empty)");
-            return;
-        }
-        for (name, actor) in &self.actor_db {
-            println!("  [{}]", name);
-            for attr in actor.attrs_iter() {
-                let dt: DateTime<Local> = attr.get_expires().into();
-                println!(
-                    "     {}:{} (exp {})",
-                    attr.get_key(),
-                    attr.get_value(),
-                    dt.to_rfc3339_opts(SecondsFormat::Secs, false)
-                );
-            }
-        }
+    pub fn dump_db(&self, outfmt: &OutFmt) {
+        outfmt.write_actor_db(&self.actor_db);
     }
 
     pub fn load_policy(&mut self, path: &Path) -> Result<(), PioError> {

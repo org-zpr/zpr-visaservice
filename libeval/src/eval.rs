@@ -4,6 +4,7 @@ use crate::zpr_policy::ZprPolicy;
 use ::polio::policy_capnp;
 use std::fmt;
 
+use serde::Serialize;
 use std::net;
 use thiserror::Error;
 use tracing::debug;
@@ -37,7 +38,7 @@ pub enum EvalError {
 
 /// A "hit" is a single matching permission or deny line in policy
 /// that matches against the actors and packet description.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 #[allow(dead_code)]
 pub struct Hit {
     /// Index into the policies for the matching policy.
@@ -69,7 +70,7 @@ impl Hit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Forward,
     Reverse,
@@ -86,7 +87,7 @@ impl fmt::Display for Direction {
 
 /// VisaProps is most of the information needed to create a visa.
 /// Does not set an expiration unless one is part of a policy constraint.
-#[derive(Debug)]
+#[derive(Serialize, Debug)]
 #[allow(dead_code)]
 pub struct VisaProps {
     source_addr: net::IpAddr,
@@ -144,21 +145,21 @@ impl fmt::Display for VisaProps {
 }
 
 /// Policy may include constraints on the permission.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum Constraint {
     /// unix time milliseconds for expiration of permission.
     ExpiresAtMs(u64),
 }
 
 /// Policy may dictate certain communication pattern options.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum CommOpt {
     // TODO: How to use this?
     ReversePinhole,
     // others TBD?
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 #[allow(dead_code)]
 pub struct Signal {
     pub message: String,

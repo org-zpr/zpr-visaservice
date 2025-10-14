@@ -6,6 +6,7 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
 use crate::error::ZptError;
+use crate::out::{OutFmt, OutputFormatter};
 use crate::parser;
 use crate::zmachine::{State, ZMachine};
 
@@ -13,6 +14,7 @@ pub struct Repl {
     machine: ZMachine,
     state: State,
     rl: rustyline::DefaultEditor,
+    outfmt: OutFmt,
 }
 
 enum Command {
@@ -21,11 +23,12 @@ enum Command {
 }
 
 impl Repl {
-    pub fn new(base_path: &Path) -> Self {
+    pub fn new(base_path: &Path, outfmt: &OutFmt) -> Self {
         Repl {
-            machine: ZMachine::new(base_path),
+            machine: ZMachine::new(base_path, outfmt),
             state: State::new(),
             rl: DefaultEditor::new().unwrap(),
+            outfmt: *outfmt,
         }
     }
 
@@ -64,9 +67,9 @@ impl Repl {
             match parser::parse(trimmed) {
                 Ok(instruction) => match self.machine.execute(&instruction, &mut self.state) {
                     Ok(_) => {}
-                    Err(e) => eprintln!("{}: {}", "Error".red(), e),
+                    Err(e) => self.outfmt.write_error(&e.to_string()),
                 },
-                Err(e) => eprintln!("{}: {}", "Error".red(), e),
+                Err(e) => self.outfmt.write_error(&e.to_string()),
             };
         }
         Ok(())
@@ -81,7 +84,7 @@ impl Repl {
             if self.is_empty(trimmed) {
                 continue;
             }
-            println!(">  {}", format!("{trimmed}").dimmed());
+            self.outfmt.write_echo_line(trimmed); // println!(">  {}", format!("{trimmed}").dimmed());
             if self.is_exit(trimmed) {
                 break;
             }
