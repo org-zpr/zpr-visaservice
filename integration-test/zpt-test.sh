@@ -5,26 +5,20 @@ ZPT_BIN=$(realpath "$(dirname $0)/../zpt/target/debug/zpt")
 INPUT=$(realpath "$(dirname $0)/../zpt/test-data/test-signal.zpt")
 
 
-"$ZPT_BIN" -i "$INPUT" | grep 'eval 1: Decision ALLOW'
-PASS=$?
+# Verify there are two EVAL+ALLOW objects for instruction=1
+result=$("$ZPT_BIN" -i "$INPUT" --json | jq -s '[.[] | select(.kind=="EVAL" and .instruction==1 and .decision=="ALLOW")] | length == 2')
 
-echo
-if [[ "$PASS" -ne 0 ]]; then
-  echo "FAILURE on eval 1"
-  exit "$PASS"
+if [ "$result" = "false" ]; then
+  echo "FAILED ON EVAL 1"
+  exit 1
 fi
 
+# Verify there is one EVAL+NO_MATCH object for instruction=2
+result=$("$ZPT_BIN" -i "$INPUT" --json | jq -s '[.[] | select(.kind=="EVAL" and .instruction==2 and .decision=="NO_MATCH")] | length == 1')
 
-"$ZPT_BIN" -i "$INPUT" | grep 'eval 2: Decision NO MATCH'
-
-echo
-if [[ "$PASS" == 0 ]]; then
-  echo "SUCCESS"
-else
-  echo "FAILURE on eval 2"
-  exit "$PASS"
+if [ "$result" = "false" ]; then
+  echo "FAILED ON EVAL 2"
+  exit 1
 fi
 
-
-
-
+echo "SUCCESS"

@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::time::{Duration, SystemTime};
 
 /// used to be called EPID
@@ -12,13 +13,13 @@ pub const KATTR_CN: &str = "endpoint.zpr.adapter.cn";
 /// From the perspective of the evaluator, and actor is just a bunch of
 /// attributes and provided services.  The provided services is stored
 /// under the [KAttrServices] attribute key.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Actor {
     attrs: Vec<Attribute>,
     provider: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 pub struct Attribute {
     key: String,
@@ -88,6 +89,12 @@ impl Actor {
 
     pub fn is_provider(&self) -> bool {
         self.provider
+    }
+
+    pub fn provides(&self, service_id: &str) -> bool {
+        self.attrs
+            .iter()
+            .any(|a| a.key == KATTR_SERVICES && a.value_has(service_id))
     }
 
     pub fn has_attribute_named(&self, key: &str) -> bool {

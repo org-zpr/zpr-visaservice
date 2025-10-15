@@ -6,13 +6,15 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
 use crate::error::ZptError;
+use crate::out::OutputFormatter;
 use crate::parser;
 use crate::zmachine::{State, ZMachine};
 
-pub struct Repl {
+pub struct Repl<'a> {
     machine: ZMachine,
     state: State,
     rl: rustyline::DefaultEditor,
+    outfmt: &'a mut Box<dyn OutputFormatter>,
 }
 
 enum Command {
@@ -20,12 +22,13 @@ enum Command {
     Exit,
 }
 
-impl Repl {
-    pub fn new(base_path: &Path) -> Self {
+impl<'a> Repl<'a> {
+    pub fn new(base_path: &Path, outfmt: &'a mut Box<dyn OutputFormatter>) -> Self {
         Repl {
             machine: ZMachine::new(base_path),
             state: State::new(),
             rl: DefaultEditor::new().unwrap(),
+            outfmt: outfmt,
         }
     }
 
@@ -62,32 +65,38 @@ impl Repl {
                 continue;
             }
             match parser::parse(trimmed) {
-                Ok(instruction) => match self.machine.execute(&instruction, &mut self.state) {
-                    Ok(_) => {}
-                    Err(e) => eprintln!("{}: {}", "Error".red(), e),
-                },
-                Err(e) => eprintln!("{}: {}", "Error".red(), e),
+                Ok(instruction) => {
+                    match self
+                        .machine
+                        .execute(&instruction, &mut self.state, &mut self.outfmt)
+                    {
+                        Ok(_) => {}
+                        Err(e) => self.outfmt.write_error(&e.to_string()),
+                    }
+                }
+                Err(e) => self.outfmt.write_error(&e.to_string()),
             };
         }
         Ok(())
     }
 
-    pub fn run_script<'a, I>(&mut self, lines_iter: I) -> Result<(), ZptError>
+    pub fn run_script<'s, I>(&mut self, lines_iter: I) -> Result<(), ZptError>
     where
-        I: Iterator<Item = &'a str>,
+        I: Iterator<Item = &'s str>,
     {
         for line in lines_iter {
             let trimmed = line.trim();
             if self.is_empty(trimmed) {
                 continue;
             }
-            println!(">  {}", format!("{trimmed}").dimmed());
+            self.outfmt.write_echo_line(trimmed);
             if self.is_exit(trimmed) {
                 break;
             }
 
             let instr = parser::parse(trimmed)?;
-            self.machine.execute(&instr, &mut self.state)?;
+            self.machine
+                .execute(&instr, &mut self.state, &mut self.outfmt)?;
         }
         Ok(())
     }
