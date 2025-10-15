@@ -231,7 +231,6 @@ impl EvalContext {
         // We will make two passes, once looking for denies, and then looking for allows (if needed).
         let deny_hits = self.match_policies(false, src_actor, dst_actor, request, &policy)?;
         if !deny_hits.is_empty() {
-            println!("XXX FOUND DENY HITS -- EXITING EARLY");
             return Ok(EvalDecision::Deny(deny_hits));
         }
 
