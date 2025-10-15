@@ -202,7 +202,7 @@ impl ZMachine {
     }
 
     fn eval_tcp(
-        &mut self,
+        &self,
         state: &State,
         source_expr: &ActorExpr,
         dest_expr: &ActorExpr,
@@ -224,7 +224,7 @@ impl ZMachine {
     }
 
     fn eval_udp(
-        &mut self,
+        &self,
         state: &State,
         source_expr: &ActorExpr,
         dest_expr: &ActorExpr,
@@ -243,7 +243,7 @@ impl ZMachine {
     }
 
     fn eval_icmp(
-        &mut self,
+        &self,
         state: &mut State,
         source_expr: &ActorExpr,
         dest_expr: &ActorExpr,
@@ -265,7 +265,7 @@ impl ZMachine {
     }
 
     fn do_eval(
-        &mut self,
+        &self,
         state: &State,
         src_actor: &Actor,
         dst_actor: &Actor,
@@ -293,7 +293,7 @@ impl ZMachine {
     }
 
     fn present_decision(
-        &mut self,
+        &self,
         state: &State,
         decision: &EvalDecision,
         pd: &PacketDesc,
