@@ -89,7 +89,7 @@ impl<'a> Repl<'a> {
             if self.is_empty(trimmed) {
                 continue;
             }
-            self.outfmt.write_echo_line(trimmed); // println!(">  {}", format!("{trimmed}").dimmed());
+            self.outfmt.write_echo_line(trimmed);
             if self.is_exit(trimmed) {
                 break;
             }

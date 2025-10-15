@@ -43,12 +43,14 @@ pub struct HumanFormatter<WOut: Write> {
 }
 
 impl<WOut: Write> HumanFormatter<WOut> {
+    /// Create new human formatter that writes to the given writer.
     pub fn new(out: WOut) -> Self {
         HumanFormatter { out }
     }
 }
 
 impl<WOut: Write> JsonFormatter<WOut> {
+    /// Create a new JSON formatter that writes to the given writer.
     pub fn new(out: WOut) -> Self {
         JsonFormatter { out }
     }
@@ -103,7 +105,7 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
     }
 
     fn write_deny(&mut self, instr_num: usize, hits: &[Hit]) {
-        // TODO: Show more info about the DENY
+        // TODO: Show the zpl with the deny?
         let _ = writeln!(
             self.out,
             "{}: {}",
