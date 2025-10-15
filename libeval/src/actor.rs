@@ -91,6 +91,12 @@ impl Actor {
         self.provider
     }
 
+    pub fn provides(&self, service_id: &str) -> bool {
+        self.attrs
+            .iter()
+            .any(|a| a.key == KATTR_SERVICES && a.value_has(service_id))
+    }
+
     pub fn has_attribute_named(&self, key: &str) -> bool {
         self.attrs.iter().any(|a| a.key == key)
     }

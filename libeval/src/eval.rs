@@ -231,6 +231,7 @@ impl EvalContext {
         // We will make two passes, once looking for denies, and then looking for allows (if needed).
         let deny_hits = self.match_policies(false, src_actor, dst_actor, request, &policy)?;
         if !deny_hits.is_empty() {
+            println!("XXX FOUND DENY HITS -- EXITING EARLY");
             return Ok(EvalDecision::Deny(deny_hits));
         }
 
@@ -329,7 +330,7 @@ impl EvalContext {
             } else {
                 debug!("trying to match deny policy #{i}");
             }
-
+            let service_id = com_policy.get_service_id().unwrap().to_str().unwrap();
             match self.try_match_scope(request, &com_policy) {
                 Some(ScopeMatchType::Forward) => {
                     // Source -> Dest match
@@ -337,6 +338,14 @@ impl EvalContext {
                     // Proceed only if the destination provides a service.
                     if !dst_actor.is_provider() {
                         debug!("policy #{i} matches FWD but dest actor is not a provider");
+                        continue;
+                    }
+                    // This policy only applies if the provider is providing the service referenced in the policy.
+                    if !dst_actor.provides(service_id) {
+                        debug!(
+                            "policy #{i} matches FWD on ports but dest actor does not provide service {}",
+                            service_id
+                        );
                         continue;
                     }
                     debug!("policy #{i} matches FWD scope");
@@ -353,6 +362,14 @@ impl EvalContext {
                     // Proceed only if the source provides a service.
                     if !src_actor.is_provider() {
                         debug!("policy #{i} matches REV but src actor is not a provider");
+                        continue;
+                    }
+                    // This policy only applies if the provider is providing the service referenced in the policy.
+                    if !src_actor.provides(service_id) {
+                        debug!(
+                            "policy #{i} matches REV on ports but src actor does not provide service {}",
+                            service_id
+                        );
                         continue;
                     }
                     debug!("policy #{i} matches REV scope");
@@ -650,12 +667,44 @@ mod test {
             EvalDecision::Allow(hits) => {
                 assert_eq!(hits.len(), 1);
                 let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
-                assert_eq!(vinfo.zpl, "zpl_missing"); // TODO: compiler does not write the ZPL yet.
+                assert_eq!(
+                    vinfo.zpl,
+                    "(line 2) allow red users to access content:red services"
+                );
                 assert_eq!(vinfo.source_addr, packet.source_addr);
                 assert_eq!(vinfo.dest_addr, packet.dest_addr);
                 assert_eq!(vinfo.protocol, packet.protocol);
                 assert_eq!(vinfo.source_port, 0); // high port becomes 0
                 assert_eq!(vinfo.dest_port, 80);
+            }
+            _ => panic!("expected allow decision, not {:?}", decision),
+        }
+    }
+
+    // Ran into an issue where libeval was not checking that the policy ID was applicable.
+    // And this simple eval was failing.
+    #[test]
+    fn test_eval_with_never() {
+        setup();
+        let pol = load_policy("test-signal.bin2");
+        let ctx = EvalContext::new(pol);
+
+        // User with bas_id and color:red should be able to access database service.
+        let mut user = Actor::new();
+        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr("user.bas_id", "1000", Duration::from_secs(60));
+
+        let mut service = Actor::new();
+        service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
+        service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
+        let packet = PacketDesc::new_tcp_req("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+
+        let decision = ctx.eval_request(&user, &service, &packet).unwrap();
+        match decision {
+            EvalDecision::Allow(hits) => {
+                assert_eq!(hits.len(), 1);
+                assert_eq!(hits[0].match_idx, 1);
+                assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected allow decision, not {:?}", decision),
         }

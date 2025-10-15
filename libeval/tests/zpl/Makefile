@@ -1,6 +1,7 @@
 ZPLC ?= zplc
 
-OBJS := $(wildcard *.bin2)
+ZPLS := $(wildcard *.zpl)
+OBJS := $(ZPLS:.zpl=.bin2)
 
 info:
 	@echo Makefile to help with compiling the ZPR policies
