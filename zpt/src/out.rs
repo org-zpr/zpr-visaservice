@@ -75,25 +75,9 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
             format!("eval {}", instr_num).yellow(),
             "Decision ALLOW".green()
         );
+
         for (hitnum, hit) in hits.iter().enumerate() {
-            let _ = write!(
-                self.out,
-                "{}",
-                format!(
-                    "  [hit {}]  Matched rule: #{} direction: {}",
-                    hitnum, hit.match_idx, hit.direction
-                )
-                .cyan()
-            );
-            if let Some(ref sig) = hit.signal {
-                let _ = writeln!(
-                    self.out,
-                    "      Signal: '{}' to {}",
-                    sig.message, sig.service
-                );
-            } else {
-                let _ = writeln!(self.out);
-            }
+            let _ = self.write_hit(hitnum, hit);
             match vprop_results.get(hitnum) {
                 Some(Ok(props)) => {
                     let _ = writeln!(
@@ -118,7 +102,7 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
         }
     }
 
-    fn write_deny(&mut self, instr_num: usize, _hits: &[Hit]) {
+    fn write_deny(&mut self, instr_num: usize, hits: &[Hit]) {
         // TODO: Show more info about the DENY
         let _ = writeln!(
             self.out,
@@ -126,6 +110,9 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
             format!("eval {}", instr_num).yellow(),
             "Decision DENY".red()
         );
+        for (hitnum, hit) in hits.iter().enumerate() {
+            let _ = self.write_hit(hitnum, hit);
+        }
     }
 
     fn write_no_match(&mut self, instr_num: usize, reason: &str) {
@@ -156,6 +143,29 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
                     dt.to_rfc3339_opts(SecondsFormat::Secs, false)
                 );
             }
+        }
+    }
+}
+
+impl<WOut: Write> HumanFormatter<WOut> {
+    fn write_hit(&mut self, idx: usize, hit: &Hit) -> std::io::Result<()> {
+        write!(
+            self.out,
+            "{}",
+            format!(
+                "  [hit {}]  Matched rule: #{} direction: {}",
+                idx, hit.match_idx, hit.direction
+            )
+            .cyan()
+        )?;
+        if let Some(ref sig) = hit.signal {
+            writeln!(
+                self.out,
+                "      Signal: '{}' to {}",
+                sig.message, sig.service
+            )
+        } else {
+            writeln!(self.out)
         }
     }
 }
@@ -232,7 +242,7 @@ impl<WOut: Write> OutputFormatter for JsonFormatter<WOut> {
             error: msg.to_string(),
         };
         let _ = serde_json::to_writer(&mut self.out, &e);
-        eprintln!();
+        let _ = writeln!(self.out);
     }
 
     fn write_echo_line(&mut self, _line: &str) {} // NOP
@@ -259,7 +269,7 @@ impl<WOut: Write> OutputFormatter for JsonFormatter<WOut> {
                 visa: voutcome,
             };
             let _ = serde_json::to_writer(&mut self.out, &a);
-            println!();
+            let _ = writeln!(self.out);
         }
     }
 
@@ -272,7 +282,7 @@ impl<WOut: Write> OutputFormatter for JsonFormatter<WOut> {
                 hit: hit,
             };
             let _ = serde_json::to_writer(&mut self.out, &d);
-            println!();
+            let _ = writeln!(self.out);
         }
     }
 
@@ -284,7 +294,7 @@ impl<WOut: Write> OutputFormatter for JsonFormatter<WOut> {
             reason: reason.to_string(),
         };
         let _ = serde_json::to_writer(&mut self.out, &nm);
-        println!();
+        let _ = writeln!(self.out);
     }
 
     fn write_actor_db(&mut self, b: &HashMap<String, Actor>) {
@@ -293,6 +303,6 @@ impl<WOut: Write> OutputFormatter for JsonFormatter<WOut> {
             actors: b,
         };
         let _ = serde_json::to_writer(&mut self.out, &adb);
-        println!();
+        let _ = writeln!(self.out);
     }
 }
