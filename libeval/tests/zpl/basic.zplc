@@ -32,12 +32,20 @@ provider = [[ "endpoint.zpr.adapter.cn", "bas.zpr.org" ]]
 # zpr-authrsa
 
 [protocols.http]
-l4protocol = "iana.TCP"
-l7protocol = "http"
+l4protocol = "TCP"
 port = 80
+
+[protocols.ping]
+l4protocol = "ICMP6"
+icmp_type = "request-response"
+icmp_codes = [ 128, 129 ]
 
 [services.database]
 protocol = "http"
+provider = [[ "user.bas_id", "1233" ]]
+
+[services.pingdb]
+protocol = "ping"
 provider = [[ "user.bas_id", "1233" ]]
 
 [services.bas-vs]

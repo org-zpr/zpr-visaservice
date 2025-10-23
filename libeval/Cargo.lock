@@ -366,8 +366,8 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "zpr-policy"
-version = "0.10.0"
-source = "git+https://github.com/org-zpr/zpr-policy-rs.git?tag=v0.8.2#4cedef006a59a3c232f65ff2a58dcab6d3fa54bc"
+version = "0.12.0"
+source = "git+https://github.com/org-zpr/zpr-policy-rs.git?tag=v0.8.5#2e3b673b613bede3a78686318c3418a461ca9b88"
 dependencies = [
  "capnp",
  "prost",
