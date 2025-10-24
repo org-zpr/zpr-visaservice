@@ -1,0 +1,7 @@
+[core]
+#vs_addr = "fd5a:5051::1"
+#vsapi_port = 5002
+#admin_port = 8182
+#vk_host = "::1"
+#vk_port = 6379
+
