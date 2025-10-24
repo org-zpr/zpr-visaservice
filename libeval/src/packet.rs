@@ -42,12 +42,7 @@ pub enum CommFlag {
 }
 
 impl PacketDesc {
-    pub fn new_tcp_req(
-        source_addr: &str,
-        dest_addr: &str,
-        source_port: u16,
-        dest_port: u16,
-    ) -> Self {
+    pub fn new_tcp(source_addr: &str, dest_addr: &str, source_port: u16, dest_port: u16) -> Self {
         PacketDesc {
             source_addr: source_addr.parse().unwrap(),
             dest_addr: dest_addr.parse().unwrap(),
@@ -58,12 +53,7 @@ impl PacketDesc {
         }
     }
 
-    pub fn new_udp_req(
-        source_addr: &str,
-        dest_addr: &str,
-        source_port: u16,
-        dest_port: u16,
-    ) -> Self {
+    pub fn new_udp(source_addr: &str, dest_addr: &str, source_port: u16, dest_port: u16) -> Self {
         PacketDesc {
             source_addr: source_addr.parse().unwrap(),
             dest_addr: dest_addr.parse().unwrap(),

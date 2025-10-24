@@ -670,7 +670,7 @@ mod test {
         let mut service = Actor::new();
         service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
         service.add_attr("service.content", "red", Duration::from_secs(60));
-        let packet = PacketDesc::new_tcp_req("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -709,7 +709,7 @@ mod test {
         let mut service = Actor::new();
         service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
         service.add_attr("service.content", "red", Duration::from_secs(60));
-        let packet = PacketDesc::new_tcp_req("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -746,7 +746,7 @@ mod test {
         let mut service = Actor::new();
         service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
         service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
-        let packet = PacketDesc::new_tcp_req("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -774,7 +774,7 @@ mod test {
         let mut service = Actor::new();
         service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
         service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
-        let packet = PacketDesc::new_tcp_req("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
