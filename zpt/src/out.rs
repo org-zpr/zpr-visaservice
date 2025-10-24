@@ -169,7 +169,7 @@ impl<WOut: Write> HumanFormatter<WOut> {
                 sig.service.blue()
             )
         } else {
-            writeln!(self.out)
+            Ok(())
         }
     }
 }
