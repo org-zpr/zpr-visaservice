@@ -360,8 +360,6 @@ impl EvalContext {
                     debug!("policy #{i} matches FWD scope");
                     // This policy matches only if all conditions match.
                     if self.match_policy_conditions(src_actor, dst_actor, &com_policy) {
-                        // TODO: Signal is not yet spported in v2 binary.
-                        debug!("policy #{i} hits FWD");
                         Some(Direction::Forward)
                     } else {
                         None
@@ -386,7 +384,6 @@ impl EvalContext {
                     debug!("policy #{i} matches REV scope");
                     // This policy matches only if all conditions match.
                     if self.match_policy_conditions(dst_actor, src_actor, &com_policy) {
-                        debug!("policy #{i} hits REV");
                         Some(Direction::Reverse)
                     } else {
                         None
@@ -401,8 +398,10 @@ impl EvalContext {
                         message: signal_rdr.get_msg().unwrap().to_string().unwrap(),
                         service: signal_rdr.get_svc().unwrap().to_string().unwrap(),
                     };
+                    debug!("policy #{i} hits {direction} with signal: {:?}", signal);
                     hits.push(Hit::new_with_signal(i, direction, signal));
                 } else {
+                    debug!("policy #{i} hits {direction} no signal");
                     hits.push(Hit::new_no_signal(i, direction));
                 }
             }
