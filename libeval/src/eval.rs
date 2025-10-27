@@ -212,13 +212,13 @@ impl EvalContext {
         dst_actor: &Actor,
         request: &PacketDesc,
     ) -> Result<EvalDecision, EvalError> {
-        match request.protocol {
-            ip_proto::TCP | ip_proto::UDP | ip_proto::IPV6_ICMP => (),
-            _ => {
-                return Ok(EvalDecision::NoMatch(
-                    "only TCP/UDP/ICMPv6 protocols supported at the moment".into(),
-                ));
-            }
+        if !matches!(
+            request.protocol,
+            ip_proto::TCP | ip_proto::UDP | ip_proto::IPV6_ICMP
+        ) {
+            return Ok(EvalDecision::NoMatch(
+                "only TCP/UDP/ICMPv6 protocols supported".into(),
+            ));
         }
         let policy = self
             .policy
@@ -550,10 +550,10 @@ impl EvalContext {
                         }
                     } else {
                         let allow_service_port_num = pnum.get_port_num();
-                        if request.source_port == allow_service_port_num {
-                            Some(ScopeMatchType::Reverse)
-                        } else if request.dest_port == allow_service_port_num {
+                        if request.dest_port == allow_service_port_num {
                             Some(ScopeMatchType::Forward)
+                        } else if request.source_port == allow_service_port_num {
+                            Some(ScopeMatchType::Reverse)
                         } else {
                             None
                         }
