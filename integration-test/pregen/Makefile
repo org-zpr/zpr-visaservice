@@ -1,7 +1,7 @@
 ZPLC ?= zplc
 KEY := zpr-rsa-key.pem
 
-OBJS := conform-policy.bin
+OBJS := conform-policy.bin zpt-test.bin2
 
 info:
 	@echo Makefile to help with compiling the ZPR policies
@@ -23,6 +23,8 @@ clean:
 %.bin: %.zpl %.zplc
 	$(ZPLC) -k $(KEY) $<
 
+%.bin2: %.zpl %.zplc
+	$(ZPLC) -k $(KEY) --outfmt v2 $<
 
 rebuild: clean all
 

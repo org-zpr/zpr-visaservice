@@ -82,13 +82,13 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
             let _ = self.write_hit(hitnum, hit);
             match vprop_results.get(hitnum) {
                 Some(Ok(props)) => {
+                    let _ = writeln!(self.out, "    {}   {props}", "visa".dimmed());
                     let _ = writeln!(
                         self.out,
                         "     {}   {}",
                         "zpl".dimmed(),
                         props.get_zpl().magenta()
                     );
-                    let _ = writeln!(self.out, "    {}   {props}", "visa".dimmed());
                 }
                 Some(Err(e)) => {
                     let _ = writeln!(self.out, "ERROR requesting visa: {}", e);
@@ -151,7 +151,7 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
 
 impl<WOut: Write> HumanFormatter<WOut> {
     fn write_hit(&mut self, idx: usize, hit: &Hit) -> std::io::Result<()> {
-        write!(
+        writeln!(
             self.out,
             "{}",
             format!(
@@ -163,11 +163,13 @@ impl<WOut: Write> HumanFormatter<WOut> {
         if let Some(ref sig) = hit.signal {
             writeln!(
                 self.out,
-                "      Signal: '{}' to {}",
-                sig.message, sig.service
+                "  {}   {} -> {}",
+                "signal".dimmed(),
+                sig.message.blue(),
+                sig.service.blue()
             )
         } else {
-            writeln!(self.out)
+            Ok(())
         }
     }
 }
