@@ -212,12 +212,14 @@ impl EvalContext {
         dst_actor: &Actor,
         request: &PacketDesc,
     ) -> Result<EvalDecision, EvalError> {
-        if request.protocol != ip_proto::TCP && request.protocol != ip_proto::UDP {
+        if !matches!(
+            request.protocol,
+            ip_proto::TCP | ip_proto::UDP | ip_proto::IPV6_ICMP
+        ) {
             return Ok(EvalDecision::NoMatch(
-                "only TCP/UDP protocols supported at the moment".into(),
+                "only TCP/UDP/ICMPv6 protocols supported".into(),
             ));
         }
-
         let policy = self
             .policy
             .policy_rdr
@@ -292,10 +294,18 @@ impl EvalContext {
                     match_source_port = request.source_port;
                 }
             },
+            ip_proto::IPV6_ICMP => {
+                // For ICMPv6 the source port is the ICMP type.
+                // The dest port is the ICMP code.
+                // TODO: We do not yet encode ICMP codes into the binary policy format.
+                match_source_port = request.source_port;
+                match_dest_port = request.dest_port;
+            }
             _ => {
-                return Err(EvalError::UnsupportedProtocol(
-                    "only TCP/UDP protocols supported at the moment".into(),
-                ));
+                return Err(EvalError::UnsupportedProtocol(format!(
+                    "unsupported protocol {}",
+                    request.protocol
+                )));
             }
         }
 
@@ -330,7 +340,7 @@ impl EvalContext {
                 debug!("trying to match deny policy #{i}");
             }
             let service_id = com_policy.get_service_id().unwrap().to_str().unwrap();
-            match self.try_match_scope(request, &com_policy) {
+            let maybe_direction = match self.try_match_scope(request, &com_policy) {
                 Some(ScopeMatchType::Forward) => {
                     // Source -> Dest match
                     // So requesting dest port matches a service.
@@ -350,9 +360,9 @@ impl EvalContext {
                     debug!("policy #{i} matches FWD scope");
                     // This policy matches only if all conditions match.
                     if self.match_policy_conditions(src_actor, dst_actor, &com_policy) {
-                        // TODO: Signal is not yet spported in v2 binary.
-                        debug!("policy #{i} hits FWD");
-                        hits.push(Hit::new_no_signal(i, Direction::Forward));
+                        Some(Direction::Forward)
+                    } else {
+                        None
                     }
                 }
                 Some(ScopeMatchType::Reverse) => {
@@ -374,13 +384,27 @@ impl EvalContext {
                     debug!("policy #{i} matches REV scope");
                     // This policy matches only if all conditions match.
                     if self.match_policy_conditions(dst_actor, src_actor, &com_policy) {
-                        // TODO: Signal is not yet spported in v2 binary.
-                        debug!("policy #{i} hits REV");
-                        hits.push(Hit::new_no_signal(i, Direction::Reverse));
+                        Some(Direction::Reverse)
+                    } else {
+                        None
                     }
                 }
-                None => (),
+                None => None,
             };
+            if let Some(direction) = maybe_direction {
+                if com_policy.has_signal() {
+                    let signal_rdr = com_policy.get_signal().unwrap();
+                    let signal = Signal {
+                        message: signal_rdr.get_msg().unwrap().to_string().unwrap(),
+                        service: signal_rdr.get_svc().unwrap().to_string().unwrap(),
+                    };
+                    debug!("policy #{i} hits {direction} with signal: {:?}", signal);
+                    hits.push(Hit::new_with_signal(i, direction, signal));
+                } else {
+                    debug!("policy #{i} hits {direction} no signal");
+                    hits.push(Hit::new_no_signal(i, direction));
+                }
+            }
         }
         debug!("matched {} policies", hits.len());
         Ok(hits)
@@ -517,24 +541,49 @@ impl EvalContext {
             }
             let scope_match_type = match scope.which() {
                 Ok(policy_capnp::scope::Port(pnum)) => {
-                    let allow_service_port_num = pnum.get_port_num();
-                    if request.source_port == allow_service_port_num {
-                        Some(ScopeMatchType::Reverse)
-                    } else if request.dest_port == allow_service_port_num {
-                        Some(ScopeMatchType::Forward)
+                    if request.protocol == ip_proto::IPV6_ICMP {
+                        let allow_icmp_type = pnum.get_port_num();
+                        if request.source_port == allow_icmp_type {
+                            Some(ScopeMatchType::Forward)
+                        } else {
+                            None
+                        }
                     } else {
-                        None
+                        let allow_service_port_num = pnum.get_port_num();
+                        if request.dest_port == allow_service_port_num {
+                            Some(ScopeMatchType::Forward)
+                        } else if request.source_port == allow_service_port_num {
+                            Some(ScopeMatchType::Reverse)
+                        } else {
+                            None
+                        }
                     }
                 }
                 Ok(policy_capnp::scope::PortRange(pr)) => {
-                    let lowport = pr.get_low();
-                    let highport = pr.get_high();
-                    if request.dest_port >= lowport && request.dest_port <= highport {
-                        Some(ScopeMatchType::Forward)
-                    } else if request.source_port >= lowport && request.source_port <= highport {
-                        Some(ScopeMatchType::Reverse)
+                    if request.protocol == ip_proto::IPV6_ICMP {
+                        let icmp_type_request = pr.get_low();
+                        let icmp_type_response = pr.get_high();
+
+                        // Forward match if SRC->DST using the REQUEST type.
+                        // Reverse match is SRC->DST using the RESPONSE type.
+                        if request.source_port == icmp_type_request {
+                            Some(ScopeMatchType::Forward)
+                        } else if request.source_port == icmp_type_response {
+                            Some(ScopeMatchType::Reverse)
+                        } else {
+                            None
+                        }
                     } else {
-                        None
+                        let lowport = pr.get_low();
+                        let highport = pr.get_high();
+                        if request.dest_port >= lowport && request.dest_port <= highport {
+                            Some(ScopeMatchType::Forward)
+                        } else if request.source_port >= lowport && request.source_port <= highport
+                        {
+                            Some(ScopeMatchType::Reverse)
+                        } else {
+                            None
+                        }
                     }
                 }
                 Err(::capnp::NotInSchema(_)) => None,
@@ -620,7 +669,7 @@ mod test {
         let mut service = Actor::new();
         service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
         service.add_attr("service.content", "red", Duration::from_secs(60));
-        let packet = PacketDesc::new_tcp_req("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -659,7 +708,7 @@ mod test {
         let mut service = Actor::new();
         service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
         service.add_attr("service.content", "red", Duration::from_secs(60));
-        let packet = PacketDesc::new_tcp_req("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -696,7 +745,7 @@ mod test {
         let mut service = Actor::new();
         service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
         service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
-        let packet = PacketDesc::new_tcp_req("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -706,6 +755,128 @@ mod test {
                 assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected allow decision, not {:?}", decision),
+        }
+    }
+
+    #[test]
+    fn test_signal() {
+        setup();
+        let pol = load_policy("test-signal.bin2");
+        let ctx = EvalContext::new(pol);
+
+        // Set user with color:green so it does not match color:red since in that
+        // case we would match two policies.
+        let mut user = Actor::new();
+        user.add_attr("user.color", "green", Duration::from_secs(60));
+        user.add_attr("user.bas_id", "1000", Duration::from_secs(60));
+
+        let mut service = Actor::new();
+        service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
+        service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
+        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+
+        let decision = ctx.eval_request(&user, &service, &packet).unwrap();
+        match decision {
+            EvalDecision::Allow(hits) => {
+                assert_eq!(hits.len(), 1);
+                assert_eq!(hits[0].match_idx, 1);
+                assert!(hits[0].direction == Direction::Forward);
+                assert!(hits[0].signal.is_some());
+                let signal = hits[0].signal.as_ref().unwrap();
+                assert_eq!(signal.message, "employee");
+                assert_eq!(signal.service, "signalService");
+            }
+            _ => panic!("expected allow decision, not {:?}", decision),
+        }
+    }
+
+    #[test]
+    fn test_ping_echo_request() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(pol);
+
+        // should let red users ping pingdb
+        let mut user = Actor::new();
+        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+
+        let mut service = Actor::new();
+        service.add_attr(actor::KATTR_SERVICES, "pingdb", Duration::from_secs(60));
+        service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
+        let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0);
+
+        let decision = ctx.eval_request(&user, &service, &packet).unwrap();
+        match decision {
+            EvalDecision::Allow(hits) => {
+                assert_eq!(hits.len(), 1);
+                let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
+                assert_eq!(vinfo.zpl, "(line 5) allow red users to access pingdb");
+                assert_eq!(vinfo.source_addr, packet.source_addr);
+                assert_eq!(vinfo.dest_addr, packet.dest_addr);
+                assert_eq!(vinfo.protocol, packet.protocol);
+                assert_eq!(vinfo.source_port, 0x80);
+                assert_eq!(vinfo.dest_port, 0x0);
+            }
+            _ => panic!("expected allow decision, not {:?}", decision),
+        }
+    }
+
+    #[test]
+    fn test_ping_echo_reply() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(pol);
+
+        // should let red users ping pingdb
+        let mut user = Actor::new();
+        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+
+        let mut service = Actor::new();
+        service.add_attr(actor::KATTR_SERVICES, "pingdb", Duration::from_secs(60));
+        service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
+
+        // We picked up an echo reply packet.
+        // According to policy this should match.
+        let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);
+
+        let decision = ctx.eval_request(&service, &user, &packet).unwrap();
+        match decision {
+            EvalDecision::Allow(hits) => {
+                assert_eq!(hits.len(), 1);
+                let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
+                assert_eq!(vinfo.zpl, "(line 5) allow red users to access pingdb");
+                assert_eq!(vinfo.source_addr, packet.source_addr);
+                assert_eq!(vinfo.dest_addr, packet.dest_addr);
+                assert_eq!(vinfo.protocol, packet.protocol);
+                assert_eq!(vinfo.source_port, 0x81);
+                assert_eq!(vinfo.dest_port, 0x0);
+            }
+            _ => panic!("expected allow decision, not {:?}", decision),
+        }
+    }
+
+    #[test]
+    fn test_ping_echo_reply_not_permitted() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(pol);
+
+        // should let red users ping pingdb -- should not let randos send echo-reply to red users.
+        let mut user = Actor::new();
+        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+
+        let mut service = Actor::new();
+        service.add_attr(actor::KATTR_SERVICES, "foo", Duration::from_secs(60));
+        service.add_attr("user.bas_id", "1000", Duration::from_secs(60));
+
+        // Echo reply to a red user
+        let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);
+        let decision = ctx.eval_request(&service, &user, &packet).unwrap();
+        match decision {
+            EvalDecision::NoMatch(s) => {
+                assert_eq!(s, "no matching policy");
+            }
+            _ => panic!("expected deny decision, not {:?}", decision),
         }
     }
 }

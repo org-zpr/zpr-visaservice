@@ -17,7 +17,7 @@ interfaces = ["in1"]
 in1.netaddr = "n0.overlay:5000"
 
 [trusted_services.default]
-cert_path = "conform-ca-cert.pem"
+cert_path = "include/conform-ca-cert.pem"
 
 [visa_service]
 dock_node = "node.zpr.org"

@@ -219,7 +219,7 @@ impl ZMachine {
 
         // TODO: Someting interesting with TCP flags?
 
-        let pd = PacketDesc::new_tcp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
+        let pd = PacketDesc::new_tcp(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
         self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
     }
 
@@ -238,7 +238,7 @@ impl ZMachine {
             PortMissingBehavior::Error("destination port required for UDP".to_string()),
         )?;
 
-        let pd = PacketDesc::new_udp_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
+        let pd = PacketDesc::new_udp(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
         self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
     }
 
@@ -260,7 +260,7 @@ impl ZMachine {
         };
         let src_actor = self.resolve_actor_no_port(state, source_expr)?;
         let dst_actor = self.resolve_actor_no_port(state, dest_expr)?;
-        let pd = PacketDesc::new_icmpv6_req(DEF_SOURCE_ADDR, DEF_DEST_ADDR, icmp_type, icmp_code);
+        let pd = PacketDesc::new_icmpv6(DEF_SOURCE_ADDR, DEF_DEST_ADDR, icmp_type, icmp_code);
         self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
     }
 

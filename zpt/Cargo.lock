@@ -359,7 +359,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tracing",
- "zpr-policy",
+ "zpr-policy 0.12.0",
 ]
 
 [[package]]
@@ -1110,6 +1110,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zpr-policy"
+version = "0.12.0"
+source = "git+https://github.com/org-zpr/zpr-policy-rs.git?tag=v0.8.5#2e3b673b613bede3a78686318c3418a461ca9b88"
+dependencies = [
+ "capnp",
+ "prost",
+]
+
+[[package]]
 name = "zpt"
 version = "0.1.0"
 dependencies = [
@@ -1126,5 +1135,5 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
- "zpr-policy",
+ "zpr-policy 0.10.0",
 ]
