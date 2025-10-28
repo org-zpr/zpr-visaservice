@@ -1,10 +1,11 @@
 //! Structs that map to the TOML configuration file for the visa service.
 
-use std::net::{IpAddr, Ipv6Addr};
-
 use serde::Deserialize;
+use std::net::{IpAddr, Ipv6Addr};
+use std::path::PathBuf;
 
 use crate::error::VSError;
+use crate::zpr;
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields, default)]
@@ -15,7 +16,7 @@ pub struct VSConfig {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields, default)]
 pub struct CoreSection {
-    /// The visa service bind address - this is a constant baked into entire ZPR system.
+    /// The visa service bind address - this is a constant baked into entire ZPR system only override for testing.
     pub vs_addr: Option<IpAddr>,
 
     /// VSAPI port used by nodes to talk to the visa service VSS API.
@@ -26,11 +27,14 @@ pub struct CoreSection {
     /// Must be kept in sync with the compiler.
     pub admin_port: Option<u16>,
 
-    /// Hostname or IP address for ValKey.
-    pub vk_host: Option<String>,
+    /// TLS Certificate for HTTPS admin service.
+    pub admin_cert: PathBuf,
 
-    /// Port number for ValKey.
-    pub vk_port: Option<u16>,
+    /// TLS Private Key for HTTPS admin service.
+    pub admin_key: PathBuf,
+
+    /// ValKey connect string.
+    pub vk_uri: Option<String>,
 }
 
 impl Default for VSConfig {
@@ -43,13 +47,12 @@ impl Default for VSConfig {
 impl Default for CoreSection {
     fn default() -> Self {
         CoreSection {
-            vs_addr: Some(IpAddr::V6(Ipv6Addr::new(
-                0xfd5a, 0x5052, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001, // fd5a:5052::1
-            ))),
-            vsapi_port: Some(5002),
-            admin_port: Some(8182),
-            vk_host: Some("::1".to_string()),
-            vk_port: Some(6379),
+            vs_addr: Some(IpAddr::V6(zpr::VS_ZPR_ADDR)),
+            vsapi_port: Some(zpr::VSAPI_PORT),
+            admin_port: Some(zpr::ADMIN_HTTPS_PORT),
+            admin_cert: PathBuf::from("admin-tls-cert.pem"),
+            admin_key: PathBuf::from("admin-tls-key.pem"),
+            vk_uri: Some(zpr::VALKEY_URI.to_string()),
         }
     }
 }
@@ -72,11 +75,11 @@ mod test {
         let cfg: VSConfig = toml::from_str(
             r#"
         [core]
-        vk_port = 9999
+        vsapi_port = 9999
         "#,
         )
         .unwrap();
-        assert_eq!(cfg.core.vk_host, Some("::1".to_string()));
-        assert_eq!(cfg.core.vk_port, Some(9999));
+        assert_eq!(cfg.core.vk_uri, Some(zpr::VALKEY_URI.to_string()));
+        assert_eq!(cfg.core.vsapi_port, Some(9999));
     }
 }

@@ -1,5 +1,6 @@
 //! HTTPS admin service implementation.
 
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -27,22 +28,35 @@ use tokio_native_tls::{
     native_tls::{Identity, Protocol, TlsAcceptor as NativeTlsAcceptor},
 };
 
+use crate::assembly::Assembly;
+
 type SharedState = Arc<RwLock<AdminState>>;
 
-#[derive(Default)]
-struct AdminState {}
-
-// TODO:
-//  - need a way to shut this down.  serve has a loop soo...
-//  - would rather not pass in key/cert files.  Can we pass Key/Cert objects?
-//  - Not sure what the shared state is, but probably something similar to our Assembly in the ph.
+struct AdminState {
+    asm: Arc<Assembly>,
+}
 
 /// Blocking start of the admin server.
-/// TODO: Probably want a way to kill this so maybe return a channel or
-/// something.
-pub async fn start_admin_server(key_file: &Path, cert_file: &Path, port: u16) {
-    let shared_state = Arc::new(RwLock::new(AdminState::default()));
-    serve(native_tls_acceptor(key_file, cert_file), port, shared_state).await;
+/// TODO: Do I need a handle or something to stop this cleanly?
+pub async fn start_admin_server(
+    key_file: &Path,
+    cert_file: &Path,
+    listen: SocketAddr,
+    asm: &Arc<Assembly>,
+) {
+    let shared_state = Arc::new(RwLock::new(AdminState::new(asm.clone())));
+    serve(
+        native_tls_acceptor(key_file, cert_file),
+        listen,
+        shared_state,
+    )
+    .await;
+}
+
+impl AdminState {
+    pub fn new(asm: Arc<Assembly>) -> Self {
+        AdminState { asm }
+    }
 }
 
 fn native_tls_acceptor(key_file: &Path, cert_file: &Path) -> NativeTlsAcceptor {
@@ -62,12 +76,11 @@ fn admin_app(state: SharedState) -> Router {
         .with_state(state.clone())
 }
 
-async fn serve(acceptor: NativeTlsAcceptor, port: u16, state: SharedState) {
+async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedState) {
     let app = admin_app(state);
     let tls_acceptor = TlsAcceptor::from(acceptor);
-    let bind = format!("[::]:{}", port); // TODO: allow address to be passed in
-    let listener = TcpListener::bind(bind.clone()).await.unwrap();
-    info!("admin https service listening on {bind} (TLS)");
+    let listener = TcpListener::bind(listen).await.unwrap();
+    info!("admin https service listening on {listen} (TLS)");
 
     pin_mut!(listener);
 
