@@ -13,11 +13,13 @@ mod config;
 mod error;
 mod logging;
 mod signal_worker;
+mod vsapi_worker;
 mod zpr;
 
 use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
+use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 
 /// vs - ZPR visa service
@@ -105,15 +107,4 @@ fn main() {
 
     info!(target: MAIN, "exiting");
     std::process::exit(0);
-}
-
-fn enable_logging(verbose: bool) {
-    let level = if verbose { Level::DEBUG } else { Level::INFO };
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::registry()
-            //.with(fmt::layer().with_thread_ids(true))
-            .with(fmt::layer())
-            .with(LevelFilter::from_level(level)),
-    )
-    .expect("failed to initialize logging");
 }
