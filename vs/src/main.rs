@@ -1,11 +1,9 @@
 use clap::Parser;
-use redis::AsyncCommands;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::task::JoinSet;
-use tracing::{Level, error, info};
-use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
+use tracing::{error, info};
 
 mod admin_service;
 mod assembly;
@@ -71,8 +69,8 @@ fn main() {
     // where we need it yet.
 
     let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(zpr::VALKEY_URI);
-    let _vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
-    let res = runtime.block_on(async { _vk_client.create_multiplexed_tokio_connection().await });
+    let vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
+    let res = runtime.block_on(async { vk_client.create_multiplexed_tokio_connection().await });
     match res {
         Ok(_conn) => {
             info!(target: MAIN, "connected to ValKey at {vk_uri}");
@@ -86,6 +84,14 @@ fn main() {
     let mut js = JoinSet::new();
     js.spawn_local(signal_worker::launch(asm.clone()));
 
+    js.spawn_local(vsapi_worker::launch(
+        asm.clone(),
+        SocketAddr::new(
+            cfg.core.vs_addr.unwrap_or(IpAddr::V6(zpr::VS_ZPR_ADDR)),
+            cfg.core.vsapi_port.unwrap_or(zpr::VSAPI_PORT),
+        ),
+    ));
+
     let rt_handle = runtime.handle().clone();
     js.spawn_blocking(move || {
         rt_handle.block_on(start_admin_server(
@@ -98,6 +104,9 @@ fn main() {
             &asm,
         ));
     });
+
+    // TODO: Setup/launch the workers for the visa service. Those that will do the actual work
+    // of generating visas, and all the housekeeping.
 
     local_set.block_on(&runtime, async {
         while let Some(res) = js.join_next().await {

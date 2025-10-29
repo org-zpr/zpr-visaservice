@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+#[allow(dead_code)]
 pub struct Assembly {
     pub system_start_time: std::time::Instant,
 }
@@ -11,6 +12,7 @@ impl Assembly {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_uptime(&self) -> std::time::Duration {
         std::time::Instant::now().duration_since(self.system_start_time)
     }

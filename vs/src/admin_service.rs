@@ -7,12 +7,15 @@ use std::sync::{Arc, RwLock};
 use tracing::{error, info, warn};
 
 use axum::{
-    Json, Router,
-    body::Body,
-    extract::{Form, Request, State},
+    Json,
+    Router,
+    //body::Body,
+    extract::{Request, State},
+    //extract::Form,
     http::StatusCode,
-    response::Response,
-    routing::{get, post},
+    //response::Response,
+    routing::get,
+    //routing::post,
 };
 
 use futures_util::pin_mut;
@@ -20,7 +23,8 @@ use tower_service::Service;
 
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+//use serde::Deserialize;
 
 use tokio::net::TcpListener;
 use tokio_native_tls::{
@@ -29,9 +33,11 @@ use tokio_native_tls::{
 };
 
 use crate::assembly::Assembly;
+use crate::logging::targets::HTADMIN;
 
 type SharedState = Arc<RwLock<AdminState>>;
 
+#[allow(dead_code)]
 struct AdminState {
     asm: Arc<Assembly>,
 }
@@ -80,7 +86,7 @@ async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedSta
     let app = admin_app(state);
     let tls_acceptor = TlsAcceptor::from(acceptor);
     let listener = TcpListener::bind(listen).await.unwrap();
-    info!("admin https service listening on {listen} (TLS)");
+    info!(target: HTADMIN, "admin https service listening on {listen} (TLS)");
 
     pin_mut!(listener);
 
@@ -91,7 +97,7 @@ async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedSta
         let (cnx, addr) = listener.accept().await.unwrap();
         tokio::spawn(async move {
             let Ok(stream) = tls_acceptor.accept(cnx).await else {
-                error!("error during TLS handshake from {addr}");
+                error!(target: HTADMIN, "error during TLS handshake from {addr}");
                 return;
             };
 
@@ -105,7 +111,7 @@ async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedSta
                 .await;
 
             if let Err(e) = ret {
-                warn!("error serving admin connection from {addr}: {}", e);
+                warn!(target: HTADMIN, "error serving admin connection from {addr}: {}", e);
             }
         });
     }

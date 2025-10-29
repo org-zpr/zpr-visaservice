@@ -1,7 +1,7 @@
 //! Structs that map to the TOML configuration file for the visa service.
 
 use serde::Deserialize;
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::error::VSError;
@@ -19,7 +19,7 @@ pub struct CoreSection {
     /// The visa service bind address - this is a constant baked into entire ZPR system only override for testing.
     pub vs_addr: Option<IpAddr>,
 
-    /// VSAPI port used by nodes to talk to the visa service VSS API.
+    /// VSAPI port used by nodes to talk to the visa service VS API.
     /// Must be kept in sync with the compiler.
     pub vsapi_port: Option<u16>,
 

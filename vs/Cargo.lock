@@ -182,11 +182,11 @@ dependencies = [
 
 [[package]]
 name = "capnpc"
-version = "0.21.4"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6da96dcb0a0e0c526daf42bac55e1550f18ad973df9ef9ba75204f332c80ad16"
+checksum = "1af1ceeadd28bef56425e170308d287dad0e28f43978cd6b02d3bb1bf7b822fe"
 dependencies = [
- "capnp 0.21.7",
+ "capnp 0.22.0",
 ]
 
 [[package]]
@@ -1589,7 +1589,7 @@ dependencies = [
 name = "vsapi"
 version = "0.5.0"
 dependencies = [
- "capnp 0.21.7",
+ "capnp 0.22.0",
  "capnpc",
  "thrift",
 ]

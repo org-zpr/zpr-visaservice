@@ -6,7 +6,6 @@ use tokio::task::spawn_local;
 use tracing::*;
 
 pub async fn launch(asm: Arc<Assembly>) {
-    let mut usr1_stream = signal(SignalKind::user_defined1()).unwrap();
     let mut term_stream = signal(SignalKind::terminate()).unwrap();
     let mut int_stream = signal(SignalKind::interrupt()).unwrap();
 
@@ -14,8 +13,6 @@ pub async fn launch(asm: Arc<Assembly>) {
 
     loop {
         tokio::select! {
-            //_ = usr1_stream.recv() => emit_counts(&asm.counters, asm.get_uptime()),
-
             _ = int_stream.recv() => {
                 // Treat a single SIGINT as a UI request to shut down cleanly;
                 // any subsequent SIGINTs as a forced shutdown.

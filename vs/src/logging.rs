@@ -3,12 +3,9 @@ use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
 
 /// Target of a log message, for filtering.
 pub mod targets {
-    pub const ALL: &str = "all";
     pub const MAIN: &str = "main";
     pub const HTADMIN: &str = "htadmin";
     pub const VSAPI: &str = "vsapi";
-
-    pub const ALL_TARGETS: &[&str] = &[ALL, MAIN, HTADMIN, VSAPI];
 }
 
 pub fn enable_logging(verbose: bool) {
