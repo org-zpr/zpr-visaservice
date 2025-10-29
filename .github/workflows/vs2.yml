@@ -27,5 +27,5 @@ jobs:
       name: 'New New Visa Service'
       runs-on: "['ubuntu-latest']"
       path: 'vs/'
-      setup: 'apt-get install -y capnproto'
+      setup: 'sudo apt-get install -y capnproto'
     secrets: inherit
