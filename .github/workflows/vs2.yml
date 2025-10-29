@@ -26,4 +26,5 @@ jobs:
     with:
       name: 'New New Visa Service'
       runs-on: "['ubuntu-latest']"
+      path: 'vs/'
     secrets: inherit
