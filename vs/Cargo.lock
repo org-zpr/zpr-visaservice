@@ -1588,6 +1588,7 @@ dependencies = [
 [[package]]
 name = "vsapi"
 version = "0.5.0"
+source = "git+https://github.com/org-zpr/zpr-vsapi-rs.git?tag=v0.5.0#524a4d8f780ccde0954b30f8fcf36b52e21938a5"
 dependencies = [
  "capnp 0.22.0",
  "capnpc",
