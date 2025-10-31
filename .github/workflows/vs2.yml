@@ -1,0 +1,31 @@
+name: Check, Test and Build V2VS 
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'vs/**'
+      - '.github/workflows/vs2'
+  pull_request:
+    paths:
+      - 'vs/**'
+      - '.github/workflows/vs2'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  check:
+    name: V2VS
+    uses: org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v0.1.0
+    with:
+      name: 'New New Visa Service'
+      runs-on: "['ubuntu-latest']"
+      path: 'vs/'
+      setup: 'sudo apt-get install -y capnproto'
+    secrets: inherit
