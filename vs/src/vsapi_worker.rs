@@ -103,7 +103,7 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         &self,
         params: vsapi::visa_service::ConnectParams,
         mut results: vsapi::visa_service::ConnectResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async move {
             let req_cn = params.get()?.get_req()?.get_cn()?.to_string()?;
             let req_type = params.get()?.get_req()?.get_ctype()?;
@@ -137,7 +137,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         &self,
         _params: vsapi::v_s_gate::ChallengeParams,
         mut results: vsapi::v_s_gate::ChallengeResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async move {
             let mut res_builder = results.get().init_challenge();
             res_builder.set_alg(vsapi::ChallengeAlg::RsaSha256Pkcs1v15);
@@ -153,7 +153,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         &self,
         params: vsapi::v_s_gate::AuthenticateParams,
         results: vsapi::v_s_gate::AuthenticateResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async move {
             let cresp = params.get()?.get_cresp()?;
             // has challenge (bytes), timestamp (uint64), bytes (bytes)
@@ -204,7 +204,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         &self,
         _: vsapi::v_s_handle::RegisterVssParams,
         _: vsapi::v_s_handle::RegisterVssResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async {
             Err(::capnp::Error::unimplemented(
                 "method v_s_handle::Server::register_vss not implemented".to_string(),
@@ -215,7 +215,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         &self,
         _: vsapi::v_s_handle::AuthorizeConnectParams,
         _: vsapi::v_s_handle::AuthorizeConnectResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async {
             Err(::capnp::Error::unimplemented(
                 "method v_s_handle::Server::authorize_connect not implemented".to_string(),
@@ -226,7 +226,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         &self,
         _: vsapi::v_s_handle::ReauthorizeParams,
         _: vsapi::v_s_handle::ReauthorizeResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async {
             Err(::capnp::Error::unimplemented(
                 "method v_s_handle::Server::reauthorize not implemented".to_string(),
@@ -237,7 +237,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         &self,
         _: vsapi::v_s_handle::NotifyDisconnectParams,
         _: vsapi::v_s_handle::NotifyDisconnectResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async {
             Err(::capnp::Error::unimplemented(
                 "method v_s_handle::Server::notify_disconnect not implemented".to_string(),
@@ -248,7 +248,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         &self,
         _: vsapi::v_s_handle::VisaRequestParams,
         _: vsapi::v_s_handle::VisaRequestResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async {
             Err(::capnp::Error::unimplemented(
                 "method v_s_handle::Server::visa_request not implemented".to_string(),
@@ -259,7 +259,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         &self,
         _: vsapi::v_s_handle::PingParams,
         _: vsapi::v_s_handle::PingResults,
-    ) -> impl ::core::future::Future<Output = Result<(), ::capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async {
             Err(::capnp::Error::unimplemented(
                 "method v_s_handle::Server::ping not implemented".to_string(),
