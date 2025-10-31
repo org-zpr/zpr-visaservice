@@ -6,21 +6,39 @@ pub struct ConnectionControl {
     // Placeholder for connection control data and methods
 }
 
+// Placeholder.
+// Authentication will end up creating the node "actor" struct so probably
+// that will be returned not this Node-Id thing.  And remember that the node
+// authentication will have an expiration.
 pub struct NodeId {
     substrate_addr: SocketAddr,
     zpr_addr: IpAddr,
-    cn: String,
+    pub cn: String,
 }
 
 impl ConnectionControl {
-    // Must support calling from multiple threads
-    pub fn authenticate_node(
+    pub fn new() -> Self {
+        ConnectionControl {}
+    }
+
+    // Must be thread safe!
+    pub async fn authenticate_node(
         &self,
-        _challenge_presented: Vec<u8>,
+        _challenge_presented: &[u8],
         _timestamp: u64,
-        _cn: String,
-        _challenge_response: Vec<u8>,
+        _cn: &str,
+        _challenge_response: &[u8],
     ) -> Result<NodeId, VSError> {
-        Err(VSError::AuthenticationFailed) // TODO
+        // possibly blocking and cpu intensive operation...
+        let res = tokio::task::spawn_blocking(move || {
+            // Placeholder logic
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            // For now, always fail.
+            Err(VSError::AuthenticationFailed)
+        })
+        .await
+        .map_err(|e| VSError::InternalError(format!("join error: {}", e)))??;
+
+        res
     }
 }

@@ -2,11 +2,13 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum VSError {
-    #[error("I/O error: {0}")]
+    #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Configuration error: {0}")]
+    #[error("configuration error: {0}")]
     Config(#[from] toml::de::Error),
 
-    #[error("Authentication failed")]
+    #[error("authentication failed")]
     AuthenticationFailed,
+    #[error("internal error: {0}")]
+    InternalError(String),
 }

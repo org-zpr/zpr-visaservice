@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::connection_control::ConnectionControl;
+
 #[allow(dead_code)]
 pub struct Assembly {
     pub system_start_time: std::time::Instant,
@@ -10,6 +12,7 @@ impl Assembly {
     pub fn new() -> Self {
         Assembly {
             system_start_time: std::time::Instant::now(),
+            cc: ConnectionControl::new(),
         }
     }
 

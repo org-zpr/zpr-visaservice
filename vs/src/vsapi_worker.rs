@@ -72,11 +72,17 @@ struct VSGateImpl {
     asm: Arc<Assembly>,
     remote: SocketAddr,
     remote_cn: String,
+
+    // This is set in `challenge` call and read in the `authenticate` call.
+    // My understanding is that the VSGateImpl instance here is tied to the connection
+    // which I think runs operations one at a time so this should be safe
+    // to use.
     challenge_data: Cell<[u8; 32]>,
 }
 
 #[allow(dead_code)]
 struct VSHandleImpl {
+    // TODO: Will include more info about the authenticated node.
     asm: Arc<Assembly>,
 }
 
@@ -98,6 +104,12 @@ impl VSHandleImpl {
     }
 }
 
+fn write_error(bldr: &mut vsapi::error::Builder, code: vsapi::ErrorCode, message: &str) {
+    bldr.set_code(code);
+    bldr.set_message(message);
+    bldr.set_retry_in(0);
+}
+
 impl vsapi::visa_service::Server for VisaServiceImpl {
     fn connect(
         &self,
@@ -111,11 +123,13 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
             match req_type {
                 vsapi::VSConnT::Reset => {}
                 vsapi::VSConnT::Reconnect => {
-                    let mut res_builder = results.get().init_resp();
-                    let mut err_builder = res_builder.reborrow().init_error();
-                    err_builder.set_code(vsapi::ErrorCode::AuthRequired);
-                    err_builder.set_message("reconnect not supported");
-                    err_builder.set_retry_in(0);
+                    let res_builder = results.get().init_resp();
+                    let mut err_builder = res_builder.init_error();
+                    write_error(
+                        &mut err_builder,
+                        vsapi::ErrorCode::AuthRequired,
+                        "reconnect not supported",
+                    );
                     return Ok(());
                 }
             }
@@ -125,7 +139,8 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
             let vs_gate: vsapi::v_s_gate::Client =
                 capnp_rpc::new_client(VSGateImpl::new(self.asm.clone(), self.remote, req_cn));
 
-            res_builder.reborrow().set_ok(vs_gate)?;
+            //res_builder.reborrow().set_ok(vs_gate)?;
+            res_builder.set_ok(vs_gate)?;
 
             Ok(())
         }
@@ -152,15 +167,21 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
     fn authenticate(
         &self,
         params: vsapi::v_s_gate::AuthenticateParams,
-        results: vsapi::v_s_gate::AuthenticateResults,
+        mut results: vsapi::v_s_gate::AuthenticateResults,
     ) -> impl Future<Output = Result<(), ::capnp::Error>> + '_ {
         async move {
-            let cresp = params.get()?.get_cresp()?;
-            // has challenge (bytes), timestamp (uint64), bytes (bytes)
+            let cresp = params.get()?.get_cresp()?; // has challenge (bytes), timestamp (uint64), bytes (bytes)
+            let mut res_builder = results.get().init_res();
             let challenge_presented = cresp.get_challenge()?;
             // Must match the challenge we sent.
             if challenge_presented != &self.challenge_data.get() {
-                // TODO: return error
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::InvalidOperation, // TODO: New code 'AuthError'
+                    "invalid challenge",
+                );
+                return Ok(());
             }
 
             // Time must be within acceptable range.
@@ -168,32 +189,60 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             let now = SystemTime::now();
             let my_unix_ts = now.duration_since(UNIX_EPOCH).unwrap().as_secs();
             if my_unix_ts.abs_diff(unix_ts) > zpr::MAX_CLOCK_SKEW_SECS {
-                // TODO: return error
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::OutOfSync,
+                    "excess clock skew",
+                );
+                return Ok(());
             }
 
             let challenge_response = cresp.get_bytes()?;
 
-            // Perform the authentication...
-            let node_id = match self.asm.cc.authenticate_node(
-                challenge_presented,
-                unix_ts,
-                &self.remote_cn,
-                challenge_response,
-            ) {
+            // Perform the authentication
+            //
+            let node_id = match self
+                .asm
+                .cc
+                .authenticate_node(
+                    challenge_presented,
+                    unix_ts,
+                    &self.remote_cn,
+                    challenge_response,
+                )
+                .await
+            {
                 Ok(node_id) => node_id,
                 Err(VSError::AuthenticationFailed) => {
-                    // todo: return error auth failed
+                    let mut err_builder = res_builder.init_error();
+                    write_error(
+                        &mut err_builder,
+                        vsapi::ErrorCode::InvalidOperation, // TODO: New code 'AuthError'
+                        "authentication failed",
+                    );
+                    return Ok(());
                 }
-                Err(e) => {
-                    // todo: return error internal
+                Err(_e) => {
+                    let mut err_builder = res_builder.init_error();
+                    write_error(
+                        &mut err_builder,
+                        vsapi::ErrorCode::Internal,
+                        "internal error during authentication",
+                    );
+                    return Ok(());
                 }
             };
+
+            info!(
+                "successfully authenticated node {} from {}",
+                node_id.cn, self.remote
+            );
 
             // If ok return our VSHandle.
             let vs_handle: vsapi::v_s_handle::Client =
                 capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone()));
-            let mut res_builder = results.get().init_res();
-            res_builder.reborrow().set_ok(vs_handle)?;
+            res_builder.set_ok(vs_handle)?;
             Ok(())
         }
     }
