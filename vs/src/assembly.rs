@@ -3,6 +3,7 @@ use std::sync::Arc;
 #[allow(dead_code)]
 pub struct Assembly {
     pub system_start_time: std::time::Instant,
+    pub cc: ConnectionControl,
 }
 
 impl Assembly {

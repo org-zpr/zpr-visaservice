@@ -6,4 +6,7 @@ pub enum VSError {
     Io(#[from] std::io::Error),
     #[error("Configuration error: {0}")]
     Config(#[from] toml::de::Error),
+
+    #[error("Authentication failed")]
+    AuthenticationFailed,
 }

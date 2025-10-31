@@ -8,6 +8,7 @@ use tracing::{error, info};
 mod admin_service;
 mod assembly;
 mod config;
+mod connection_control;
 mod error;
 mod logging;
 mod signal_worker;
