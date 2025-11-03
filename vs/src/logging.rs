@@ -6,6 +6,7 @@ pub mod targets {
     pub const MAIN: &str = "main";
     pub const HTADMIN: &str = "htadmin";
     pub const VSAPI: &str = "vsapi";
+    pub const CC: &str = "con_ctrl";
 }
 
 pub fn enable_logging(verbose: bool) {

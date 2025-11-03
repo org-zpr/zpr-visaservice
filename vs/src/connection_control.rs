@@ -1,6 +1,10 @@
 use std::net::{IpAddr, SocketAddr};
+use tracing::info;
+
+use vsapi::vs_capnp as vsapi;
 
 use crate::error::VSError;
+use crate::logging::targets::CC;
 
 pub struct ConnectionControl {
     // Placeholder for connection control data and methods
@@ -40,5 +44,16 @@ impl ConnectionControl {
         .map_err(|e| VSError::InternalError(format!("join error: {}", e)))??;
 
         res
+    }
+
+    // Thread safe.
+    pub async fn disconnect(
+        &self,
+        zpr_addr: IpAddr,
+        reason: vsapi::DisconnectReason,
+    ) -> Result<(), VSError> {
+        // Placeholder logic for disconnecting a node
+        info!(target: CC, "disconnect actor at {} for reason {:?}", zpr_addr, reason);
+        Ok(())
     }
 }
