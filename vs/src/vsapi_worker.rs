@@ -298,6 +298,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             ))
         }
     }
+
     fn authorize_connect(
         &self,
         _: vsapi::v_s_handle::AuthorizeConnectParams,
@@ -310,6 +311,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             ))
         }
     }
+
     fn reauthorize(
         &self,
         _: vsapi::v_s_handle::ReauthorizeParams,
@@ -322,6 +324,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             ))
         }
     }
+
     fn notify_disconnect(
         &self,
         req: vsapi::v_s_handle::NotifyDisconnectParams,
@@ -337,11 +340,28 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                 "disconnect call from node {} for {} with reason {:?}",
                 self.node.cn, zpr_addr, reason
             );
+
+            match self.asm.cc.disconnect(zpr_addr, reason).await {
+                Ok(()) => (),
+                Err(e) => {
+                    warn!(target: VSAPI, "error processing disconnect of {}: {}", zpr_addr, e);
+                    let res_builder = resp.get().init_res();
+                    let mut err_builder = res_builder.init_error();
+                    write_error(
+                        &mut err_builder,
+                        vsapi::ErrorCode::Internal,
+                        "internal error during disconnect",
+                    );
+                    return Ok(());
+                }
+            }
+
             let mut res_builder = resp.get().init_res();
             res_builder.set_ok(());
             Ok(())
         }
     }
+
     fn visa_request(
         &self,
         _: vsapi::v_s_handle::VisaRequestParams,
@@ -354,6 +374,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             ))
         }
     }
+
     fn ping(
         &self,
         _req: vsapi::v_s_handle::PingParams,

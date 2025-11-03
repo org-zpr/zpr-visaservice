@@ -4,8 +4,14 @@ use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
 /// Target of a log message, for filtering.
 pub mod targets {
     pub const MAIN: &str = "main";
+
+    /// HTTPS admin server.
     pub const HTADMIN: &str = "htadmin";
+
+    /// The Capn Proto VS-API service.
     pub const VSAPI: &str = "vsapi";
+
+    /// Connection Control.
     pub const CC: &str = "con_ctrl";
 }
 

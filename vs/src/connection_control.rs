@@ -14,6 +14,7 @@ pub struct ConnectionControl {
 // Authentication will end up creating the node "actor" struct so probably
 // that will be returned not this Node-Id thing.  And remember that the node
 // authentication will have an expiration.
+#[allow(dead_code)]
 pub struct NodeId {
     substrate_addr: SocketAddr,
     zpr_addr: IpAddr,
