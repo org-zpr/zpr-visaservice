@@ -13,6 +13,9 @@ pub mod targets {
 
     /// Connection Control.
     pub const CC: &str = "con_ctrl";
+
+    /// Actor Database
+    pub const ADB: &str = "actor_db";
 }
 
 pub fn enable_logging(verbose: bool) {

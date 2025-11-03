@@ -5,12 +5,15 @@ use std::sync::Arc;
 use tokio::task::JoinSet;
 use tracing::{error, info};
 
+mod actor;
+mod actor_db;
 mod admin_service;
 mod assembly;
 mod config;
 mod connection_control;
 mod error;
 mod logging;
+mod policy;
 mod signal_worker;
 mod vsapi_worker;
 mod zpr;

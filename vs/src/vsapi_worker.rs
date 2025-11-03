@@ -1,15 +1,17 @@
 use vsapi::vs_capnp as vsapi;
 
+// use capnp::capability::Rc;
 use openssl::rand::rand_bytes;
 use std::cell::Cell;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
+use crate::actor::Actor;
 use crate::assembly::Assembly;
-use crate::connection_control::NodeId;
 use crate::error::VSError;
 use crate::logging::targets::VSAPI;
 use crate::zpr;
@@ -83,7 +85,7 @@ struct VSGateImpl {
 struct VSHandleImpl {
     // TODO: Will include more info about the authenticated node.
     asm: Arc<Assembly>,
-    node: NodeId,
+    node: Actor,
 }
 
 impl VSGateImpl {
@@ -99,7 +101,7 @@ impl VSGateImpl {
 }
 
 impl VSHandleImpl {
-    fn new(asm: Arc<Assembly>, node: NodeId) -> Self {
+    fn new(asm: Arc<Assembly>, node: Actor) -> Self {
         VSHandleImpl { asm, node }
     }
 }
@@ -141,10 +143,10 @@ fn ipaddr_from_capnp(addr: vsapi::ip_addr::Reader) -> Result<std::net::IpAddr, c
 
 impl vsapi::visa_service::Server for VisaServiceImpl {
     fn connect(
-        &self,
+        self: Rc<Self>,
         params: vsapi::visa_service::ConnectParams,
         mut results: vsapi::visa_service::ConnectResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
             debug!(target: VSAPI, "connect call from {}", self.remote);
             let req_cn = params.get()?.get_req()?.get_cn()?.to_string()?;
@@ -179,10 +181,10 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
 
 impl vsapi::v_s_gate::Server for VSGateImpl {
     fn challenge(
-        &self,
+        self: Rc<Self>,
         _params: vsapi::v_s_gate::ChallengeParams,
         mut results: vsapi::v_s_gate::ChallengeResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
             debug!(target: VSAPI, "challenge call from {} as {}", self.remote, self.remote_cn);
             let mut res_builder = results.get().init_challenge();
@@ -196,10 +198,10 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
     }
 
     fn authenticate(
-        &self,
+        self: Rc<Self>,
         params: vsapi::v_s_gate::AuthenticateParams,
         mut results: vsapi::v_s_gate::AuthenticateResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
             debug!(target: VSAPI, "authenticate from {} as {}", self.remote, self.remote_cn);
             let cresp = params.get()?.get_cresp()?; // has challenge (bytes), timestamp (uint64), bytes (bytes)
@@ -236,25 +238,27 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
             // Perform the authentication
             //
-            let node_id = match self
+            let node_actor = match self
                 .asm
                 .cc
                 .authenticate_node(
+                    self.asm.clone(),
                     challenge_presented,
                     unix_ts,
                     &self.remote_cn,
                     challenge_response,
+                    self.remote,
                 )
                 .await
             {
                 Ok(node_id) => node_id,
-                Err(VSError::AuthenticationFailed) => {
-                    warn!(target: VSAPI, "authentication failed for {}", self.remote_cn);
+                Err(VSError::AuthenticationFailed(reason)) => {
+                    warn!(target: VSAPI, "authentication failed for {}: {}", self.remote_cn, reason);
                     let mut err_builder = res_builder.init_error();
                     write_error(
                         &mut err_builder,
                         vsapi::ErrorCode::InvalidOperation, // TODO: New code 'AuthError'
-                        "authentication failed",
+                        format!("authentication failed: {reason}").as_str(),
                     );
                     return Ok(());
                 }
@@ -273,12 +277,25 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             info!(
                 target: VSAPI,
                 "successfully authenticated node {} from {}",
-                node_id.cn, self.remote
+                node_actor.get_cn(), self.remote
             );
 
-            // If ok return our VSHandle.
+            // Ok, we have verified the credentials and checked with policy. Time to
+            // update our state and return success.
+
+            if let Err(e) = self.asm.actor_db.add_node(node_actor.clone()) {
+                error!(target: VSAPI, "failed to add authenticated node {} to actor db: {}", node_actor.get_cn(), e);
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "state update failed",
+                );
+                return Ok(());
+            }
+
             let vs_handle: vsapi::v_s_handle::Client =
-                capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_id));
+                capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
             res_builder.set_ok(vs_handle)?;
             Ok(())
         }
@@ -287,12 +304,12 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
 impl vsapi::v_s_handle::Server for VSHandleImpl {
     fn register_vss(
-        &self,
+        self: Rc<Self>,
         _: vsapi::v_s_handle::RegisterVssParams,
         _: vsapi::v_s_handle::RegisterVssResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
-        async {
-            debug!(target: VSAPI, "register_vss from {}", self.node.cn);
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
+        async move {
+            debug!(target: VSAPI, "register_vss from {}", self.node.get_cn());
             Err(capnp::Error::unimplemented(
                 "method v_s_handle::Server::register_vss not implemented".to_string(),
             ))
@@ -300,12 +317,12 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     }
 
     fn authorize_connect(
-        &self,
+        self: Rc<Self>,
         _: vsapi::v_s_handle::AuthorizeConnectParams,
         _: vsapi::v_s_handle::AuthorizeConnectResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
-        async {
-            debug!(target: VSAPI, "authorize_connect from {}", self.node.cn);
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
+        async move {
+            debug!(target: VSAPI, "authorize_connect from {}", self.node.get_cn());
             Err(capnp::Error::unimplemented(
                 "method v_s_handle::Server::authorize_connect not implemented".to_string(),
             ))
@@ -313,12 +330,12 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     }
 
     fn reauthorize(
-        &self,
+        self: Rc<Self>,
         _: vsapi::v_s_handle::ReauthorizeParams,
         _: vsapi::v_s_handle::ReauthorizeResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
-        async {
-            debug!(target: VSAPI, "reauthorize from {}", self.node.cn);
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
+        async move {
+            debug!(target: VSAPI, "reauthorize from {}", self.node.get_cn());
             Err(capnp::Error::unimplemented(
                 "method v_s_handle::Server::reauthorize not implemented".to_string(),
             ))
@@ -326,10 +343,10 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     }
 
     fn notify_disconnect(
-        &self,
+        self: Rc<Self>,
         req: vsapi::v_s_handle::NotifyDisconnectParams,
         mut resp: vsapi::v_s_handle::NotifyDisconnectResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
             let dnotice = req.get()?.get_req()?;
             let zpr_ipaddr = dnotice.get_zpr_addr()?;
@@ -338,7 +355,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             debug!(
                 target: VSAPI,
                 "disconnect call from node {} for {} with reason {:?}",
-                self.node.cn, zpr_addr, reason
+                self.node.get_cn(), zpr_addr, reason
             );
 
             match self.asm.cc.disconnect(zpr_addr, reason).await {
@@ -363,12 +380,12 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     }
 
     fn visa_request(
-        &self,
+        self: Rc<Self>,
         _: vsapi::v_s_handle::VisaRequestParams,
         _: vsapi::v_s_handle::VisaRequestResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
-        async {
-            debug!(target: VSAPI, "visa_request from {}", self.node.cn);
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
+        async move {
+            debug!(target: VSAPI, "visa_request from {}", self.node.get_cn());
             Err(capnp::Error::unimplemented(
                 "method v_s_handle::Server::visa_request not implemented".to_string(),
             ))
@@ -376,12 +393,12 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     }
 
     fn ping(
-        &self,
+        self: Rc<Self>,
         _req: vsapi::v_s_handle::PingParams,
         mut results: vsapi::v_s_handle::PingResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + '_ {
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
-            debug!(target: VSAPI, "ping from {}", self.node.cn);
+            debug!(target: VSAPI, "ping from {}", self.node.get_cn());
             let mut res_builder = results.get().init_res();
             res_builder.set_ok(());
             Ok(())
