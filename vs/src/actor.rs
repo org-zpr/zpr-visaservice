@@ -1,3 +1,5 @@
+//! An actor is any participant in the ZPR network.  Either a node or an adapter.
+
 use std::time::{Duration, SystemTime};
 
 // TODO: Reconcile with libeval. Possibly we want that to manage Actors and Attributes.
@@ -37,6 +39,10 @@ pub struct Actor {
 }
 
 impl Actor {
+    pub fn new(cn: String, role: Role) -> Self {
+        Actor { cn, role }
+    }
+
     // TODO: not implemented
     pub fn is_node(&self) -> bool {
         matches!(self.role, Role::Node)

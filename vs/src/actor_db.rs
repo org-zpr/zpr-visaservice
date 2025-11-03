@@ -1,3 +1,7 @@
+//! Actor Database will eventually be backed by ValKey.
+//! This will know all the connected actors, their addresses, the services the offer, etc.
+//! Including all nodes and links between them.
+
 use tracing::info;
 
 use crate::actor::Actor;
