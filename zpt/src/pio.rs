@@ -1,10 +1,10 @@
 use crate::error::PioError;
 use ::polio::policy_capnp;
 use bytes::Bytes;
-use libeval::zpr_policy::ZprPolicy;
+use libeval::policy::Policy;
 use std::path::Path;
 
-pub fn load_policy(path: &Path) -> Result<ZprPolicy, PioError> {
+pub fn load_policy(path: &Path) -> Result<Policy, PioError> {
     let encoded = std::fs::read(path)?;
     let encoded_container_bytes = Bytes::from(encoded);
 
@@ -25,6 +25,6 @@ pub fn load_policy(path: &Path) -> Result<ZprPolicy, PioError> {
         ));
     }
     let policy_bytes = container.get_policy().unwrap();
-    let zp = ZprPolicy::new_from_policy_bytes(Bytes::copy_from_slice(policy_bytes))?;
+    let zp = Policy::new_from_policy_bytes(1, Bytes::copy_from_slice(policy_bytes))?;
     Ok(zp)
 }

@@ -7,11 +7,13 @@ description = "Packet/Actor evaluator library; a component of the ZPR visa servi
 
 [dependencies]
 bytes = "1.10.1"
-capnp = "0.21.5"
+capnp = { version = "0.23.0", features = ["sync_reader"] }
+openssl = "0.10.74"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.16"
 tracing = "0.1.41"
-zpr-policy = { git = "https://github.com/org-zpr/zpr-policy-rs.git", tag = "v0.8.5", features = ["v2"] }
+# zpr-policy = { git = "https://github.com/org-zpr/zpr-policy-rs.git", tag = "v0.8.5", features = ["v2"] }
+zpr-policy = { path = "../../zpr-policy-rs", features = ["v2"] }
 
 [dev-dependencies]
 tracing-subscriber = "0.3.20"

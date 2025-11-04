@@ -4,7 +4,8 @@
 
 use tracing::info;
 
-use crate::actor::Actor;
+use libeval::actor::Actor;
+
 use crate::error::VSError;
 use crate::logging::targets::ADB;
 
@@ -16,7 +17,7 @@ impl ActorDb {
     }
 
     pub fn add_node(&self, _actor: Actor) -> Result<(), VSError> {
-        info!(target: ADB, "(TODO) adding node actor {}", _actor.get_cn());
+        info!(target: ADB, "(TODO) adding node actor {:?}", _actor.get_cn());
         Ok(())
     }
 }

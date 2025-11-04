@@ -1,11 +1,15 @@
 use crate::actor::Actor;
+use crate::attribute::{Attribute, key};
 use crate::packet::{PacketDesc, ip_proto};
-use crate::zpr_policy::ZprPolicy;
+use crate::policy::Policy;
+
 use ::polio::policy_capnp;
-use std::fmt;
 
 use serde::Serialize;
+use std::collections::HashMap;
+use std::fmt;
 use std::net;
+use std::sync::Arc;
 use thiserror::Error;
 use tracing::debug;
 
@@ -30,10 +34,18 @@ pub enum EvalDecision {
 pub enum EvalError {
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
+
     #[error("Unsupported protocol: {0}")]
     UnsupportedProtocol(String),
+
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
+
+    #[error("Internal error: {0}")]
+    InternalError(String),
+
+    #[error("empty policy")]
+    EmptyPolicy,
 }
 
 /// A "hit" is a single matching permission or deny line in policy
@@ -169,7 +181,7 @@ pub struct Signal {
 // TODO: Not yet sure if this is useful. Maybe the context can build up
 // some cache or something to make future eval calls faster?
 pub struct EvalContext {
-    policy: ZprPolicy,
+    policy: Arc<Policy>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -200,7 +212,7 @@ impl PAttrValue {
 }
 
 impl EvalContext {
-    pub fn new(policy: ZprPolicy) -> Self {
+    pub fn new(policy: Arc<Policy>) -> Self {
         EvalContext { policy }
     }
 
@@ -220,10 +232,13 @@ impl EvalContext {
                 "only TCP/UDP/ICMPv6 protocols supported".into(),
             ));
         }
-        let policy = self
-            .policy
-            .policy_rdr
-            .get_root::<policy_capnp::policy::Reader>()?;
+        let rdr = match self.policy.get_policy_reader() {
+            Some(r) => r,
+            None => {
+                return Ok(EvalDecision::NoMatch("no policy available".into()));
+            }
+        };
+        let policy = rdr.get_root::<policy_capnp::policy::Reader>()?;
         if !policy.has_com_policies() {
             return Ok(EvalDecision::NoMatch(
                 "no communication policies defined".into(),
@@ -250,10 +265,13 @@ impl EvalContext {
         hit: &Hit,
         request: &PacketDesc,
     ) -> Result<VisaProps, EvalError> {
-        let policy = self
-            .policy
-            .policy_rdr
-            .get_root::<policy_capnp::policy::Reader>()?;
+        let rdr = match self.policy.get_policy_reader() {
+            Some(r) => r,
+            None => {
+                return Err(EvalError::EmptyPolicy);
+            }
+        };
+        let policy = rdr.get_root::<policy_capnp::policy::Reader>()?;
 
         let matched_pol = policy.get_com_policies().unwrap().get(hit.match_idx as u32);
 
@@ -319,6 +337,60 @@ impl EvalContext {
             comm_opts: None,   // TODO
             zpl: matched_pol.get_zpl().unwrap().to_string().unwrap(),
         })
+    }
+
+    /// Consult policy and determine if connection is allowed from the actor with
+    /// the indicated authenticated and unauthenticated claims.
+    ///
+    /// Authenticated claims must include the CN.
+    ///
+    /// On success returns an actor object that will include additional attributes set from
+    /// policy (eg, ROLE).
+    ///
+    /// If any of the unauthenticated claims are permitted they will be included
+    /// with the actor.  Unauthenticated claims that are denied are discarded and
+    /// logged.
+    pub fn approve_connection(
+        &self,
+        authenticated_claims: Option<Vec<Attribute>>,
+        unauthenticated_claims: Option<HashMap<String, String>>,
+    ) -> Result<Actor, EvalError> {
+        // Run through the policy, make sure that the set of claims resovles to an actor.
+        // Policy uses claims and some claims may come from trusted services so I think
+        // the idea is to deal with all that prior to calling this and so the claims
+        // map has everything we have gathered.
+
+        // For now we are approving everything and handing out a static node addr.
+        // We skip checking policy.
+
+        let mut actor = Actor::new();
+        for attr in authenticated_claims.unwrap_or_default() {
+            actor.add_attribute(attr);
+        }
+        for (k, v) in unauthenticated_claims.unwrap_or_default() {
+            actor.add_attribute(Attribute::new_non_expiring(k, v));
+        }
+
+        // Placeholder - assign an address
+        if !actor.has_attribute_named(key::ZPR_ADDR) {
+            if actor.is_node() {
+                actor.add_attribute(Attribute::new_non_expiring(
+                    key::ZPR_ADDR.into(),
+                    "fd5a:5052:90de::3000".into(),
+                ));
+            } else {
+                actor.add_attribute(Attribute::new_non_expiring(
+                    key::ZPR_ADDR.into(),
+                    "fd5a:5052:1000::1".into(),
+                ));
+            }
+        }
+
+        actor.add_attribute(Attribute::new_non_expiring(
+            key::VINST.into(),
+            self.policy.get_vinst().to_string(),
+        ));
+        Ok(actor)
     }
 
     fn match_policies(
@@ -614,7 +686,7 @@ impl EvalContext {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::actor;
+    use crate::attribute::key;
     use bytes::Bytes;
     use std::time::Duration;
     use std::{path::Path, sync::Once};
@@ -633,7 +705,7 @@ mod test {
     }
 
     /// Load a binary policy by name from the tests/zpl directory.
-    fn load_policy(pname: &str) -> ZprPolicy {
+    fn load_policy(pname: &str) -> Policy {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let pname = Path::new(manifest_dir)
             .join("tests")
@@ -653,22 +725,22 @@ mod test {
             panic!("policy container missing 'policy' field");
         }
         let policy_bytes = container.get_policy().unwrap();
-        ZprPolicy::new_from_policy_bytes(Bytes::copy_from_slice(policy_bytes)).unwrap()
+        Policy::new_from_policy_bytes(0, Bytes::copy_from_slice(policy_bytes)).unwrap()
     }
 
     #[test]
     fn test_basic_eval() {
         setup();
         let pol = load_policy("basic.bin2");
-        let ctx = EvalContext::new(pol);
+        let ctx = EvalContext::new(Arc::new(pol));
 
         // should let red users access content:red databases.
         let mut user = Actor::new();
-        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
 
         let mut service = Actor::new();
-        service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
-        service.add_attr("service.content", "red", Duration::from_secs(60));
+        service.add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60));
+        service.add_attr_from_parts("service.content", "red", Duration::from_secs(60));
         let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -683,7 +755,7 @@ mod test {
 
         // Should deny access to green tagged users.
         let mut green_user = Actor::new();
-        green_user.add_attr("user.zpr.tag", "user.green", Duration::from_secs(60));
+        green_user.add_attr_from_parts("user.zpr.tag", "user.green", Duration::from_secs(60));
         let decision = ctx.eval_request(&green_user, &service, &packet).unwrap();
         match decision {
             EvalDecision::Deny(hits) => {
@@ -699,15 +771,15 @@ mod test {
     fn test_visa_info() {
         setup();
         let pol = load_policy("basic.bin2");
-        let ctx = EvalContext::new(pol);
+        let ctx = EvalContext::new(Arc::new(pol));
 
         // should let red users access content:red databases.
         let mut user = Actor::new();
-        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
 
         let mut service = Actor::new();
-        service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
-        service.add_attr("service.content", "red", Duration::from_secs(60));
+        service.add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60));
+        service.add_attr_from_parts("service.content", "red", Duration::from_secs(60));
         let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -735,16 +807,16 @@ mod test {
     fn test_eval_with_never() {
         setup();
         let pol = load_policy("test-signal.bin2");
-        let ctx = EvalContext::new(pol);
+        let ctx = EvalContext::new(Arc::new(pol));
 
         // User with bas_id and color:red should be able to access database service.
         let mut user = Actor::new();
-        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
-        user.add_attr("user.bas_id", "1000", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60));
 
         let mut service = Actor::new();
-        service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
-        service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
+        service.add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60));
+        service.add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60));
         let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -762,17 +834,17 @@ mod test {
     fn test_signal() {
         setup();
         let pol = load_policy("test-signal.bin2");
-        let ctx = EvalContext::new(pol);
+        let ctx = EvalContext::new(Arc::new(pol));
 
         // Set user with color:green so it does not match color:red since in that
         // case we would match two policies.
         let mut user = Actor::new();
-        user.add_attr("user.color", "green", Duration::from_secs(60));
-        user.add_attr("user.bas_id", "1000", Duration::from_secs(60));
+        user.add_attr_from_parts("user.color", "green", Duration::from_secs(60));
+        user.add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60));
 
         let mut service = Actor::new();
-        service.add_attr(actor::KATTR_SERVICES, "database", Duration::from_secs(60));
-        service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
+        service.add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60));
+        service.add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60));
         let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -794,15 +866,15 @@ mod test {
     fn test_ping_echo_request() {
         setup();
         let pol = load_policy("basic.bin2");
-        let ctx = EvalContext::new(pol);
+        let ctx = EvalContext::new(Arc::new(pol));
 
         // should let red users ping pingdb
         let mut user = Actor::new();
-        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
 
         let mut service = Actor::new();
-        service.add_attr(actor::KATTR_SERVICES, "pingdb", Duration::from_secs(60));
-        service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
+        service.add_attr_from_parts(key::SERVICES, "pingdb", Duration::from_secs(60));
+        service.add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60));
         let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -825,15 +897,15 @@ mod test {
     fn test_ping_echo_reply() {
         setup();
         let pol = load_policy("basic.bin2");
-        let ctx = EvalContext::new(pol);
+        let ctx = EvalContext::new(Arc::new(pol));
 
         // should let red users ping pingdb
         let mut user = Actor::new();
-        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
 
         let mut service = Actor::new();
-        service.add_attr(actor::KATTR_SERVICES, "pingdb", Duration::from_secs(60));
-        service.add_attr("user.bas_id", "1233", Duration::from_secs(60));
+        service.add_attr_from_parts(key::SERVICES, "pingdb", Duration::from_secs(60));
+        service.add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60));
 
         // We picked up an echo reply packet.
         // According to policy this should match.
@@ -859,15 +931,15 @@ mod test {
     fn test_ping_echo_reply_not_permitted() {
         setup();
         let pol = load_policy("basic.bin2");
-        let ctx = EvalContext::new(pol);
+        let ctx = EvalContext::new(Arc::new(pol));
 
         // should let red users ping pingdb -- should not let randos send echo-reply to red users.
         let mut user = Actor::new();
-        user.add_attr("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
 
         let mut service = Actor::new();
-        service.add_attr(actor::KATTR_SERVICES, "foo", Duration::from_secs(60));
-        service.add_attr("user.bas_id", "1000", Duration::from_secs(60));
+        service.add_attr_from_parts(key::SERVICES, "foo", Duration::from_secs(60));
+        service.add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60));
 
         // Echo reply to a red user
         let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);

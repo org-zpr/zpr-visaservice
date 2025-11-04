@@ -1,15 +1,15 @@
 use std::sync::Arc;
-use std::sync::RwLock;
 
 use crate::actor_db::ActorDb;
 use crate::connection_control::ConnectionControl;
-use crate::policy::Policy;
+use crate::policy_mgr::PolicyMgr;
+use libeval::policy::Policy;
 
 #[allow(dead_code)]
 pub struct Assembly {
     pub system_start_time: std::time::Instant,
     pub cc: ConnectionControl,
-    pub policy: RwLock<Policy>,
+    pub policy_mgr: PolicyMgr,
     pub actor_db: ActorDb, // manages its own locking
 }
 
@@ -18,7 +18,7 @@ impl Assembly {
         Assembly {
             system_start_time: std::time::Instant::now(),
             cc: ConnectionControl::new(),
-            policy: RwLock::new(Policy::new_empty()),
+            policy_mgr: PolicyMgr::new_with_initial_policy(Policy::new_empty(1)),
             actor_db: ActorDb::new(),
         }
     }

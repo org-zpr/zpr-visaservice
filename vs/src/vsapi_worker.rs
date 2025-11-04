@@ -10,7 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
-use crate::actor::Actor;
+use libeval::actor::Actor;
+
 use crate::assembly::Assembly;
 use crate::error::VSError;
 use crate::logging::targets::VSAPI;
@@ -276,15 +277,21 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
             info!(
                 target: VSAPI,
-                "successfully authenticated node {} from {}",
+                "successfully authenticated node {:?} from {:?}",
                 node_actor.get_cn(), self.remote
             );
 
             // Ok, we have verified the credentials and checked with policy. Time to
             // update our state and return success.
 
+            // TODO: The policy may have changed since started the authentication. Once we add the node
+            // it is part of the ZPRnet.  The add_node should check the visa vinst used to grant access
+            // and we should make sure we do not allow add_node and update_policy to run concurrently.
+            // If add_node runs first, then update policy can catch the issue.  If update_policy runs
+            // first, then add_node will see the new version and should not allow the node to be added.
+
             if let Err(e) = self.asm.actor_db.add_node(node_actor.clone()) {
-                error!(target: VSAPI, "failed to add authenticated node {} to actor db: {}", node_actor.get_cn(), e);
+                error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", node_actor.get_cn(), e);
                 let mut err_builder = res_builder.init_error();
                 write_error(
                     &mut err_builder,
@@ -293,6 +300,11 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                 );
                 return Ok(());
             }
+
+            // TODO: How was the node able to talk to the visa service? Do we already have a visa for
+            // the communications?
+            //
+            // TODO: Do we need to issue visas now for the visa service to talk to the VSS on the node?
 
             let vs_handle: vsapi::v_s_handle::Client =
                 capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
@@ -309,7 +321,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         _: vsapi::v_s_handle::RegisterVssResults,
     ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
-            debug!(target: VSAPI, "register_vss from {}", self.node.get_cn());
+            debug!(target: VSAPI, "register_vss from {:?}", self.node.get_cn());
             Err(capnp::Error::unimplemented(
                 "method v_s_handle::Server::register_vss not implemented".to_string(),
             ))
@@ -322,7 +334,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         _: vsapi::v_s_handle::AuthorizeConnectResults,
     ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
-            debug!(target: VSAPI, "authorize_connect from {}", self.node.get_cn());
+            debug!(target: VSAPI, "authorize_connect from {:?}", self.node.get_cn());
             Err(capnp::Error::unimplemented(
                 "method v_s_handle::Server::authorize_connect not implemented".to_string(),
             ))
@@ -335,7 +347,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         _: vsapi::v_s_handle::ReauthorizeResults,
     ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
-            debug!(target: VSAPI, "reauthorize from {}", self.node.get_cn());
+            debug!(target: VSAPI, "reauthorize from {:?}", self.node.get_cn());
             Err(capnp::Error::unimplemented(
                 "method v_s_handle::Server::reauthorize not implemented".to_string(),
             ))
@@ -354,7 +366,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             let reason = dnotice.get_reason_code()?;
             debug!(
                 target: VSAPI,
-                "disconnect call from node {} for {} with reason {:?}",
+                "disconnect call from node {:?} for {} with reason {:?}",
                 self.node.get_cn(), zpr_addr, reason
             );
 
@@ -385,7 +397,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         _: vsapi::v_s_handle::VisaRequestResults,
     ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
-            debug!(target: VSAPI, "visa_request from {}", self.node.get_cn());
+            debug!(target: VSAPI, "visa_request from {:?}", self.node.get_cn());
             Err(capnp::Error::unimplemented(
                 "method v_s_handle::Server::visa_request not implemented".to_string(),
             ))
@@ -398,7 +410,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         mut results: vsapi::v_s_handle::PingResults,
     ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
         async move {
-            debug!(target: VSAPI, "ping from {}", self.node.get_cn());
+            debug!(target: VSAPI, "ping from {:?}", self.node.get_cn());
             let mut res_builder = results.get().init_res();
             res_builder.set_ok(());
             Ok(())

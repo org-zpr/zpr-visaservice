@@ -1,4 +1,4 @@
-use libeval::zpr_policy::ZprPolicyError;
+use libeval::policy::PolicyError;
 use rustyline::error::ReadlineError;
 use thiserror::Error;
 
@@ -18,8 +18,8 @@ pub enum PioError {
     Io(#[from] std::io::Error),
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
-    #[error("ZPR policy error: {0}")]
-    ZprPolicy(#[from] ZprPolicyError),
+    #[error("Policy error: {0}")]
+    Policy(#[from] PolicyError),
 }
 
 #[derive(Debug, Error)]
@@ -38,8 +38,8 @@ pub enum ZptError {
     Io(#[from] std::io::Error),
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
-    #[error("ZPR policy error: {0}")]
-    ZprPolicy(#[from] ZprPolicyError),
+    #[error("Policy error: {0}")]
+    ZprPolicy(#[from] PolicyError),
     #[error("Machine error: {0}")]
     Machine(#[from] MachineError),
     #[error("Parse error: {0}")]

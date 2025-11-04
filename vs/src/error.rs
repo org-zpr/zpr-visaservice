@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use libeval::eval::EvalError;
+
 #[derive(Debug, Error)]
 pub enum VSError {
     #[error("i/o error: {0}")]
@@ -13,4 +15,7 @@ pub enum VSError {
 
     #[error("internal error: {0}")]
     InternalError(String),
+
+    #[error("evaluation error: {0}")]
+    EvalErr(#[from] EvalError),
 }

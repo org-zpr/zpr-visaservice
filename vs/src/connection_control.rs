@@ -5,13 +5,14 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tracing::{error, info};
 
+use libeval::actor::Actor;
+use libeval::attribute::{Attribute, ROLE_NODE, key};
+use libeval::eval::EvalContext;
 use vsapi::vs_capnp as vsapi;
 
-use crate::actor::{Actor, ExpiringValue};
 use crate::assembly::Assembly;
 use crate::error::VSError;
 use crate::logging::targets::CC;
-use crate::zpr;
 
 pub struct ConnectionControl {
     // Placeholder for connection control data and methods
@@ -45,8 +46,8 @@ impl ConnectionControl {
         challenge_response: &[u8],
         remote: SocketAddr,
     ) -> Result<Actor, VSError> {
-        // Take a read lock on policy during the authentication process.
-        let policy = asm.policy.read().unwrap();
+        // We need to be aware that the policy could be updated in the manager at any time.
+        let policy = asm.policy_mgr.get_current();
 
         let bootstrap_key = policy
             .get_bootstrap_key_by_cn(cn)
@@ -82,26 +83,27 @@ impl ConnectionControl {
         }
 
         // The policy sees everything as a bunch of claims.
-        let mut authd_claims: HashMap<String, ExpiringValue> = HashMap::new();
-        authd_claims.insert(
-            zpr::KATTR_CN.to_string(),
-            ExpiringValue::new_non_expiring(cn.to_string()),
-        );
-        authd_claims.insert(
-            zpr::KATTR_SUBSTRATE_ADDR.to_string(),
-            ExpiringValue::new_non_expiring(remote.to_string()),
-        );
+        let mut authd_claims: Vec<Attribute> = Vec::new();
+        authd_claims.push(Attribute::new_non_expiring(key::CN.into(), cn.to_string()));
+        authd_claims.push(Attribute::new_non_expiring(
+            key::SUBSTRATE_ADDR.into(),
+            remote.to_string(),
+        ));
 
         // Technically we don't know if the node claim is authenticated until it passes policy check.
         let mut unauthed_claims = HashMap::new();
-        unauthed_claims.insert(zpr::KATTR_ROLE.to_string(), zpr::ROLE_NODE.to_string());
+        unauthed_claims.insert(key::ROLE.into(), ROLE_NODE.into());
 
         // In prototype node told us its zpr address in a claim. Now we rely on policy.
-
+        //
         // Now that we have checked auth, we need to check policy.
+        //
         // There may in the future be additional network I/O in the next step
         // for example if VS needs to talk to attribute service.
-        match self.approve_connection(Some(authd_claims), Some(unauthed_claims)) {
+
+        let ectx = EvalContext::new(policy);
+
+        match ectx.approve_connection(Some(authd_claims), Some(unauthed_claims)) {
             Ok(actor) => {
                 // Make sure policy verified that the actor is in fact a node.
                 if !actor.is_node() {
@@ -112,26 +114,9 @@ impl ConnectionControl {
             }
             Err(e) => {
                 info!(target: CC, "connection not approved for cn {}: {}", cn, e);
-                Err(e)
+                Err(e.into())
             }
         }
-    }
-
-    fn approve_connection(
-        &self,
-        _authenticated_claims: Option<HashMap<String, ExpiringValue>>,
-        _unauthenticated_claims: Option<HashMap<String, String>>,
-    ) -> Result<Actor, VSError> {
-        // Run through the policy, make sure that the set of claims resovles to an actor.
-        // Policy uses claims and some claims may come from trusted services so I think
-        // the idea is to deal with all that prior to calling this and so the claims
-        // map has everything we have gathered.
-
-        // TODO: Should this be in libeval?
-
-        Err(VSError::InternalError(
-            "approve_connection not yet implemented".into(),
-        ))
     }
 
     pub async fn disconnect(

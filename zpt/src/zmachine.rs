@@ -4,6 +4,7 @@
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::{MachineError, PioError};
@@ -395,7 +396,7 @@ impl State {
     }
 
     pub fn load_policy(&mut self, path: &Path) -> Result<(), PioError> {
-        let policy = pio::load_policy(path)?;
+        let policy = Arc::new(pio::load_policy(path)?);
         self.ctx = Some(EvalContext::new(policy));
         self.policy_path = Some(path.to_path_buf());
         // todo: centralized way to report status, eg "loaded XYZ"
@@ -415,7 +416,7 @@ impl State {
 
         // TODO: Attribute allows duplicate attribute keys -- it should not.
 
-        actor.add_attr(key, value, Duration::from_secs(3600)); // TODO: Expiration
+        actor.add_attr_from_parts(key, value, Duration::from_secs(3600)); // TODO: Expiration
         Ok(())
     }
 
