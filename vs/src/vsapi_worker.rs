@@ -1,6 +1,5 @@
 use vsapi::vs_capnp as vsapi;
 
-// use capnp::capability::Rc;
 use openssl::rand::rand_bytes;
 use std::cell::Cell;
 use std::net::SocketAddr;
@@ -84,7 +83,6 @@ struct VSGateImpl {
 
 #[allow(dead_code)]
 struct VSHandleImpl {
-    // TODO: Will include more info about the authenticated node.
     asm: Arc<Assembly>,
     node: Actor,
 }
@@ -290,6 +288,12 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             // If add_node runs first, then update policy can catch the issue.  If update_policy runs
             // first, then add_node will see the new version and should not allow the node to be added.
 
+            // Note that the node may have services on it in addition to its node-ness.
+
+            // The node has a built in temporary(?) visa for communicating with the VS.
+            // The VS will create a "real" one and queue it to be sent to the node once
+            // it registers its VSS.
+
             if let Err(e) = self.asm.actor_db.add_node(node_actor.clone()) {
                 error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", node_actor.get_cn(), e);
                 let mut err_builder = res_builder.init_error();
@@ -301,11 +305,6 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                 return Ok(());
             }
 
-            // TODO: How was the node able to talk to the visa service? Do we already have a visa for
-            // the communications?
-            //
-            // TODO: Do we need to issue visas now for the visa service to talk to the VSS on the node?
-
             let vs_handle: vsapi::v_s_handle::Client =
                 capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
             res_builder.set_ok(vs_handle)?;
@@ -315,6 +314,13 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 }
 
 impl vsapi::v_s_handle::Server for VSHandleImpl {
+    /// Node should call this after it has authenticated itself and it has installed its
+    /// ZPR address into its tables.
+    ///
+    /// The VS must generate a visa for VISA->VSS communications and hand it back to
+    /// the node with this call.  Any pending visas for the node are handed back with this.
+    ///
+    /// PENDING (TODO) - Recent change to vsapi allows visas to be sent back with this call.
     fn register_vss(
         self: Rc<Self>,
         _: vsapi::v_s_handle::RegisterVssParams,
