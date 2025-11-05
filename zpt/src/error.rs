@@ -1,3 +1,4 @@
+use libeval::actor::AttributeError;
 use libeval::policy::PolicyError;
 use rustyline::error::ReadlineError;
 use thiserror::Error;
@@ -8,6 +9,8 @@ pub enum MachineError {
     ExecutionError(String),
     #[error("Pio error: {0}")]
     Pio(#[from] PioError),
+    #[error("attribute error: {0}")]
+    Attribute(#[from] AttributeError),
 }
 
 #[derive(Debug, Error)]

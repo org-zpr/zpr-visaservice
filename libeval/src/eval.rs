@@ -11,7 +11,7 @@ use std::fmt;
 use std::net;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// The result of evaluating a policy against a communicating pair of
 /// actors and a description of the packet.
@@ -46,6 +46,9 @@ pub enum EvalError {
 
     #[error("empty policy")]
     EmptyPolicy,
+
+    #[error("attribute missing: {0}")]
+    AttributeMissing(String),
 }
 
 /// A "hit" is a single matching permission or deny line in policy
@@ -365,31 +368,46 @@ impl EvalContext {
 
         let mut actor = Actor::new();
         for attr in authenticated_claims.unwrap_or_default() {
-            actor.add_attribute(attr);
+            if let Err(e) = actor.add_attribute(attr) {
+                warn!("dropping invalid authenticated claim attribute: {}", e);
+            }
         }
+
+        if !actor.has_attribute_named(key::CN) {
+            return Err(EvalError::AttributeMissing(key::CN.into()));
+        }
+
         for (k, v) in unauthenticated_claims.unwrap_or_default() {
-            actor.add_attribute(Attribute::new_non_expiring(k, v));
+            if let Err(e) = actor.add_attribute(Attribute::new_non_expiring(k, v)) {
+                warn!("dropping invalid unauthenticated claim attribute: {}", e);
+            }
         }
 
         // Placeholder - assign an address
         if !actor.has_attribute_named(key::ZPR_ADDR) {
             if actor.is_node() {
-                actor.add_attribute(Attribute::new_non_expiring(
-                    key::ZPR_ADDR.into(),
-                    "fd5a:5052:90de::3000".into(),
-                ));
+                actor
+                    .add_attribute(Attribute::new_non_expiring(
+                        key::ZPR_ADDR.into(),
+                        "fd5a:5052:90de::3000".into(),
+                    ))
+                    .unwrap();
             } else {
-                actor.add_attribute(Attribute::new_non_expiring(
-                    key::ZPR_ADDR.into(),
-                    "fd5a:5052:1000::1".into(),
-                ));
+                actor
+                    .add_attribute(Attribute::new_non_expiring(
+                        key::ZPR_ADDR.into(),
+                        "fd5a:5052:1000::1".into(),
+                    ))
+                    .unwrap();
             }
         }
 
-        actor.add_attribute(Attribute::new_non_expiring(
-            key::VINST.into(),
-            self.policy.get_vinst().to_string(),
-        ));
+        actor
+            .add_attribute(Attribute::new_non_expiring(
+                key::VINST.into(),
+                self.policy.get_vinst().to_string(),
+            ))
+            .unwrap();
         Ok(actor)
     }
 
@@ -725,7 +743,7 @@ mod test {
             panic!("policy container missing 'policy' field");
         }
         let policy_bytes = container.get_policy().unwrap();
-        Policy::new_from_policy_bytes(0, Bytes::copy_from_slice(policy_bytes)).unwrap()
+        Policy::new_from_policy_bytes(Bytes::copy_from_slice(policy_bytes)).unwrap()
     }
 
     #[test]
@@ -736,11 +754,16 @@ mod test {
 
         // should let red users access content:red databases.
         let mut user = Actor::new();
-        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60))
+            .unwrap();
 
         let mut service = Actor::new();
-        service.add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60));
-        service.add_attr_from_parts("service.content", "red", Duration::from_secs(60));
+        service
+            .add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60))
+            .unwrap();
+        service
+            .add_attr_from_parts("service.content", "red", Duration::from_secs(60))
+            .unwrap();
         let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -755,7 +778,9 @@ mod test {
 
         // Should deny access to green tagged users.
         let mut green_user = Actor::new();
-        green_user.add_attr_from_parts("user.zpr.tag", "user.green", Duration::from_secs(60));
+        green_user
+            .add_attr_from_parts("user.zpr.tag", "user.green", Duration::from_secs(60))
+            .unwrap();
         let decision = ctx.eval_request(&green_user, &service, &packet).unwrap();
         match decision {
             EvalDecision::Deny(hits) => {
@@ -775,11 +800,16 @@ mod test {
 
         // should let red users access content:red databases.
         let mut user = Actor::new();
-        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60))
+            .unwrap();
 
         let mut service = Actor::new();
-        service.add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60));
-        service.add_attr_from_parts("service.content", "red", Duration::from_secs(60));
+        service
+            .add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60))
+            .unwrap();
+        service
+            .add_attr_from_parts("service.content", "red", Duration::from_secs(60))
+            .unwrap();
         let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -811,12 +841,18 @@ mod test {
 
         // User with bas_id and color:red should be able to access database service.
         let mut user = Actor::new();
-        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
-        user.add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60))
+            .unwrap();
+        user.add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60))
+            .unwrap();
 
         let mut service = Actor::new();
-        service.add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60));
-        service.add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60));
+        service
+            .add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60))
+            .unwrap();
+        service
+            .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
+            .unwrap();
         let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -839,12 +875,18 @@ mod test {
         // Set user with color:green so it does not match color:red since in that
         // case we would match two policies.
         let mut user = Actor::new();
-        user.add_attr_from_parts("user.color", "green", Duration::from_secs(60));
-        user.add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60));
+        user.add_attr_from_parts("user.color", "green", Duration::from_secs(60))
+            .unwrap();
+        user.add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60))
+            .unwrap();
 
         let mut service = Actor::new();
-        service.add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60));
-        service.add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60));
+        service
+            .add_attr_from_parts(key::SERVICES, "database", Duration::from_secs(60))
+            .unwrap();
+        service
+            .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
+            .unwrap();
         let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -870,11 +912,16 @@ mod test {
 
         // should let red users ping pingdb
         let mut user = Actor::new();
-        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60))
+            .unwrap();
 
         let mut service = Actor::new();
-        service.add_attr_from_parts(key::SERVICES, "pingdb", Duration::from_secs(60));
-        service.add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60));
+        service
+            .add_attr_from_parts(key::SERVICES, "pingdb", Duration::from_secs(60))
+            .unwrap();
+        service
+            .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
+            .unwrap();
         let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
@@ -901,11 +948,16 @@ mod test {
 
         // should let red users ping pingdb
         let mut user = Actor::new();
-        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60))
+            .unwrap();
 
         let mut service = Actor::new();
-        service.add_attr_from_parts(key::SERVICES, "pingdb", Duration::from_secs(60));
-        service.add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60));
+        service
+            .add_attr_from_parts(key::SERVICES, "pingdb", Duration::from_secs(60))
+            .unwrap();
+        service
+            .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
+            .unwrap();
 
         // We picked up an echo reply packet.
         // According to policy this should match.
@@ -935,11 +987,16 @@ mod test {
 
         // should let red users ping pingdb -- should not let randos send echo-reply to red users.
         let mut user = Actor::new();
-        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60));
+        user.add_attr_from_parts("user.zpr.tag", "user.red", Duration::from_secs(60))
+            .unwrap();
 
         let mut service = Actor::new();
-        service.add_attr_from_parts(key::SERVICES, "foo", Duration::from_secs(60));
-        service.add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60));
+        service
+            .add_attr_from_parts(key::SERVICES, "foo", Duration::from_secs(60))
+            .unwrap();
+        service
+            .add_attr_from_parts("user.bas_id", "1000", Duration::from_secs(60))
+            .unwrap();
 
         // Echo reply to a red user
         let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);

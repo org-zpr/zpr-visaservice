@@ -25,18 +25,14 @@ pub struct Policy {
 }
 
 impl Policy {
-    pub fn new_empty(vinst: u64) -> Self {
+    pub fn new_empty() -> Self {
         Policy {
-            vinst,
             ..Default::default()
         }
     }
 
     /// Pass a v2 format encoded Policy struct here. This can be found inside a PolicyContainer.
-    pub fn new_from_policy_bytes(
-        vinst: u64,
-        encoded_policy_bytes: Bytes,
-    ) -> Result<Self, PolicyError> {
+    pub fn new_from_policy_bytes(encoded_policy_bytes: Bytes) -> Result<Self, PolicyError> {
         // parse the policy bytes using capnp
         let policy_reader = capnp::serialize::read_message(
             &mut std::io::Cursor::new(&encoded_policy_bytes),
@@ -44,7 +40,6 @@ impl Policy {
         )?;
         Ok(Policy {
             policy_rdr: Some(Arc::new(policy_reader)),
-            vinst,
             ..Default::default()
         })
     }
@@ -53,6 +48,13 @@ impl Policy {
         &self,
     ) -> Option<Arc<capnp::message::Reader<capnp::serialize::OwnedSegments>>> {
         self.policy_rdr.clone()
+    }
+
+    /// Set the "installed version". This is here to support the visa service which
+    /// increments the vinst each time a new policy is installed. This should not
+    /// be called by other users of policy.
+    pub fn set_vinst(&mut self, vinst: u64) {
+        self.vinst = vinst;
     }
 
     /// The vinst (version instance) is incremented each time the policy is changed.

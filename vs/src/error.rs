@@ -10,6 +10,9 @@ pub enum VSError {
     #[error("configuration error: {0}")]
     Config(#[from] toml::de::Error),
 
+    #[error("Cap'n Proto error: {0}")]
+    Capnp(#[from] capnp::Error),
+
     #[error("authentication failed: {0}")]
     AuthenticationFailed(String),
 
@@ -18,4 +21,13 @@ pub enum VSError {
 
     #[error("evaluation error: {0}")]
     EvalErr(#[from] EvalError),
+
+    #[error("policy file error: {0}")]
+    PolicyFileError(String),
+
+    #[error("policy version error: {0}")]
+    PolicyVersionError(String),
+
+    #[error("policy error: {0}")]
+    PolicyError(#[from] libeval::policy::PolicyError),
 }

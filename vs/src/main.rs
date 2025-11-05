@@ -12,16 +12,20 @@ mod config;
 mod connection_control;
 mod error;
 mod logging;
+mod pio;
 mod policy_mgr;
 mod signal_worker;
 mod vsapi_worker;
 mod zpr;
 
+use crate::actor_db::ActorDb;
 use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
+use crate::connection_control::ConnectionControl;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
+use crate::policy_mgr::PolicyMgr;
 
 /// vs - ZPR visa service
 #[derive(Parser, Debug)]
@@ -56,7 +60,18 @@ fn main() {
         }
     };
 
-    let asm = Arc::new(Assembly::new());
+    let initial_policy = pio::load_policy(
+        &cli.policy,
+        pio::Version(
+            zpr::POLICY_MIN_COMPILER_MAJOR,
+            zpr::POLICY_MIN_COMPILER_MINOR,
+            zpr::POLICY_MIN_COMPILER_PATCH,
+        ),
+    )
+    .unwrap_or_else(|e| {
+        error!(target: MAIN, "failed to load initial policy from {}: {}", cli.policy.display(), e);
+        std::process::exit(1);
+    });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -74,17 +89,29 @@ fn main() {
     let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(zpr::VALKEY_URI);
     let vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
     let res = runtime.block_on(async { vk_client.create_multiplexed_tokio_connection().await });
-    match res {
-        Ok(_conn) => {
+    let (vk_conn, vk_fut) = match res {
+        Ok((conn, fut)) => {
             info!(target: MAIN, "connected to ValKey at {vk_uri}");
+            (conn, fut)
         }
         Err(e) => {
             error!(target: MAIN, "failed to connect to ValKey at {vk_uri}: {}", e);
             std::process::exit(1);
         }
-    }
+    };
+
+    let asm = Arc::new(Assembly {
+        system_start_time: std::time::Instant::now(),
+        cc: ConnectionControl::new(),
+        policy_mgr: PolicyMgr::new_with_initial_policy(initial_policy),
+        actor_db: ActorDb::new(),
+        vk_conn: Arc::new(vk_conn),
+    });
 
     let mut js = JoinSet::new();
+
+    js.spawn(vk_fut); // runs redis
+
     js.spawn_local(signal_worker::launch(asm.clone()));
 
     js.spawn_local(vsapi_worker::launch(

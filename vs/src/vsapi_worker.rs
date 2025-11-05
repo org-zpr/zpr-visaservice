@@ -20,6 +20,7 @@ pub async fn launch_capnp(
     asm: Arc<Assembly>,
     listen: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    info!(target: VSAPI, "VSAPI service listening on {} (capnp)", listen);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     loop {
         // TODO: Figure out how to get tokio TLS in here.
@@ -275,8 +276,8 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
             info!(
                 target: VSAPI,
-                "successfully authenticated node {:?} from {:?}",
-                node_actor.get_cn(), self.remote
+                "successfully authenticated node {:?} from {:?} and assigned ip {:?}",
+                node_actor.get_cn(), self.remote, node_actor.get_zpr_addr()
             );
 
             // Ok, we have verified the credentials and checked with policy. Time to

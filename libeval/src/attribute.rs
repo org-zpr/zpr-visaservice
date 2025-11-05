@@ -1,6 +1,10 @@
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
 
+pub const ROLE_NODE: &str = "node";
+pub const ROLE_ADAPTER: &str = "adapter";
+const NEVER_EXPIRES: Duration = Duration::from_secs(60 * 60 * 60 * 24 * 365 * 100); // 100 years
+
 pub mod key {
 
     /// used to be called EPID
@@ -24,9 +28,6 @@ pub mod key {
     /// Policy install version when actor last authenticated/permitted.
     pub const VINST: &str = "zpr.vinst";
 }
-
-pub const ROLE_NODE: &str = "node";
-pub const ROLE_ADAPTER: &str = "adapter";
 
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
@@ -59,7 +60,7 @@ impl Attribute {
         Attribute {
             key,
             value,
-            expires_at: SystemTime::now() + Duration::from_secs(u64::MAX),
+            expires_at: SystemTime::now() + NEVER_EXPIRES,
         }
     }
 

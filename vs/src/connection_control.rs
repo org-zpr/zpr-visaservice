@@ -1,3 +1,20 @@
+//! ConnectionControl is for handling new connections to the ZPRnet.
+//! Nodes and adapters.  The two steps to a connection are authentication
+//! and then authorization via policy.
+//!
+//! Nodes are authenticated using keys found in policy that are tied to
+//! their CN.
+//!
+//! Adapters may be authenticated like nodes (using booststrap keys in policy),
+//! or more commonly they will be authenticated by an authentication service
+//! on th network.
+//!
+//! The authorization step runs through policy and attaches any special attributes
+//! to the actor -- things like services offered.
+//!
+//! Finally, if everything goes well an address is assigned and the actor is
+//! returned.
+
 use openssl::hash::MessageDigest;
 use openssl::sign::Verifier;
 use std::collections::HashMap;
@@ -16,17 +33,6 @@ use crate::logging::targets::CC;
 
 pub struct ConnectionControl {
     // Placeholder for connection control data and methods
-}
-
-// Placeholder.
-// Authentication will end up creating the node "actor" struct so probably
-// that will be returned not this Node-Id thing.  And remember that the node
-// authentication will have an expiration.
-#[allow(dead_code)]
-pub struct NodeId {
-    substrate_addr: SocketAddr,
-    zpr_addr: IpAddr,
-    pub cn: String,
 }
 
 impl ConnectionControl {

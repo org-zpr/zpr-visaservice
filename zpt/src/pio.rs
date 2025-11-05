@@ -25,6 +25,6 @@ pub fn load_policy(path: &Path) -> Result<Policy, PioError> {
         ));
     }
     let policy_bytes = container.get_policy().unwrap();
-    let zp = Policy::new_from_policy_bytes(1, Bytes::copy_from_slice(policy_bytes))?;
+    let zp = Policy::new_from_policy_bytes(Bytes::copy_from_slice(policy_bytes))?;
     Ok(zp)
 }

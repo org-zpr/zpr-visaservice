@@ -416,7 +416,7 @@ impl State {
 
         // TODO: Attribute allows duplicate attribute keys -- it should not.
 
-        actor.add_attr_from_parts(key, value, Duration::from_secs(3600)); // TODO: Expiration
+        actor.add_attr_from_parts(key, value, Duration::from_secs(3600))?; // TODO: Expiration
         Ok(())
     }
 

@@ -16,10 +16,7 @@ clean:
 	$(MAKE) -C vs-admin $@
 	$(MAKE) -C vs-conform $@
 
-build:
-	$(MAKE) -C core all
-	$(MAKE) -C vs-admin all
-	$(MAKE) -C vs-conform all
+build: build-go build-rs
 
 build-go:
 	$(MAKE) -C core all
@@ -27,6 +24,9 @@ build-go:
 
 build-rs:
 	$(MAKE) -C vs-admin all
+	$(MAKE) -C vs all
+	$(MAKE) -C zpt all
+	$(MAKE) -C libeval all
 
 test-go:
 	$(MAKE) -C core test
@@ -34,6 +34,9 @@ test-go:
 
 test-rs:
 	$(MAKE) -C vs-admin test
+	$(MAKE) -C vs test
+	$(MAKE) -C zpt test
+	$(MAKE) -C libeval test
 
 release:
 	$(MAKE) clean
