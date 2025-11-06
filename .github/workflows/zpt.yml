@@ -51,7 +51,12 @@ jobs:
       working-directory: zpt
       env:
         ZPR_CICD_RO_TOKEN: ${{ secrets.ZPR_CICD_RO_TOKEN }}
-      run: apt-get install -y capnproto && cargo build --verbose
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
+          sudo apt-get install -y capnproto && cargo build --verbose
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          brew install capnp && cargo build --verbose
+        fi
 
     - name: ZPT Test
       timeout-minutes: 5
