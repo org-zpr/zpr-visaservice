@@ -345,7 +345,6 @@ impl EvalContext {
     /// Consult policy and determine if connection is allowed from the actor with
     /// the indicated authenticated and unauthenticated claims.
     ///
-    /// Authenticated claims must include the CN.
     ///
     /// On success returns an actor object that will include additional attributes set from
     /// policy (eg, ROLE).
@@ -372,11 +371,6 @@ impl EvalContext {
                 warn!("dropping invalid authenticated claim attribute: {}", e);
             }
         }
-
-        if !actor.has_attribute_named(key::CN) {
-            return Err(EvalError::AttributeMissing(key::CN.into()));
-        }
-
         for (k, v) in unauthenticated_claims.unwrap_or_default() {
             if let Err(e) = actor.add_attribute(Attribute::new_non_expiring(k, v)) {
                 warn!("dropping invalid unauthenticated claim attribute: {}", e);

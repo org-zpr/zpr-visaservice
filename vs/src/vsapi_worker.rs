@@ -274,6 +274,14 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                 }
             };
 
+            // Sanity check - every node has a CN and a ZPR address.
+            if node_actor.get_cn().is_none() {
+                panic!("authenticated node has no CN");
+            }
+            if node_actor.get_zpr_addr().is_none() {
+                panic!("authenticated node has no ZPR address");
+            }
+
             info!(
                 target: VSAPI,
                 "successfully authenticated node {:?} from {:?} and assigned ip {:?}",
