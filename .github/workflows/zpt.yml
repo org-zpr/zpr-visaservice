@@ -51,7 +51,7 @@ jobs:
       working-directory: zpt
       env:
         ZPR_CICD_RO_TOKEN: ${{ secrets.ZPR_CICD_RO_TOKEN }}
-      run: cargo build --verbose
+      run: apt-get install -y capnproto && cargo build --verbose
 
     - name: ZPT Test
       timeout-minutes: 5
