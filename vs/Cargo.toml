@@ -22,8 +22,7 @@ toml = "0.9.8"
 tower-service = "0.3.3"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
-# zpr-policy = { git = "https://github.com/org-zpr/zpr-policy-rs.git", tag = "v0.8.5", features = ["v2"] }
-zpr-policy = { path = "../../zpr-policy-rs", features = ["v2"] }
+zpr-policy = { git = "https://github.com/org-zpr/zpr-policy-rs.git", tag = "v0.9.0", features = ["v2"] }
 # vsapi = { git = "https://github.com/org-zpr/zpr-vsapi-rs.git", tag = "v0.5.0", features = ["v2"] }
 vsapi = { path = "../../zpr-vsapi-rs", features = ["v2"] }
 tokio-util = { version = "0.7.16", features = ["compat"] }

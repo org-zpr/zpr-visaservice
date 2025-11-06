@@ -101,6 +101,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "capnpc"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f1cd4f042d6725da6245bde08c9e7c74f6fcb2d8bd5e0378e57991be8d711d8"
+dependencies = [
+ "capnp",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1168,9 +1177,11 @@ dependencies = [
 
 [[package]]
 name = "zpr-policy"
-version = "0.12.0"
+version = "0.13.0"
+source = "git+https://github.com/org-zpr/zpr-policy-rs.git?tag=v0.9.0#3acf76e60c35bb17693b40568b56122e1a521b13"
 dependencies = [
  "capnp",
+ "capnpc",
  "prost",
 ]
 
