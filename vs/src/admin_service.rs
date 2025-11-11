@@ -85,7 +85,9 @@ fn admin_app(state: SharedState) -> Router {
 async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedState) {
     let app = admin_app(state);
     let tls_acceptor = TlsAcceptor::from(acceptor);
-    let listener = TcpListener::bind(listen).await.unwrap();
+    let listener = TcpListener::bind(listen).await.unwrap_or_else(|e| {
+        panic!("failed to bind admin https listener on {listen}: {e}");
+    });
     info!(target: HTADMIN, "admin https service listening on {listen} (TLS)");
 
     pin_mut!(listener);
