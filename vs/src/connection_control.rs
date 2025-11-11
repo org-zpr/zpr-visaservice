@@ -15,7 +15,9 @@
 //! Finally, if everything goes well an address is assigned and the actor is
 //! returned.
 
+use ipnet::IpNet;
 use openssl::hash::MessageDigest;
+use openssl::pkey::PKey;
 use openssl::sign::Verifier;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -30,6 +32,20 @@ use vsapi::vs_capnp as vsapi;
 use crate::assembly::Assembly;
 use crate::error::VSError;
 use crate::logging::targets::CC;
+
+// Temporary CN and key data here to support initial testing with libnode2.
+const TEST_NODE_CN: &str = "node.test.zpr";
+const TEST_NODE_PUBLIC_KEY_PEM: &str = r#"
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1/FhZLpvbnVkRgCG/4vP
+ZZLRlhtXzsJhxVoqiDU5NgpR0rllYzqP60K5K4ZpvGyrcExYX1fcS7x4iQb0Q6yN
++qby33UwUSe4hAePZ9KQiVVxLBMfO/fSrLPbMMCy+AjKqsiTmetW28angRSm6pU4
+/SJuZspO1fy8RYj95aqPXg5OE8F1W27JG47asPn2+CK7zfFNQSTtxvEtaSy6JPDf
+cgEOROtn6C/5Zj8CUi98KHi6IwdM8ArVf/xXKhkfhJiRvcVZ/ghFOwyfCrQCQBT3
+WlfWgTgbLCrlRZyu0/Yolnx/cX/CCslNUJK8KBlHEjRTlhkU0xmDZ2KRlfOtCd0Y
+FQIDAQAB
+-----END PUBLIC KEY-----
+"#;
 
 pub struct ConnectionControl {
     // Placeholder for connection control data and methods
@@ -51,13 +67,24 @@ impl ConnectionControl {
         cn: &str,
         challenge_response: &[u8],
         remote: SocketAddr,
+        node_req_addr: IpAddr,
+        node_aaa_net: IpNet,
     ) -> Result<Actor, VSError> {
         // We need to be aware that the policy could be updated in the manager at any time.
         let policy = asm.policy_mgr.get_current();
 
-        let bootstrap_key = policy
-            .get_bootstrap_key_by_cn(cn)
-            .ok_or(VSError::AuthenticationFailed("key not found".into()))?;
+        // TODO: Remove this placeholder code once we have keys in policy.
+        let bootstrap_key = match policy.get_bootstrap_key_by_cn(cn) {
+            Some(k) => k,
+            None if cn == TEST_NODE_CN => {
+                info!(target: CC, "using hard-coded test bootstrap public key for cn {}", cn);
+                PKey::public_key_from_pem(TEST_NODE_PUBLIC_KEY_PEM.as_bytes())
+                    .expect("invalid const test node key pem")
+            }
+            None => {
+                return Err(VSError::AuthenticationFailed("key not found".into()));
+            }
+        };
 
         // The node challenge response is an rsa signature of
         // concatination of (timestamp_big_endian, cn, challenge_presented)
@@ -99,9 +126,9 @@ impl ConnectionControl {
         // Technically we don't know if the node claim is authenticated until it passes policy check.
         let mut unauthed_claims = HashMap::new();
         unauthed_claims.insert(key::ROLE.into(), ROLE_NODE.into());
+        unauthed_claims.insert(key::ZPR_ADDR.into(), node_req_addr.to_string().into());
+        unauthed_claims.insert(key::AAA_NET.into(), node_aaa_net.to_string().into());
 
-        // In prototype node told us its zpr address in a claim. Now we rely on policy.
-        //
         // Now that we have checked auth, we need to check policy.
         //
         // There may in the future be additional network I/O in the next step
