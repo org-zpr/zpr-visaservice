@@ -1,6 +1,6 @@
 use crate::error::PioError;
 use ::polio::policy_capnp;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use libeval::policy::Policy;
 use std::path::Path;
 
@@ -10,7 +10,7 @@ pub fn load_policy(path: &Path) -> Result<Policy, PioError> {
 
     // The v2 binary format wraps a Policy struct inside a PolicyContainer struct.
     let container_reader = capnp::serialize::read_message(
-        &mut std::io::Cursor::new(&encoded_container_bytes),
+        encoded_container_bytes.reader(),
         capnp::message::ReaderOptions::new(),
     )?;
 

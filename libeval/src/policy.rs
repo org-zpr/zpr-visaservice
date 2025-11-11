@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use openssl::pkey::{PKey, Public};
 use thiserror::Error;
 
@@ -26,16 +26,14 @@ pub struct Policy {
 
 impl Policy {
     pub fn new_empty() -> Self {
-        Policy {
-            ..Default::default()
-        }
+        Self::default()
     }
 
     /// Pass a v2 format encoded Policy struct here. This can be found inside a PolicyContainer.
     pub fn new_from_policy_bytes(encoded_policy_bytes: Bytes) -> Result<Self, PolicyError> {
         // parse the policy bytes using capnp
         let policy_reader = capnp::serialize::read_message(
-            &mut std::io::Cursor::new(&encoded_policy_bytes),
+            encoded_policy_bytes.reader(),
             capnp::message::ReaderOptions::new(),
         )?;
         Ok(Policy {
@@ -48,6 +46,10 @@ impl Policy {
         &self,
     ) -> Option<Arc<capnp::message::Reader<capnp::serialize::OwnedSegments>>> {
         self.policy_rdr.clone()
+    }
+
+    pub fn vinst(&self) -> u64 {
+        self.vinst
     }
 
     /// Set the "installed version". This is here to support the visa service which

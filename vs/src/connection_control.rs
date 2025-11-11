@@ -109,7 +109,7 @@ impl ConnectionControl {
 
         let ectx = EvalContext::new(policy);
 
-        match ectx.approve_connection(Some(authd_claims), Some(unauthed_claims)) {
+        match ectx.approve_connection(Some(&authd_claims), Some(&unauthed_claims)) {
             Ok(actor) => {
                 // Make sure policy verified that the actor is in fact a node.
                 if !actor.is_node() {

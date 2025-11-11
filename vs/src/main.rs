@@ -44,7 +44,7 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     enable_logging(cli.verbose);
     info!(target: MAIN, "vs version {}", env!("CARGO_PKG_VERSION"));
@@ -56,22 +56,24 @@ fn main() {
         }
         Err(e) => {
             error!(target: MAIN, "Failed to load configuration: {}", e);
-            std::process::exit(1);
+            return std::process::ExitCode::FAILURE;
         }
     };
 
-    let initial_policy = pio::load_policy(
+    let initial_policy = match pio::load_policy(
         &cli.policy,
         pio::Version(
             zpr::POLICY_MIN_COMPILER_MAJOR,
             zpr::POLICY_MIN_COMPILER_MINOR,
             zpr::POLICY_MIN_COMPILER_PATCH,
         ),
-    )
-    .unwrap_or_else(|e| {
-        error!(target: MAIN, "failed to load initial policy from {}: {}", cli.policy.display(), e);
-        std::process::exit(1);
-    });
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            error!(target: MAIN, "failed to load initial policy from {}: {}", cli.policy.display(), e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -96,7 +98,7 @@ fn main() {
         }
         Err(e) => {
             error!(target: MAIN, "failed to connect to ValKey at {vk_uri}: {}", e);
-            std::process::exit(1);
+            return std::process::ExitCode::FAILURE;
         }
     };
 
@@ -145,5 +147,5 @@ fn main() {
     });
 
     info!(target: MAIN, "exiting");
-    std::process::exit(0);
+    std::process::ExitCode::SUCCESS
 }

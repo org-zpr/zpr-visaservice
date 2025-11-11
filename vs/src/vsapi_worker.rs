@@ -76,9 +76,7 @@ struct VSGateImpl {
     remote_cn: String,
 
     // This is set in `challenge` call and read in the `authenticate` call.
-    // My understanding is that the VSGateImpl instance here is tied to the connection (sockaddr)
-    // which I think runs operations one at a time so this should be safe
-    // to use. (TODO: confirm)
+    // Safe to use here since the capn proto rpc is confined to a single thread.
     challenge_data: Cell<[u8; 32]>,
 }
 
@@ -142,183 +140,208 @@ fn ipaddr_from_capnp(addr: vsapi::ip_addr::Reader) -> Result<std::net::IpAddr, c
 }
 
 impl vsapi::visa_service::Server for VisaServiceImpl {
-    fn connect(
+    async fn connect(
         self: Rc<Self>,
         params: vsapi::visa_service::ConnectParams,
         mut results: vsapi::visa_service::ConnectResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            debug!(target: VSAPI, "connect call from {}", self.remote);
-            let req_cn = params.get()?.get_req()?.get_cn()?.to_string()?;
-            let req_type = params.get()?.get_req()?.get_ctype()?;
-            // List of connection params ignored for now (TODO)
-            match req_type {
-                vsapi::VSConnT::Reset => {}
-                vsapi::VSConnT::Reconnect => {
-                    let res_builder = results.get().init_resp();
-                    let mut err_builder = res_builder.init_error();
-                    write_error(
-                        &mut err_builder,
-                        vsapi::ErrorCode::AuthRequired,
-                        "reconnect not supported",
-                    );
-                    return Ok(());
-                }
+    ) -> Result<(), capnp::Error> {
+        debug!(target: VSAPI, "connect call from {}", self.remote);
+        let req_cn = params.get()?.get_req()?.get_cn()?.to_string()?;
+        let req_type = params.get()?.get_req()?.get_ctype()?;
+        // List of connection params ignored for now (TODO)
+        match req_type {
+            vsapi::VSConnT::Reset => {}
+            vsapi::VSConnT::Reconnect => {
+                let res_builder = results.get().init_resp();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::AuthRequired,
+                    "reconnect not supported",
+                );
+                return Ok(());
             }
-
-            let mut res_builder = results.get().init_resp();
-
-            let vs_gate: vsapi::v_s_gate::Client =
-                capnp_rpc::new_client(VSGateImpl::new(self.asm.clone(), self.remote, req_cn));
-
-            //res_builder.reborrow().set_ok(vs_gate)?;
-            res_builder.set_ok(vs_gate)?;
-
-            Ok(())
         }
+
+        let mut res_builder = results.get().init_resp();
+
+        let vs_gate: vsapi::v_s_gate::Client =
+            capnp_rpc::new_client(VSGateImpl::new(self.asm.clone(), self.remote, req_cn));
+
+        //res_builder.reborrow().set_ok(vs_gate)?;
+        res_builder.set_ok(vs_gate)?;
+
+        Ok(())
     }
 }
 
 impl vsapi::v_s_gate::Server for VSGateImpl {
-    fn challenge(
+    async fn challenge(
         self: Rc<Self>,
         _params: vsapi::v_s_gate::ChallengeParams,
         mut results: vsapi::v_s_gate::ChallengeResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            debug!(target: VSAPI, "challenge call from {} as {}", self.remote, self.remote_cn);
-            let mut res_builder = results.get().init_challenge();
-            res_builder.set_alg(vsapi::ChallengeAlg::RsaSha256Pkcs1v15);
-            let mut challenge_data = [0u8; 32];
-            rand_bytes(&mut challenge_data).unwrap();
-            res_builder.set_bytes(&challenge_data);
-            self.challenge_data.set(challenge_data);
-            Ok(())
-        }
+    ) -> Result<(), capnp::Error> {
+        debug!(target: VSAPI, "challenge call from {} as {}", self.remote, self.remote_cn);
+        let mut res_builder = results.get().init_challenge();
+        res_builder.set_alg(vsapi::ChallengeAlg::RsaSha256Pkcs1v15);
+        let mut challenge_data = [0u8; 32];
+        rand_bytes(&mut challenge_data).unwrap();
+        res_builder.set_bytes(&challenge_data);
+        self.challenge_data.set(challenge_data);
+        Ok(())
     }
 
-    fn authenticate(
+    async fn authenticate(
         self: Rc<Self>,
         params: vsapi::v_s_gate::AuthenticateParams,
         mut results: vsapi::v_s_gate::AuthenticateResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            debug!(target: VSAPI, "authenticate from {} as {}", self.remote, self.remote_cn);
-            let cresp = params.get()?.get_cresp()?; // has challenge (bytes), timestamp (uint64), bytes (bytes)
-            let mut res_builder = results.get().init_res();
-            let challenge_presented = cresp.get_challenge()?;
-            // Must match the challenge we sent.
-            if challenge_presented != &self.challenge_data.get() {
-                warn!(target: VSAPI, "invalid challenge from {}, authenticate fails", self.remote_cn);
+    ) -> Result<(), capnp::Error> {
+        debug!(target: VSAPI, "authenticate from {} as {}", self.remote, self.remote_cn);
+        let cresp = params.get()?.get_cresp()?; // has challenge (bytes), timestamp (uint64), bytes (bytes)
+        let mut res_builder = results.get().init_res();
+        let challenge_presented = cresp.get_challenge()?;
+
+        // We must have sent challenge data ... meaning it cannot all be zeros.
+        if challenge_presented.iter().all(|&b| b == 0) {
+            warn!(target: VSAPI, "all zeros challenge presented from {}, authenticate fails", self.remote_cn);
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::InvalidOperation, // TODO: New code 'AuthError'
+                "invalid challenge",
+            );
+            return Ok(());
+        }
+
+        // Must match the challenge we sent.
+        if challenge_presented != &self.challenge_data.get() {
+            warn!(target: VSAPI, "invalid challenge from {}, authenticate fails", self.remote_cn);
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::InvalidOperation, // TODO: New code 'AuthError'
+                "challenge mismatch",
+            );
+            return Ok(());
+        }
+
+        // Challenge is one time use - so we set our memory of it to zeros.
+        self.challenge_data.set([0u8; 32]);
+
+        // Time must be within acceptable range.
+        let unix_ts = cresp.get_timestamp();
+        let now = SystemTime::now();
+        let my_unix_ts = now.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        if my_unix_ts.abs_diff(unix_ts) > zpr::MAX_CLOCK_SKEW_SECS {
+            warn!(target: VSAPI, "excess clock skew from {}, authenticate fails", self.remote_cn);
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::OutOfSync,
+                "excess clock skew",
+            );
+            return Ok(());
+        }
+
+        let challenge_response = cresp.get_bytes()?;
+
+        // Perform the authentication
+        //
+        let node_actor = match self
+            .asm
+            .cc
+            .authenticate_node(
+                self.asm.clone(),
+                challenge_presented,
+                unix_ts,
+                &self.remote_cn,
+                challenge_response,
+                self.remote,
+            )
+            .await
+        {
+            Ok(node_id) => node_id,
+            Err(VSError::AuthenticationFailed(reason)) => {
+                warn!(target: VSAPI, "authentication failed for {}: {}", self.remote_cn, reason);
                 let mut err_builder = res_builder.init_error();
                 write_error(
                     &mut err_builder,
                     vsapi::ErrorCode::InvalidOperation, // TODO: New code 'AuthError'
-                    "invalid challenge",
+                    format!("authentication failed: {reason}").as_str(),
                 );
                 return Ok(());
             }
-
-            // Time must be within acceptable range.
-            let unix_ts = cresp.get_timestamp();
-            let now = SystemTime::now();
-            let my_unix_ts = now.duration_since(UNIX_EPOCH).unwrap().as_secs();
-            if my_unix_ts.abs_diff(unix_ts) > zpr::MAX_CLOCK_SKEW_SECS {
-                warn!(target: VSAPI, "excess clock skew from {}, authenticate fails", self.remote_cn);
-                let mut err_builder = res_builder.init_error();
-                write_error(
-                    &mut err_builder,
-                    vsapi::ErrorCode::OutOfSync,
-                    "excess clock skew",
-                );
-                return Ok(());
-            }
-
-            let challenge_response = cresp.get_bytes()?;
-
-            // Perform the authentication
-            //
-            let node_actor = match self
-                .asm
-                .cc
-                .authenticate_node(
-                    self.asm.clone(),
-                    challenge_presented,
-                    unix_ts,
-                    &self.remote_cn,
-                    challenge_response,
-                    self.remote,
-                )
-                .await
-            {
-                Ok(node_id) => node_id,
-                Err(VSError::AuthenticationFailed(reason)) => {
-                    warn!(target: VSAPI, "authentication failed for {}: {}", self.remote_cn, reason);
-                    let mut err_builder = res_builder.init_error();
-                    write_error(
-                        &mut err_builder,
-                        vsapi::ErrorCode::InvalidOperation, // TODO: New code 'AuthError'
-                        format!("authentication failed: {reason}").as_str(),
-                    );
-                    return Ok(());
-                }
-                Err(e) => {
-                    error!(target: VSAPI, "internal error during authentication for {}: {}", self.remote_cn, e);
-                    let mut err_builder = res_builder.init_error();
-                    write_error(
-                        &mut err_builder,
-                        vsapi::ErrorCode::Internal,
-                        "internal error during authentication",
-                    );
-                    return Ok(());
-                }
-            };
-
-            // Sanity check - every node has a CN and a ZPR address.
-            if node_actor.get_cn().is_none() {
-                panic!("authenticated node has no CN");
-            }
-            if node_actor.get_zpr_addr().is_none() {
-                panic!("authenticated node has no ZPR address");
-            }
-
-            info!(
-                target: VSAPI,
-                "successfully authenticated node {:?} from {:?} and assigned ip {:?}",
-                node_actor.get_cn(), self.remote, node_actor.get_zpr_addr()
-            );
-
-            // Ok, we have verified the credentials and checked with policy. Time to
-            // update our state and return success.
-
-            // TODO: The policy may have changed since started the authentication. Once we add the node
-            // it is part of the ZPRnet.  The add_node should check the visa vinst used to grant access
-            // and we should make sure we do not allow add_node and update_policy to run concurrently.
-            // If add_node runs first, then update policy can catch the issue.  If update_policy runs
-            // first, then add_node will see the new version and should not allow the node to be added.
-
-            // Note that the node may have services on it in addition to its node-ness.
-
-            // The node has a built in temporary(?) visa for communicating with the VS.
-            // The VS will create a "real" one and queue it to be sent to the node once
-            // it registers its VSS.
-
-            if let Err(e) = self.asm.actor_db.add_node(node_actor.clone()) {
-                error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", node_actor.get_cn(), e);
+            Err(e) => {
+                error!(target: VSAPI, "internal error during authentication for {}: {}", self.remote_cn, e);
                 let mut err_builder = res_builder.init_error();
                 write_error(
                     &mut err_builder,
                     vsapi::ErrorCode::Internal,
-                    "state update failed",
+                    "internal error during authentication",
                 );
                 return Ok(());
             }
+        };
 
-            let vs_handle: vsapi::v_s_handle::Client =
-                capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
-            res_builder.set_ok(vs_handle)?;
-            Ok(())
+        // Sanity check - every node has a CN and a ZPR address.
+        // If this fails it means our authentication code is broken.
+        if node_actor.get_cn().is_none() {
+            error!(target: VSAPI, "auth subsystem failed to set a CN on an authenticated node");
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::Internal,
+                "assertion failed (CN)",
+            );
+            return Ok(());
         }
+        if node_actor.get_zpr_addr().is_none() {
+            error!(target: VSAPI, "auth subsystem failed to set a ZPR address on an authenticated node");
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::Internal,
+                "assertion failed (ADDR)",
+            );
+            return Ok(());
+        }
+
+        info!(
+            target: VSAPI,
+            "successfully authenticated node {:?} from {:?} and assigned ip {:?}",
+            node_actor.get_cn(), self.remote, node_actor.get_zpr_addr()
+        );
+
+        // Ok, we have verified the credentials and checked with policy. Time to
+        // update our state and return success.
+
+        // TODO: The policy may have changed since started the authentication. Once we add the node
+        // it is part of the ZPRnet.  The add_node should check the visa vinst used to grant access
+        // and we should make sure we do not allow add_node and update_policy to run concurrently.
+        // If add_node runs first, then update policy can catch the issue.  If update_policy runs
+        // first, then add_node will see the new version and should not allow the node to be added.
+
+        // Note that the node may have services on it in addition to its node-ness.
+
+        // The node has a built in temporary(?) visa for communicating with the VS.
+        // The VS will create a "real" one and queue it to be sent to the node once
+        // it registers its VSS.
+
+        if let Err(e) = self.asm.actor_db.add_node(node_actor.clone()) {
+            error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", node_actor.get_cn(), e);
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::Internal,
+                "state update failed",
+            );
+            return Ok(());
+        }
+
+        let vs_handle: vsapi::v_s_handle::Client =
+            capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
+        res_builder.set_ok(vs_handle)?;
+        Ok(())
     }
 }
 
@@ -330,105 +353,93 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     /// the node with this call.  Any pending visas for the node are handed back with this.
     ///
     /// PENDING (TODO) - Recent change to vsapi allows visas to be sent back with this call.
-    fn register_vss(
+    async fn register_vss(
         self: Rc<Self>,
         _: vsapi::v_s_handle::RegisterVssParams,
         _: vsapi::v_s_handle::RegisterVssResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            debug!(target: VSAPI, "register_vss from {:?}", self.node.get_cn());
-            Err(capnp::Error::unimplemented(
-                "method v_s_handle::Server::register_vss not implemented".to_string(),
-            ))
-        }
+    ) -> Result<(), capnp::Error> {
+        debug!(target: VSAPI, "register_vss from {:?}", self.node.get_cn());
+        Err(capnp::Error::unimplemented(
+            "method v_s_handle::Server::register_vss not implemented".to_string(),
+        ))
     }
 
-    fn authorize_connect(
+    async fn authorize_connect(
         self: Rc<Self>,
         _: vsapi::v_s_handle::AuthorizeConnectParams,
         _: vsapi::v_s_handle::AuthorizeConnectResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            debug!(target: VSAPI, "authorize_connect from {:?}", self.node.get_cn());
-            Err(capnp::Error::unimplemented(
-                "method v_s_handle::Server::authorize_connect not implemented".to_string(),
-            ))
-        }
+    ) -> Result<(), capnp::Error> {
+        debug!(target: VSAPI, "authorize_connect from {:?}", self.node.get_cn());
+        Err(capnp::Error::unimplemented(
+            "method v_s_handle::Server::authorize_connect not implemented".to_string(),
+        ))
     }
 
-    fn reauthorize(
+    async fn reauthorize(
         self: Rc<Self>,
         _: vsapi::v_s_handle::ReauthorizeParams,
         _: vsapi::v_s_handle::ReauthorizeResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            debug!(target: VSAPI, "reauthorize from {:?}", self.node.get_cn());
-            Err(capnp::Error::unimplemented(
-                "method v_s_handle::Server::reauthorize not implemented".to_string(),
-            ))
-        }
+    ) -> Result<(), capnp::Error> {
+        debug!(target: VSAPI, "reauthorize from {:?}", self.node.get_cn());
+        Err(capnp::Error::unimplemented(
+            "method v_s_handle::Server::reauthorize not implemented".to_string(),
+        ))
     }
 
-    fn notify_disconnect(
+    async fn notify_disconnect(
         self: Rc<Self>,
         req: vsapi::v_s_handle::NotifyDisconnectParams,
         mut resp: vsapi::v_s_handle::NotifyDisconnectResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            let dnotice = req.get()?.get_req()?;
-            let zpr_ipaddr = dnotice.get_zpr_addr()?;
-            let zpr_addr = ipaddr_from_capnp(zpr_ipaddr)?;
-            let reason = dnotice.get_reason_code()?;
-            debug!(
-                target: VSAPI,
-                "disconnect call from node {:?} for {} with reason {:?}",
-                self.node.get_cn(), zpr_addr, reason
-            );
+    ) -> Result<(), capnp::Error> {
+        let dnotice = req.get()?.get_req()?;
+        let zpr_ipaddr = dnotice.get_zpr_addr()?;
+        let zpr_addr = ipaddr_from_capnp(zpr_ipaddr)?;
+        let reason = dnotice.get_reason_code()?;
+        debug!(
+            target: VSAPI,
+            "disconnect call from node {:?} for {} with reason {:?}",
+            self.node.get_cn(), zpr_addr, reason
+        );
 
-            match self.asm.cc.disconnect(zpr_addr, reason).await {
-                Ok(()) => (),
-                Err(e) => {
-                    warn!(target: VSAPI, "error processing disconnect of {}: {}", zpr_addr, e);
-                    let res_builder = resp.get().init_res();
-                    let mut err_builder = res_builder.init_error();
-                    write_error(
-                        &mut err_builder,
-                        vsapi::ErrorCode::Internal,
-                        "internal error during disconnect",
-                    );
-                    return Ok(());
-                }
+        match self.asm.cc.disconnect(zpr_addr, reason).await {
+            Ok(()) => (),
+            Err(e) => {
+                warn!(target: VSAPI, "error processing disconnect of {}: {}", zpr_addr, e);
+                let res_builder = resp.get().init_res();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "internal error during disconnect",
+                );
+                return Ok(());
             }
-
-            let mut res_builder = resp.get().init_res();
-            res_builder.set_ok(());
-            Ok(())
         }
+
+        let mut res_builder = resp.get().init_res();
+        res_builder.set_ok(());
+        Ok(())
     }
 
-    fn visa_request(
+    async fn visa_request(
         self: Rc<Self>,
         _: vsapi::v_s_handle::VisaRequestParams,
         _: vsapi::v_s_handle::VisaRequestResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            debug!(target: VSAPI, "visa_request from {:?}", self.node.get_cn());
-            Err(capnp::Error::unimplemented(
-                "method v_s_handle::Server::visa_request not implemented".to_string(),
-            ))
-        }
+    ) -> Result<(), capnp::Error> {
+        debug!(target: VSAPI, "visa_request from {:?}", self.node.get_cn());
+        Err(capnp::Error::unimplemented(
+            "method v_s_handle::Server::visa_request not implemented".to_string(),
+        ))
     }
 
-    fn ping(
+    async fn ping(
         self: Rc<Self>,
         _req: vsapi::v_s_handle::PingParams,
         mut results: vsapi::v_s_handle::PingResults,
-    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
-        async move {
-            debug!(target: VSAPI, "ping from {:?}", self.node.get_cn());
-            let mut res_builder = results.get().init_res();
-            res_builder.set_ok(());
-            Ok(())
-        }
+    ) -> Result<(), capnp::Error> {
+        debug!(target: VSAPI, "ping from {:?}", self.node.get_cn());
+        let mut res_builder = results.get().init_res();
+        res_builder.set_ok(());
+        Ok(())
     }
 }

@@ -15,14 +15,9 @@ use libeval::policy::Policy;
 
 use arc_swap::ArcSwap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[allow(dead_code)]
 pub struct PolicyMgr {
-    // Although the policy holds a copy of the `vinst` it is this PolicyMgr that is
-    // the source of truth for it.  When a policy is updated the PolicyMgr sets the
-    // correct value in the Policy.
-    vinst: AtomicU64,
     inner: ArcSwap<Policy>,
 }
 
@@ -31,7 +26,6 @@ impl PolicyMgr {
         policy.set_vinst(1);
         PolicyMgr {
             inner: ArcSwap::from_pointee(policy),
-            vinst: AtomicU64::new(1),
         }
     }
 
@@ -40,11 +34,14 @@ impl PolicyMgr {
         self.inner.load_full()
     }
 
-    /// Update the current policy.  The new policy will be assigned a new version instance number.
+    /// Update the current policy.  The new policy will be assigned a new version instance number (vinst)
+    /// that is one greater than the current policy's vinst.
     #[allow(dead_code)]
-    fn update_policy(&self, mut new_policy: Policy) {
-        let prev_vinst = self.vinst.fetch_add(1, Ordering::Relaxed);
-        new_policy.set_vinst(prev_vinst + 1);
-        self.inner.store(Arc::new(new_policy));
+    fn update_policy(&self, new_policy: Policy) {
+        let mut np = Arc::new(new_policy);
+        self.inner.rcu(move |op| {
+            Arc::get_mut(&mut np).unwrap().set_vinst(op.vinst() + 1);
+            np.clone()
+        });
     }
 }

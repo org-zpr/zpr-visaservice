@@ -354,8 +354,8 @@ impl EvalContext {
     /// logged.
     pub fn approve_connection(
         &self,
-        authenticated_claims: Option<Vec<Attribute>>,
-        unauthenticated_claims: Option<HashMap<String, String>>,
+        authenticated_claims: Option<&[Attribute]>,
+        unauthenticated_claims: Option<&HashMap<String, String>>,
     ) -> Result<Actor, EvalError> {
         // Run through the policy, make sure that the set of claims resovles to an actor.
         // Policy uses claims and some claims may come from trusted services so I think
@@ -367,13 +367,16 @@ impl EvalContext {
 
         let mut actor = Actor::new();
         for attr in authenticated_claims.unwrap_or_default() {
-            if let Err(e) = actor.add_attribute(attr) {
+            if let Err(e) = actor.add_attribute(attr.clone()) {
                 warn!("dropping invalid authenticated claim attribute: {}", e);
             }
         }
-        for (k, v) in unauthenticated_claims.unwrap_or_default() {
-            if let Err(e) = actor.add_attribute(Attribute::new_non_expiring(k, v)) {
-                warn!("dropping invalid unauthenticated claim attribute: {}", e);
+        if let Some(unauth_claims) = unauthenticated_claims {
+            for (k, v) in unauth_claims {
+                if let Err(e) = actor.add_attribute(Attribute::new_non_expiring(k.into(), v.into()))
+                {
+                    warn!("dropping invalid unauthenticated claim attribute: {}", e);
+                }
             }
         }
 
@@ -699,7 +702,7 @@ impl EvalContext {
 mod test {
     use super::*;
     use crate::attribute::key;
-    use bytes::Bytes;
+    use bytes::{Buf, Bytes};
     use std::time::Duration;
     use std::{path::Path, sync::Once};
     use tracing::Level;
@@ -726,7 +729,7 @@ mod test {
         let encoded = std::fs::read(pname).unwrap();
         let encoded_container_bytes = Bytes::from(encoded);
         let container_reader = capnp::serialize::read_message(
-            &mut std::io::Cursor::new(&encoded_container_bytes),
+            encoded_container_bytes.reader(),
             capnp::message::ReaderOptions::new(),
         )
         .unwrap();

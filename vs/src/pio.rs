@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use libeval::policy::Policy;
 use std::fmt;
 use std::path::Path;
@@ -27,7 +27,7 @@ pub fn load_policy(fpath: &Path, min_version: Version) -> Result<Policy, VSError
     let encoded_container_bytes = Bytes::from(encoded);
 
     let container_reader = capnp::serialize::read_message(
-        &mut std::io::Cursor::new(&encoded_container_bytes),
+        encoded_container_bytes.reader(),
         capnp::message::ReaderOptions::new(),
     )?;
 
@@ -41,24 +41,7 @@ pub fn load_policy(fpath: &Path, min_version: Version) -> Result<Policy, VSError
         container.get_zplc_ver_patch(),
     );
 
-    if (comp_version.0 < min_version.0) || (comp_version.0 > min_version.0) {
-        return Err(VSError::PolicyVersionError(format!(
-            "policy file major version {comp_version} is not compatible with the expected version {min_version}",
-        )));
-    }
-    if comp_version.0 == min_version.0 {
-        if comp_version.1 < min_version.1 {
-            return Err(VSError::PolicyVersionError(format!(
-                "policy file minor version {comp_version} is less than required minimum {min_version}",
-            )));
-        } else if comp_version.1 == min_version.1 {
-            if comp_version.2 < min_version.2 {
-                return Err(VSError::PolicyVersionError(format!(
-                    "policy file patch version {comp_version} is less than required minimum {min_version}",
-                )));
-            }
-        }
-    }
+    check_version(&comp_version, &min_version)?;
 
     if !container.has_policy() {
         return Err(VSError::PolicyFileError(
@@ -70,4 +53,66 @@ pub fn load_policy(fpath: &Path, min_version: Version) -> Result<Policy, VSError
     let p = Policy::new_from_policy_bytes(Bytes::copy_from_slice(policy_bytes))?;
     info!(target: POLICY, "loaded policy created by compiler version {comp_version}");
     Ok(p)
+}
+
+/// Returns an error if the `found_version` is not compatible with the `min_version`.
+fn check_version(found_version: &Version, min_version: &Version) -> Result<(), VSError> {
+    if found_version.0 != min_version.0 {
+        return Err(VSError::PolicyVersionError(format!(
+            "policy file major version {found_version} is not compatible with the expected version {min_version}",
+        )));
+    }
+    // Majors match, so check minor & patch.
+    if found_version.1 < min_version.1 {
+        return Err(VSError::PolicyVersionError(format!(
+            "policy file minor version {found_version} is less than required minimum {min_version}",
+        )));
+    } else if found_version.1 == min_version.1 {
+        if found_version.2 < min_version.2 {
+            return Err(VSError::PolicyVersionError(format!(
+                "policy file patch version {found_version} is less than required minimum {min_version}",
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_check_version() {
+        let min = Version(5, 6, 7);
+
+        let found_ok = vec![
+            Version(5, 6, 7),
+            Version(5, 6, 8),
+            Version(5, 7, 0),
+            Version(5, 8, 9),
+        ];
+        for v in found_ok {
+            assert!(
+                check_version(&v, &min).is_ok(),
+                "version {} should be ok against min {}",
+                v,
+                min
+            );
+        }
+
+        let found_nogood = vec![
+            Version(4, 9, 9),
+            Version(6, 0, 0),
+            Version(5, 5, 9),
+            Version(5, 6, 6),
+        ];
+        for v in found_nogood {
+            assert!(
+                check_version(&v, &min).is_err(),
+                "version {} should NOT be ok against min {}",
+                v,
+                min
+            );
+        }
+    }
 }

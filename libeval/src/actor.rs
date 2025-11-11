@@ -39,12 +39,10 @@ pub struct Actor {
 
 impl Actor {
     pub fn new() -> Self {
-        Actor {
-            ..Default::default()
-        }
+        Self::default()
     }
 
-    pub fn attrs_iter(&self) -> std::slice::Iter<'_, Attribute> {
+    pub fn attrs_iter(&self) -> impl Iterator<Item = &Attribute> {
         self.attrs.iter()
     }
 
@@ -103,8 +101,8 @@ impl Actor {
         matches!(self.role, Role::Node)
     }
 
-    pub fn get_cn(&self) -> Option<&String> {
-        self.cn.as_ref()
+    pub fn get_cn(&self) -> Option<&str> {
+        self.cn.as_deref()
     }
 
     pub fn get_zpr_addr(&self) -> Option<&IpAddr> {
@@ -248,7 +246,7 @@ mod tests {
         let result = actor.add_attribute(attr);
 
         assert!(result.is_ok());
-        assert_eq!(actor.get_cn(), Some(&"my-test-node".to_string()));
+        assert_eq!(actor.get_cn(), Some("my-test-node"));
         assert_eq!(actor.attrs.len(), 1);
     }
 
