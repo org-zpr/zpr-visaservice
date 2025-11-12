@@ -1,8 +1,9 @@
 use vsapi::vs_capnp as vsapi;
 
+use ipnet::IpNet;
 use openssl::rand::rand_bytes;
 use std::cell::Cell;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,6 +16,9 @@ use crate::assembly::Assembly;
 use crate::error::VSError;
 use crate::logging::targets::VSAPI;
 use crate::zpr;
+
+const PARAM_ZPR_ADDR: &str = "zpr_addr";
+const PARAM_AAA_PREFIX: &str = "aaa_prefix";
 
 pub async fn launch_capnp(
     asm: Arc<Assembly>,
@@ -74,6 +78,8 @@ struct VSGateImpl {
     asm: Arc<Assembly>,
     remote: SocketAddr,
     remote_cn: String,
+    req_zpr_addr: IpAddr,
+    req_aaa_net: IpNet,
 
     // This is set in `challenge` call and read in the `authenticate` call.
     // Safe to use here since the capn proto rpc is confined to a single thread.
@@ -88,12 +94,20 @@ struct VSHandleImpl {
 
 impl VSGateImpl {
     #[allow(dead_code)]
-    fn new(asm: Arc<Assembly>, remote: SocketAddr, remote_cn: String) -> Self {
+    fn new(
+        asm: Arc<Assembly>,
+        remote: SocketAddr,
+        remote_cn: String,
+        req_zpr_addr: IpAddr,
+        req_aaa_net: IpNet,
+    ) -> Self {
         VSGateImpl {
             asm,
             remote,
             remote_cn,
             challenge_data: Cell::new([0u8; 32]),
+            req_zpr_addr,
+            req_aaa_net,
         }
     }
 }
@@ -139,6 +153,22 @@ fn ipaddr_from_capnp(addr: vsapi::ip_addr::Reader) -> Result<std::net::IpAddr, c
     }
 }
 
+impl VisaServiceImpl {
+    /// Helper for the connect routine -- returns the two connect params we require: zpr_addr and aaa_prefix,
+    /// or errors out.
+    fn parse_my_connect_params(&self, params: &[CParam]) -> Result<(IpAddr, IpNet), VSError> {
+        let node_zpr_addr: IpAddr = CParam::get_ipaddr(params, PARAM_ZPR_ADDR)?;
+        let node_aaa_network_str = CParam::get_string(params, PARAM_AAA_PREFIX)?;
+        let node_aaa_net: IpNet = match node_aaa_network_str.parse() {
+            Ok(n) => n,
+            Err(_e) => Err(VSError::ParamError(format!(
+                "invalid ip prefix: {node_aaa_network_str}",
+            )))?,
+        };
+        Ok((node_zpr_addr, node_aaa_net))
+    }
+}
+
 impl vsapi::visa_service::Server for VisaServiceImpl {
     async fn connect(
         self: Rc<Self>,
@@ -146,9 +176,44 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         mut results: vsapi::visa_service::ConnectResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "connect call from {}", self.remote);
-        let req_cn = params.get()?.get_req()?.get_cn()?.to_string()?;
-        let req_type = params.get()?.get_req()?.get_ctype()?;
-        // List of connection params ignored for now (TODO)
+
+        let vs_connect_request = params.get()?.get_req()?;
+
+        let req_cn = vs_connect_request.get_cn()?.to_string()?;
+        let req_type = vs_connect_request.get_ctype()?;
+
+        let parsed_params = match CParam::from_connect_request(&vs_connect_request, 4) {
+            Ok(p) => p,
+            Err(e) => {
+                let res_builder = results.get().init_resp();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal, // TODO: new error ParamError
+                    format!("failed to parse connect params: {}", e).as_str(),
+                );
+                return Ok(());
+            }
+        };
+
+        // We care about two params: zpr_addr and aaa_prefix.
+        let (node_zpr_addr, node_aaa_network) = match self.parse_my_connect_params(&parsed_params) {
+            Ok((addr, cidr)) => (addr, cidr),
+            Err(e) => {
+                let res_builder = results.get().init_resp();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal, // TODO: new error ParamError
+                    format!("{e}").as_str(),
+                );
+                return Ok(());
+            }
+        };
+
+        info!(target: VSAPI, "node {} requests zpr addr {}", req_cn, node_zpr_addr);
+        info!(target: VSAPI, "node {} requests aaa network {}", req_cn, node_aaa_network);
+
         match req_type {
             vsapi::VSConnT::Reset => {}
             vsapi::VSConnT::Reconnect => {
@@ -165,8 +230,13 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
 
         let mut res_builder = results.get().init_resp();
 
-        let vs_gate: vsapi::v_s_gate::Client =
-            capnp_rpc::new_client(VSGateImpl::new(self.asm.clone(), self.remote, req_cn));
+        let vs_gate: vsapi::v_s_gate::Client = capnp_rpc::new_client(VSGateImpl::new(
+            self.asm.clone(),
+            self.remote,
+            req_cn,
+            node_zpr_addr,
+            node_aaa_network,
+        ));
 
         //res_builder.reborrow().set_ok(vs_gate)?;
         res_builder.set_ok(vs_gate)?;
@@ -257,6 +327,8 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                 &self.remote_cn,
                 challenge_response,
                 self.remote,
+                self.req_zpr_addr,
+                self.req_aaa_net,
             )
             .await
         {
@@ -392,8 +464,30 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         mut resp: vsapi::v_s_handle::NotifyDisconnectResults,
     ) -> Result<(), capnp::Error> {
         let dnotice = req.get()?.get_req()?;
-        let zpr_ipaddr = dnotice.get_zpr_addr()?;
-        let zpr_addr = ipaddr_from_capnp(zpr_ipaddr)?;
+
+        // If no ZPR address is specified that means that the node itself is disconnecting.
+        let maybe_zpr_addr = if dnotice.has_zpr_addr() {
+            let zpr_ipaddr = dnotice.get_zpr_addr()?;
+            Some(ipaddr_from_capnp(zpr_ipaddr)?)
+        } else {
+            // populate with the actor ZPR addr.
+            self.node.get_zpr_addr().cloned()
+        };
+
+        // I believe we need a ZPR address here otherwise this is just a NOP.
+        if maybe_zpr_addr.is_none() {
+            warn!(target: VSAPI, "notify_disconnect but no zpr address passed or derivable from actor {:?}", self.node.get_cn());
+            let res_builder = resp.get().init_res();
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::InvalidOperation,
+                "disconnect requires zpr address",
+            );
+            return Ok(());
+        }
+        let zpr_addr = maybe_zpr_addr.unwrap();
+
         let reason = dnotice.get_reason_code()?;
         debug!(
             target: VSAPI,
@@ -441,5 +535,141 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         let mut res_builder = results.get().init_res();
         res_builder.set_ok(());
         Ok(())
+    }
+}
+
+/// CParam models the TLV style connect parameters in the initial connect request for a node.
+#[derive(Debug, Clone)]
+struct CParam {
+    name: String,
+    value: CParamValue,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum CParamValue {
+    String(String),
+    U64(u64),
+    Ipv4(std::net::Ipv4Addr),
+    Ipv6(std::net::Ipv6Addr),
+}
+
+impl CParam {
+    /// Parse no more than `limit` params out of the connect request.
+    fn from_connect_request(
+        vscr: &vsapi::v_s_connect_request::Reader,
+        limit: usize,
+    ) -> Result<Vec<CParam>, VSError> {
+        let mut results = Vec::new();
+        let params = vscr.get_params()?;
+        for param in params.iter() {
+            let pname = param.get_name()?.to_string()?;
+            let ptype = param.get_ptype()?;
+            let pval = param.get_value()?;
+            match ptype {
+                vsapi::ParamT::String => {
+                    let sval = std::str::from_utf8(pval)?.to_string();
+                    results.push(CParam {
+                        name: pname,
+                        value: CParamValue::String(sval),
+                    });
+                }
+                // TODO: This doesn't seem right... we should use a capn proto union or something so
+                // that we are not serializing u64.
+                vsapi::ParamT::U64 => {
+                    if pval.len() != 8 {
+                        return Err(VSError::ParamError(format!(
+                            "CParam::from_connect_request: U64 param {} has invalid length {}",
+                            pname,
+                            pval.len()
+                        )));
+                    }
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(&pval[0..8]);
+                    let uval = u64::from_be_bytes(arr);
+                    results.push(CParam {
+                        name: pname,
+                        value: CParamValue::U64(uval),
+                    });
+                }
+                vsapi::ParamT::Ipv4 => {
+                    if pval.len() != 4 {
+                        return Err(VSError::ParamError(format!(
+                            "CParam::from_connect_request: Ipv4 param {} has invalid length {}",
+                            pname,
+                            pval.len()
+                        )));
+                    }
+                    let mut arr = [0u8; 4];
+                    arr.copy_from_slice(&pval[0..4]);
+                    let ipv4 = std::net::Ipv4Addr::from(arr);
+                    results.push(CParam {
+                        name: pname,
+                        value: CParamValue::Ipv4(ipv4),
+                    });
+                }
+                vsapi::ParamT::Ipv6 => {
+                    if pval.len() != 16 {
+                        return Err(VSError::ParamError(format!(
+                            "CParam::from_connect_request: Ipv6 param {} has invalid length {}",
+                            pname,
+                            pval.len()
+                        )));
+                    }
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(&pval[0..16]);
+                    let ipv6 = std::net::Ipv6Addr::from(arr);
+                    results.push(CParam {
+                        name: pname,
+                        value: CParamValue::Ipv6(ipv6),
+                    });
+                }
+            }
+            if results.len() >= limit {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
+    /// Helper to extract an IpAddr type param with given key from a list.
+    fn get_ipaddr(params: &[CParam], name: &str) -> Result<IpAddr, VSError> {
+        for pp in params {
+            if pp.name == name {
+                match &pp.value {
+                    CParamValue::Ipv4(ipv4) => {
+                        return Ok(IpAddr::V4(*ipv4));
+                    }
+                    CParamValue::Ipv6(ipv6) => {
+                        return Ok(IpAddr::V6(*ipv6));
+                    }
+                    _ => {
+                        return Err(VSError::ParamError(format!(
+                            "param {name} has invalid type",
+                        )));
+                    }
+                }
+            }
+        }
+        Err(VSError::ParamError(format!("param {name} not found")))
+    }
+
+    /// Helper to extract a String type param with given key from a list.
+    fn get_string(params: &[CParam], name: &str) -> Result<String, VSError> {
+        for pp in params {
+            if pp.name == name {
+                match &pp.value {
+                    CParamValue::String(s) => {
+                        return Ok(s.clone());
+                    }
+                    _ => {
+                        return Err(VSError::ParamError(format!(
+                            "param {name} has invalid type",
+                        )));
+                    }
+                }
+            }
+        }
+        Err(VSError::ParamError(format!("param {name} not found")))
     }
 }

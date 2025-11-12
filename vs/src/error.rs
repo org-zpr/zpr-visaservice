@@ -10,6 +10,9 @@ pub enum VSError {
     #[error("configuration error: {0}")]
     Config(#[from] toml::de::Error),
 
+    #[error("parameter error: {0}")]
+    ParamError(String),
+
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
 
@@ -30,4 +33,10 @@ pub enum VSError {
 
     #[error("policy error: {0}")]
     PolicyError(#[from] libeval::policy::PolicyError),
+
+    #[error("UTF8 error: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
+
+    #[error("Capn Proto not in schema: {0}")]
+    CpnpNotInSchema(#[from] capnp::NotInSchema),
 }

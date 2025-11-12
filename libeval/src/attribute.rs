@@ -19,6 +19,9 @@ pub mod key {
     /// CN value
     pub const CN: &str = "endpoint.zpr.adapter.cn";
 
+    /// AAA network in CIDR notation
+    pub const AAA_NET: &str = "endpoint.zpr.node.aaa_net";
+
     /// Substrate address is a SocketAddr.to_string()
     pub const SUBSTRATE_ADDR: &str = "zpr.substrate_addr";
 
