@@ -1,13 +1,12 @@
 use bytes::{Buf, Bytes};
-use libeval::policy::Policy;
 use std::fmt;
 use std::path::Path;
 use tracing::info;
 
-use ::polio::policy_capnp;
+use polio::policy_capnp;
 
-use crate::error::VSError;
-use crate::logging::targets::POLICY;
+use crate::logging::targets::PIO;
+use crate::policy::{Policy, PolicyError};
 
 /// (Major, Minor, Patch)
 #[derive(Debug)]
@@ -22,7 +21,7 @@ impl fmt::Display for Version {
 /// Load policy from file. Checks the version of the compiler against the passed
 /// minimum version.  This will not allow loading policies if the major version
 /// is not the same as specified in the minimum version.
-pub fn load_policy(fpath: &Path, min_version: Version) -> Result<Policy, VSError> {
+pub fn load_policy(fpath: &Path, min_version: Version) -> Result<Policy, PolicyError> {
     let encoded = std::fs::read(fpath)?;
     let encoded_container_bytes = Bytes::from(encoded);
 
@@ -44,32 +43,32 @@ pub fn load_policy(fpath: &Path, min_version: Version) -> Result<Policy, VSError
     check_version(&comp_version, &min_version)?;
 
     if !container.has_policy() {
-        return Err(VSError::PolicyFileError(
+        return Err(PolicyError::PolicyFileError(
             "policy container missing policy data".to_string(),
         ));
     }
 
     let policy_bytes = container.get_policy().unwrap();
     let p = Policy::new_from_policy_bytes(Bytes::copy_from_slice(policy_bytes))?;
-    info!(target: POLICY, "loaded policy created by compiler version {comp_version}");
+    info!(target: PIO, "loaded policy created by compiler version {comp_version}");
     Ok(p)
 }
 
 /// Returns an error if the `found_version` is not compatible with the `min_version`.
-fn check_version(found_version: &Version, min_version: &Version) -> Result<(), VSError> {
+fn check_version(found_version: &Version, min_version: &Version) -> Result<(), PolicyError> {
     if found_version.0 != min_version.0 {
-        return Err(VSError::PolicyVersionError(format!(
+        return Err(PolicyError::PolicyVersionError(format!(
             "policy file major version {found_version} is not compatible with the expected version {min_version}",
         )));
     }
     // Majors match, so check minor & patch.
     if found_version.1 < min_version.1 {
-        return Err(VSError::PolicyVersionError(format!(
+        return Err(PolicyError::PolicyVersionError(format!(
             "policy file minor version {found_version} is less than required minimum {min_version}",
         )));
     } else if found_version.1 == min_version.1 {
         if found_version.2 < min_version.2 {
-            return Err(VSError::PolicyVersionError(format!(
+            return Err(PolicyError::PolicyVersionError(format!(
                 "policy file patch version {found_version} is less than required minimum {min_version}",
             )));
         }

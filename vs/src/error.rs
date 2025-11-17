@@ -25,12 +25,6 @@ pub enum VSError {
     #[error("evaluation error: {0}")]
     EvalErr(#[from] EvalError),
 
-    #[error("policy file error: {0}")]
-    PolicyFileError(String),
-
-    #[error("policy version error: {0}")]
-    PolicyVersionError(String),
-
     #[error("policy error: {0}")]
     PolicyError(#[from] libeval::policy::PolicyError),
 

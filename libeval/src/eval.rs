@@ -1,5 +1,6 @@
 use crate::actor::Actor;
 use crate::attribute::{Attribute, key};
+use crate::logging::targets::EVAL;
 use crate::packet::{PacketDesc, ip_proto};
 use crate::policy::Policy;
 
@@ -368,14 +369,14 @@ impl EvalContext {
         let mut actor = Actor::new();
         for attr in authenticated_claims.unwrap_or_default() {
             if let Err(e) = actor.add_attribute(attr.clone()) {
-                warn!("dropping invalid authenticated claim attribute: {}", e);
+                warn!(target: EVAL, "dropping invalid authenticated claim attribute: {}", e);
             }
         }
         if let Some(unauth_claims) = unauthenticated_claims {
             for (k, v) in unauth_claims {
                 if let Err(e) = actor.add_attribute(Attribute::new_non_expiring(k.into(), v.into()))
                 {
-                    warn!("dropping invalid unauthenticated claim attribute: {}", e);
+                    warn!(target: EVAL, "dropping invalid unauthenticated claim attribute: {}", e);
                 }
             }
         }
@@ -422,9 +423,9 @@ impl EvalContext {
                 continue;
             }
             if allows {
-                debug!("trying to match allow policy #{i}");
+                debug!(target: EVAL, "trying to match allow policy #{i}");
             } else {
-                debug!("trying to match deny policy #{i}");
+                debug!(target: EVAL, "trying to match deny policy #{i}");
             }
             let service_id = com_policy.get_service_id().unwrap().to_str().unwrap();
             let maybe_direction = match self.try_match_scope(request, &com_policy) {
@@ -433,18 +434,19 @@ impl EvalContext {
                     // So requesting dest port matches a service.
                     // Proceed only if the destination provides a service.
                     if !dst_actor.is_provider() {
-                        debug!("policy #{i} matches FWD but dest actor is not a provider");
+                        debug!(target: EVAL, "policy #{i} matches FWD but dest actor is not a provider");
                         continue;
                     }
                     // This policy only applies if the provider is providing the service referenced in the policy.
                     if !dst_actor.provides(service_id) {
                         debug!(
+                            target: EVAL,
                             "policy #{i} matches FWD on ports but dest actor does not provide service {}",
                             service_id
                         );
                         continue;
                     }
-                    debug!("policy #{i} matches FWD scope");
+                    debug!(target: EVAL, "policy #{i} matches FWD scope");
                     // This policy matches only if all conditions match.
                     if self.match_policy_conditions(src_actor, dst_actor, &com_policy) {
                         Some(Direction::Forward)
@@ -457,18 +459,19 @@ impl EvalContext {
                     // So requesting source port matches a service (is this a reply?)
                     // Proceed only if the source provides a service.
                     if !src_actor.is_provider() {
-                        debug!("policy #{i} matches REV but src actor is not a provider");
+                        debug!(target: EVAL, "policy #{i} matches REV but src actor is not a provider");
                         continue;
                     }
                     // This policy only applies if the provider is providing the service referenced in the policy.
                     if !src_actor.provides(service_id) {
                         debug!(
+                            target: EVAL,
                             "policy #{i} matches REV on ports but src actor does not provide service {}",
                             service_id
                         );
                         continue;
                     }
-                    debug!("policy #{i} matches REV scope");
+                    debug!(target: EVAL, "policy #{i} matches REV scope");
                     // This policy matches only if all conditions match.
                     if self.match_policy_conditions(dst_actor, src_actor, &com_policy) {
                         Some(Direction::Reverse)
@@ -485,15 +488,15 @@ impl EvalContext {
                         message: signal_rdr.get_msg().unwrap().to_string().unwrap(),
                         service: signal_rdr.get_svc().unwrap().to_string().unwrap(),
                     };
-                    debug!("policy #{i} hits {direction} with signal: {:?}", signal);
+                    debug!(target: EVAL, "policy #{i} hits {direction} with signal: {:?}", signal);
                     hits.push(Hit::new_with_signal(i, direction, signal));
                 } else {
-                    debug!("policy #{i} hits {direction} no signal");
+                    debug!(target: EVAL, "policy #{i} hits {direction} no signal");
                     hits.push(Hit::new_no_signal(i, direction));
                 }
             }
         }
-        debug!("matched {} policies", hits.len());
+        debug!(target: EVAL, "matched {} policies", hits.len());
         Ok(hits)
     }
 
@@ -507,7 +510,7 @@ impl EvalContext {
         if com_policy.has_client_conds() {
             for cond in com_policy.get_client_conds().unwrap() {
                 if !self.match_condition_to_actor(&cond, client_actor) {
-                    debug!("-- client condition not met: {:?}", cond);
+                    debug!(target: EVAL, "-- client condition not met: {:?}", cond);
                     return false;
                 }
             }
@@ -515,7 +518,7 @@ impl EvalContext {
         if com_policy.has_service_conds() {
             for cond in com_policy.get_service_conds().unwrap() {
                 if !self.match_condition_to_actor(&cond, server_actor) {
-                    debug!("-- service condition not met: {:?}", cond);
+                    debug!(target: EVAL, "-- service condition not met: {:?}", cond);
                     return false;
                 }
             }
