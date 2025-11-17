@@ -15,6 +15,7 @@ use libeval::actor::Actor;
 use crate::assembly::Assembly;
 use crate::error::VSError;
 use crate::logging::targets::VSAPI;
+use crate::visareq_worker::PacketDesc;
 use crate::zpr;
 
 const PARAM_ZPR_ADDR: &str = "zpr_addr";
@@ -517,13 +518,60 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
 
     async fn visa_request(
         self: Rc<Self>,
-        _: vsapi::v_s_handle::VisaRequestParams,
-        _: vsapi::v_s_handle::VisaRequestResults,
+        args: vsapi::v_s_handle::VisaRequestParams,
+        response: vsapi::v_s_handle::VisaRequestResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "visa_request from {:?}", self.node.get_cn());
-        Err(capnp::Error::unimplemented(
-            "method v_s_handle::Server::visa_request not implemented".to_string(),
-        ))
+        let vreq = args.get()?.get_req()?;
+
+        let cp_pdesc = vreq.get_packet()?;
+        let previous_id = {
+            let pid = vreq.get_previous_id();
+            if pid > 0 { Some(pid) } else { None }
+        };
+
+        let pdesc: PacketDesc = cp_pdesc.into();
+
+        // Create a visa-request "job" for the visa service and await
+        // a reply on the response channel.
+        //
+        // The visa service will:
+        //     - look up the actors make sure they exist, are not expired, etc.
+        //     - may need to request new attributes
+        //     - evaluate against policy
+        //     - (if fails) we can reply fail.
+        //     - (if ok) create the visa - mark it as PENDING.
+        //     - reply over channel back to this function.
+        //     - in this function we build the result and mark visa as INSTALLED.
+        //
+        // The idea is that another process can look for PENDING somehow were not installed....
+        //
+        //
+        // Visa lifetime while we are traking them:
+        //      (not in our DB) -> CREATED -> (after sent to a ndoe) INSTALLED
+        //          -> (after admin revocation) REVOKED -> (after revoke is sent to nodes) (deleted from DB)
+        //
+        // A visa may need to go to many nodes.
+        //
+        // Maybe we keep a table for each node?
+        // So when visa service creates a visa, it installs it as CREATED into all the node tables
+        // where it needs to go.  Maybe a pointer to it?
+        //
+        //
+        // MAIN VISA TABLE -> has list of all active visas created by VS.
+        //                    The states are:
+        //                         CREATED -> waiting to be installed on all relevant nodes.
+        //                         INSTALLED -> installed on all relevant nodes.
+        //                         REVOKED -> revoked, waiting to be deleted from all relevant nodes.
+        //                         DEAD -> deleted from all nodes, can be removed from main table.
+        //
+        // Each node table has entries for visas (BY ID) with states:
+        //                          PENDING -> waiting to be sent to node.
+        //                          INSTALLED -> installed on node.
+        //                          REVOKED -> revoked, waiting to be deleted from node.
+        //
+
+        Ok(())
     }
 
     async fn ping(

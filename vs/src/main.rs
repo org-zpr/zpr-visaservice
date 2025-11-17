@@ -15,6 +15,7 @@ mod logging;
 mod pio;
 mod policy_mgr;
 mod signal_worker;
+mod visareq_worker;
 mod vsapi_worker;
 mod zpr;
 
