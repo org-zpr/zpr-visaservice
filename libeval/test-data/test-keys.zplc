@@ -1,0 +1,22 @@
+# minimal config so that we can test parsing the RFC zpl
+
+[nodes.n0]
+provider = [["endpoint.zpr.adapter.cn", "node.zpr.org"]]
+zpr_address = "fd5a:5052:90de::1"
+
+[trusted_services.default]
+
+[bootstrap]
+"node.zpr.org" = "include/key1-pub.pem"
+"foo.fee" = "include/key2-pub.pem"
+"haha.very.funny" = "include/key3-pub.pem"
+
+[protocols.http]
+l4protocol = "TCP"
+port = 80
+
+[services.webs]
+protocol = "http"
+provider = [[ "endpoint.zpr.adapter.cn", "foo.fee" ]]
+
+

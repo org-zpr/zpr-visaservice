@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tokio::task::JoinSet;
 use tracing::{error, info};
 
+use libeval::pio;
+
 mod actor_db;
 mod admin_service;
 mod assembly;
@@ -12,7 +14,6 @@ mod config;
 mod connection_control;
 mod error;
 mod logging;
-mod pio;
 mod policy_mgr;
 mod signal_worker;
 mod visareq_worker;

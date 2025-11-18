@@ -1177,8 +1177,8 @@ dependencies = [
 
 [[package]]
 name = "zpr-policy"
-version = "0.13.0"
-source = "git+https://github.com/org-zpr/zpr-policy-rs.git?tag=v0.9.0#3acf76e60c35bb17693b40568b56122e1a521b13"
+version = "0.14.0"
+source = "git+https://github.com/org-zpr/zpr-policy-rs.git?tag=v0.9.1#1192ff85110b4c01da432b7ace485d9a283720e6"
 dependencies = [
  "capnp",
  "capnpc",

@@ -17,7 +17,6 @@
 
 use ipnet::IpNet;
 use openssl::hash::MessageDigest;
-use openssl::pkey::PKey;
 use openssl::sign::Verifier;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -32,20 +31,6 @@ use vsapi::vs_capnp as vsapi;
 use crate::assembly::Assembly;
 use crate::error::VSError;
 use crate::logging::targets::CC;
-
-// Temporary CN and key data here to support initial testing with libnode2.
-const TEST_NODE_CN: &str = "node.test.zpr";
-const TEST_NODE_PUBLIC_KEY_PEM: &str = r#"
------BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1/FhZLpvbnVkRgCG/4vP
-ZZLRlhtXzsJhxVoqiDU5NgpR0rllYzqP60K5K4ZpvGyrcExYX1fcS7x4iQb0Q6yN
-+qby33UwUSe4hAePZ9KQiVVxLBMfO/fSrLPbMMCy+AjKqsiTmetW28angRSm6pU4
-/SJuZspO1fy8RYj95aqPXg5OE8F1W27JG47asPn2+CK7zfFNQSTtxvEtaSy6JPDf
-cgEOROtn6C/5Zj8CUi98KHi6IwdM8ArVf/xXKhkfhJiRvcVZ/ghFOwyfCrQCQBT3
-WlfWgTgbLCrlRZyu0/Yolnx/cX/CCslNUJK8KBlHEjRTlhkU0xmDZ2KRlfOtCd0Y
-FQIDAQAB
------END PUBLIC KEY-----
-"#;
 
 pub struct ConnectionControl {
     // Placeholder for connection control data and methods
@@ -76,14 +61,7 @@ impl ConnectionControl {
         // TODO: Remove this placeholder code once we have keys in policy.
         let bootstrap_key = match policy.get_bootstrap_key_by_cn(cn) {
             Some(k) => k,
-            None if cn == TEST_NODE_CN => {
-                info!(target: CC, "using hard-coded test bootstrap public key for cn {}", cn);
-                PKey::public_key_from_pem(TEST_NODE_PUBLIC_KEY_PEM.as_bytes())
-                    .expect("invalid const test node key pem")
-            }
-            None => {
-                return Err(VSError::AuthenticationFailed("key not found".into()));
-            }
+            None => return Err(VSError::AuthenticationFailed("key not found".into())),
         };
 
         // The node challenge response is an rsa signature of
