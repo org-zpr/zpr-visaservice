@@ -26,7 +26,7 @@ use tracing::{error, info};
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_NODE, key};
 use libeval::eval::EvalContext;
-use vsapi::vs_capnp as vsapi;
+use zpr::vsapi::v1 as vsapi;
 
 use crate::assembly::Assembly;
 use crate::error::VSError;

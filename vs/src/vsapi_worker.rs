@@ -1,4 +1,4 @@
-use vsapi::vs_capnp as vsapi;
+use ::zpr::vsapi::v1 as vsapi;
 
 use ipnet::IpNet;
 use openssl::rand::rand_bytes;
