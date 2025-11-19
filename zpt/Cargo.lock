@@ -457,6 +457,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4895175b425cb1f87721b59f0f286c2092bd4af812243672510e1ac53e2e0ad"
 
 [[package]]
+name = "open-enum"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eb2508143a400b3361812094d987dd5adc81f0f5294a46491be648d6c94cab5"
+dependencies = [
+ "open-enum-derive",
+]
+
+[[package]]
+name = "open-enum-derive"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d1296fab5231654a5aec8bf9e87ba4e3938c502fc4c3c0425a00084c78944be"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.74"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -717,6 +737,28 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "strum"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+dependencies = [
+ "strum_macros",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn",
+]
 
 [[package]]
 name = "syn"
@@ -1176,6 +1218,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zpr"
+version = "0.2.1"
+source = "git+https://github.com/org-zpr/zpr-core.git?tag=zpr-0.2.1#990e55675e126e5c6a602c7f9c33b770d1b1de72"
+dependencies = [
+ "capnp",
+ "capnpc",
+ "open-enum",
+ "strum",
+ "zerocopy",
+]
+
+[[package]]
 name = "zpr-policy"
 version = "0.14.0"
 source = "git+https://github.com/org-zpr/zpr-policy-rs.git?tag=v0.9.1#1192ff85110b4c01da432b7ace485d9a283720e6"
@@ -1202,5 +1256,5 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
- "zpr-policy",
+ "zpr",
 ]
