@@ -6,7 +6,7 @@ use bytes::{Buf, Bytes};
 use openssl::pkey::{PKey, Public};
 use thiserror::Error;
 
-use polio::policy_capnp;
+use zpr::policy::v1 as policy_capnp;
 
 #[derive(Debug, Error)]
 pub enum PolicyError {

@@ -1,8 +1,8 @@
 use crate::error::PioError;
-use ::polio::policy_capnp;
 use bytes::{Buf, Bytes};
 use libeval::policy::Policy;
 use std::path::Path;
+use zpr::policy::v1 as policy_capnp;
 
 pub fn load_policy(path: &Path) -> Result<Policy, PioError> {
     let encoded = std::fs::read(path)?;
