@@ -2,8 +2,7 @@ use bytes::{Buf, Bytes};
 use std::fmt;
 use std::path::Path;
 use tracing::info;
-
-use polio::policy_capnp;
+use zpr::policy::v1 as policy_capnp;
 
 use crate::logging::targets::PIO;
 use crate::policy::{Policy, PolicyError};

@@ -6,8 +6,6 @@ use crate::policy::Policy;
 use vs_dt::packet::ip_proto;
 use vs_dt::vsapi_types::PacketDesc;
 
-use ::polio::policy_capnp;
-
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -15,6 +13,7 @@ use std::net;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, warn};
+use zpr::policy::v1 as policy_capnp;
 
 /// The result of evaluating a policy against a communicating pair of
 /// actors and a description of the packet.

@@ -22,10 +22,10 @@ env:
 jobs:
   check:
     name: V2VS
-    uses: org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v0.1.0
+    uses: org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v1.1
     with:
       name: 'New New Visa Service'
       runs-on: "['ubuntu-latest']"
+      needs-capnp: true
       path: 'vs/'
-      setup: 'sudo apt-get install -y capnproto'
     secrets: inherit
