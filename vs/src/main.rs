@@ -33,8 +33,6 @@ use crate::logging::targets::MAIN;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 
-const MAX_VISA_REQUEST_WORKERS: usize = 1024;
-
 /// vs - ZPR visa service
 #[derive(Parser, Debug)]
 #[command(name = "vs")]
@@ -154,7 +152,7 @@ fn main() -> std::process::ExitCode {
     js.spawn(visareq_worker::launch_arena(
         asm.clone(),
         vreq_rx,
-        MAX_VISA_REQUEST_WORKERS,
+        zpr::MAX_VISA_REQUEST_WORKERS,
     ));
 
     // TODO: Setup/launch the workers for the visa service. Those that will do the actual work

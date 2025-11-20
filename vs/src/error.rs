@@ -33,7 +33,4 @@ pub enum VSError {
 
     #[error("Capn Proto not in schema: {0}")]
     CpnpNotInSchema(#[from] capnp::NotInSchema),
-
-    #[error("invalid argument: {0}")]
-    InvalidArgument(String),
 }

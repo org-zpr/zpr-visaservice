@@ -20,9 +20,6 @@ use crate::logging::targets::VSAPI;
 use crate::visareq_worker::{VisaDecision, VisaRequestJob};
 use crate::zpr;
 
-const PARAM_ZPR_ADDR: &str = "zpr_addr";
-const PARAM_AAA_PREFIX: &str = "aaa_prefix";
-
 pub async fn launch_capnp(
     asm: Arc<Assembly>,
     listen: SocketAddr,
@@ -119,6 +116,147 @@ impl VSHandleImpl {
     fn new(asm: Arc<Assembly>, node: Actor) -> Self {
         VSHandleImpl { asm, node }
     }
+
+    // NOTES - (TO BE REMOVED EVENTUALLY)
+    //
+    // Create a visa-request "job" for the visa service and await
+    // a reply on the response channel.
+    //
+    // The visa service will:
+    //     - look up the actors make sure they exist, are not expired, etc.
+    //     - may need to request new attributes
+    //     - evaluate against policy
+    //     - (if fails) we can reply fail.
+    //     - (if ok) create the visa - mark it as PENDING.
+    //     - reply over channel back to this function.
+    //     - in this function we build the result and mark visa as INSTALLED.
+    //
+    // The idea is that another process can look for PENDING somehow were not installed....
+    //
+    //
+    // Visa lifetime while we are traking them:
+    //      (not in our DB) -> CREATED -> (after sent to a ndoe) INSTALLED
+    //          -> (after admin revocation) REVOKED -> (after revoke is sent to nodes) (deleted from DB)
+    //
+    // A visa may need to go to many nodes.
+    //
+    // Maybe we keep a table for each node?
+    // So when visa service creates a visa, it installs it as CREATED into all the node tables
+    // where it needs to go.  Maybe a pointer to it?
+    //
+    //
+    // MAIN VISA TABLE -> has list of all active visas created by VS.
+    //                    The states are:
+    //                         CREATED -> waiting to be installed on all relevant nodes.
+    //                         INSTALLED -> installed on all relevant nodes.
+    //                         REVOKED -> revoked, waiting to be deleted from all relevant nodes.
+    //                         DEAD -> deleted from all nodes, can be removed from main table.
+    //
+    // Each node table has entries for visas (BY ID) with states:
+    //                          PENDING -> waiting to be sent to node.
+    //                          INSTALLED -> installed on node.
+    //                          REVOKED -> revoked, waiting to be deleted from node.
+    //
+
+    // Helper to process a visa request and either return an API error or a visa decision.
+    async fn do_visa_request(
+        &self,
+        args: vsapi::v_s_handle::VisaRequestParams,
+    ) -> Result<VisaDecision, (vsapi::ErrorCode, String)> {
+        let Some(requestor_ip) = self.node.get_zpr_addr() else {
+            warn!(target: VSAPI, "visa_request called by node {:?} with no ZPR address assigned", self.node.get_cn());
+            return Err((
+                vsapi::ErrorCode::InvalidOperation,
+                "node has no ZPR address assigned".to_string(),
+            ));
+        };
+
+        //let vreq = args.get()?.get_req()?;
+        //let cp_pdesc = vreq.get_packet()?;
+
+        let vreq = match args.get() {
+            Ok(a) => match a.get_req() {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(target: VSAPI, "error getting visa request: {}", e);
+                    return Err((
+                        vsapi::ErrorCode::Internal,
+                        "internal error getting visa request".to_string(),
+                    ));
+                }
+            },
+            Err(e) => {
+                error!(target: VSAPI, "error getting visa request args: {}", e);
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    "internal error getting visa request args".to_string(),
+                ));
+            }
+        };
+
+        let cp_pdesc = match vreq.get_packet() {
+            Ok(p) => p,
+            Err(e) => {
+                error!(target: VSAPI, "error getting packet description: {}", e);
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    "internal error getting packet description".to_string(),
+                ));
+            }
+        };
+
+        let previous_id = {
+            let pid = vreq.get_previous_id();
+            if pid > 0 { Some(pid) } else { None }
+        };
+        if previous_id.is_some() {
+            warn!(target: VSAPI, "visa_request: supplied previous_id is ignored (TODO)");
+        }
+
+        let pdesc: PacketDesc = match cp_pdesc.try_into() {
+            Ok(pd) => pd,
+            Err(e) => {
+                error!(target: VSAPI, "error parsing packet description: {}", e);
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    format!("invalid packet description: {}", e),
+                ));
+            }
+        };
+
+        let (job, response_rx) = VisaRequestJob::new(requestor_ip.clone(), pdesc);
+
+        match self.asm.vreq_chan.send(job).await {
+            Ok(()) => (),
+            Err(e) => {
+                error!(target: VSAPI, "error enqueuing visa request: {}", e);
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    "internal error enqueuing visa request".to_string(),
+                ));
+            }
+        }
+
+        // Now wait for a response (TODO: timeout?)
+        // This will fill in the api response.
+        match response_rx.await {
+            Ok(vr_result) => match vr_result {
+                Ok(vd) => return Ok(vd),
+                Err(e) => {
+                    return Err((
+                        vsapi::ErrorCode::Internal,
+                        format!("internal error processing visa request: {}", e),
+                    ));
+                }
+            },
+            Err(e) => {
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    format!("internal error receiving visa request response: {}", e),
+                ));
+            }
+        }
+    }
 }
 
 /// Helper to write an error into a capnp error builder with a retry of zero.
@@ -160,8 +298,8 @@ impl VisaServiceImpl {
     /// Helper for the connect routine -- returns the two connect params we require: zpr_addr and aaa_prefix,
     /// or errors out.
     fn parse_my_connect_params(&self, params: &[CParam]) -> Result<(IpAddr, IpNet), VSError> {
-        let node_zpr_addr: IpAddr = CParam::get_ipaddr(params, PARAM_ZPR_ADDR)?;
-        let node_aaa_network_str = CParam::get_string(params, PARAM_AAA_PREFIX)?;
+        let node_zpr_addr: IpAddr = CParam::get_ipaddr(params, zpr::PARAM_ZPR_ADDR)?;
+        let node_aaa_network_str = CParam::get_string(params, zpr::PARAM_AAA_PREFIX)?;
         let node_aaa_net: IpNet = match node_aaa_network_str.parse() {
             Ok(n) => n,
             Err(_e) => Err(VSError::ParamError(format!(
@@ -518,46 +656,6 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         Ok(())
     }
 
-    //
-    // Create a visa-request "job" for the visa service and await
-    // a reply on the response channel.
-    //
-    // The visa service will:
-    //     - look up the actors make sure they exist, are not expired, etc.
-    //     - may need to request new attributes
-    //     - evaluate against policy
-    //     - (if fails) we can reply fail.
-    //     - (if ok) create the visa - mark it as PENDING.
-    //     - reply over channel back to this function.
-    //     - in this function we build the result and mark visa as INSTALLED.
-    //
-    // The idea is that another process can look for PENDING somehow were not installed....
-    //
-    //
-    // Visa lifetime while we are traking them:
-    //      (not in our DB) -> CREATED -> (after sent to a ndoe) INSTALLED
-    //          -> (after admin revocation) REVOKED -> (after revoke is sent to nodes) (deleted from DB)
-    //
-    // A visa may need to go to many nodes.
-    //
-    // Maybe we keep a table for each node?
-    // So when visa service creates a visa, it installs it as CREATED into all the node tables
-    // where it needs to go.  Maybe a pointer to it?
-    //
-    //
-    // MAIN VISA TABLE -> has list of all active visas created by VS.
-    //                    The states are:
-    //                         CREATED -> waiting to be installed on all relevant nodes.
-    //                         INSTALLED -> installed on all relevant nodes.
-    //                         REVOKED -> revoked, waiting to be deleted from all relevant nodes.
-    //                         DEAD -> deleted from all nodes, can be removed from main table.
-    //
-    // Each node table has entries for visas (BY ID) with states:
-    //                          PENDING -> waiting to be sent to node.
-    //                          INSTALLED -> installed on node.
-    //                          REVOKED -> revoked, waiting to be deleted from node.
-    //
-
     async fn visa_request(
         self: Rc<Self>,
         args: vsapi::v_s_handle::VisaRequestParams,
@@ -565,98 +663,27 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "visa_request from {:?}", self.node.get_cn());
 
-        let Some(requestor_ip) = self.node.get_zpr_addr() else {
-            warn!(target: VSAPI, "visa_request called by node {:?} with no ZPR address assigned", self.node.get_cn());
-            let res_builder = response.get().init_resp();
-            let mut err_builder = res_builder.init_error();
-            write_error(
-                &mut err_builder,
-                vsapi::ErrorCode::InvalidOperation,
-                "node has no ZPR address assigned",
-            );
-            // TODO: Probably should disconnect the node.
-            return Ok(());
-        };
-
-        let vreq = args.get()?.get_req()?;
-
-        let cp_pdesc = vreq.get_packet()?;
-        let previous_id = {
-            let pid = vreq.get_previous_id();
-            if pid > 0 { Some(pid) } else { None }
-        };
-        if previous_id.is_some() {
-            warn!(target: VSAPI, "visa_request: supplied previous_id is ignored (TODO)");
-        }
-
-        let pdesc: PacketDesc = match cp_pdesc.try_into() {
-            Ok(pd) => pd,
-            Err(e) => {
-                let res_builder = response.get().init_resp();
-                let mut err_builder = res_builder.init_error();
-                write_error(
-                    &mut err_builder,
-                    vsapi::ErrorCode::Internal, // TODO: New error code for argument-error
-                    format!("invalid packet description: {}", e).as_str(),
-                );
-                return Ok(());
-            }
-        };
-
-        let (job, response_rx) = VisaRequestJob::new(requestor_ip.clone(), pdesc);
-
-        match self.asm.vreq_chan.send(job).await {
-            Ok(()) => (),
-            Err(e) => {
-                error!(target: VSAPI, "error enqueuing visa request: {}", e);
-                let res_builder = response.get().init_resp();
-                let mut err_builder = res_builder.init_error();
-                write_error(
-                    &mut err_builder,
-                    vsapi::ErrorCode::Internal,
-                    "internal error enqueuing visa request",
-                );
-                return Ok(());
-            }
-        }
-
-        // Now wait for a response (TODO: timeout?)
-        // This will fill in the api response.
-        match response_rx.await {
-            Ok(vr_result) => match vr_result {
-                Ok(vd) => match vd {
-                    VisaDecision::Allow(visa) => {
-                        let res_builder = response.get().init_resp();
-                        let mut visa_bldr = res_builder.init_allow();
-                        visa.write_to(&mut visa_bldr);
-                    }
-                    VisaDecision::Deny(denial_reason) => {
-                        let mut res_builder = response.get().init_resp();
-                        res_builder.set_deny(denial_reason.into());
-                    }
-                },
-                Err(e) => {
+        match self.do_visa_request(args).await {
+            Ok(decision) => match decision {
+                VisaDecision::Allow(visa) => {
                     let res_builder = response.get().init_resp();
-                    let mut err_builder = res_builder.init_error();
-                    write_error(
-                        &mut err_builder,
-                        vsapi::ErrorCode::Internal,
-                        format!("internal error processing visa request: {}", e).as_str(),
-                    );
+                    let mut visa_bldr = res_builder.init_allow();
+                    visa.write_to(&mut visa_bldr);
+                }
+                VisaDecision::Deny(denial_reason) => {
+                    let mut res_builder = response.get().init_resp();
+                    res_builder.set_deny(denial_reason.into());
                 }
             },
-            Err(e) => {
-                error!(target: VSAPI, "error receiving visa request response: {}", e);
+
+            Err((code, msg)) => {
+                error!(target: VSAPI, "internal error ({code:?})processing visa_request: {msg}");
                 let res_builder = response.get().init_resp();
                 let mut err_builder = res_builder.init_error();
-                write_error(
-                    &mut err_builder,
-                    vsapi::ErrorCode::Internal,
-                    "internal error receiving visa request response",
-                );
+                write_error(&mut err_builder, code, &msg);
             }
         }
-        Ok(())
+        return Ok(());
     }
 
     async fn ping(

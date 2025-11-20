@@ -2,8 +2,6 @@
 //! This will know all the connected actors, their addresses, the services the offer, etc.
 //! Including all nodes and links between them.
 
-use std::sync::RwLock;
-
 use tracing::info;
 
 use libeval::actor::Actor;

@@ -14,7 +14,7 @@
 //! Once a visa is issued we need to pick the path and figure out which nodes need to be informed.
 //! There may be path constraints that make the visa invalid.
 //!
-//! Once we have a path, the visa is queued up for install on all the nodes and
+//! Once we have a path, the visa is queued up for install on all the impacted nodes and
 //! returned to the caller.
 
 use std::net::IpAddr;
@@ -23,14 +23,12 @@ use std::sync::Arc;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-
 use tracing::{debug, info, warn};
 
 use crate::assembly::Assembly;
 use crate::error::VSError;
+use libeval::eval::{EvalContext, EvalDecision};
 use vs_dt::vsapi_types::{PacketDesc, Visa, VisaDenialReason};
-
-use libeval::eval::{EvalContext, EvalDecision, Hit};
 
 pub enum VisaDecision {
     Allow(Visa),
@@ -57,6 +55,7 @@ pub async fn launch_arena(
 ) {
     let stream = ReceiverStream::new(incoming);
 
+    // TODO: This looks slick but we may want to know when we are under pressure.
     stream
         .for_each_concurrent(max_concurrent, |job| {
             let asm = asm.clone();
@@ -83,11 +82,11 @@ impl VisaRequestJob {
         )
     }
 
-    /// Complete this job be sending a result to the requester.
-    /// Logs a warning if the requester has dropped the reciever.
+    /// Complete this job by sending a result to the requester.
+    /// Logs a warning if the requester has dropped the receiver.
     pub fn complete(self, result: VisaRequestResult) {
         if let Err(_) = self.response_chan.send(result) {
-            // Means the requester has dropped the reciever.
+            // Means the requester has dropped the receiver.
             warn!(
                 "failed to enqueue visa request result for {:?}",
                 self.requesting_node
@@ -96,6 +95,9 @@ impl VisaRequestJob {
     }
 }
 
+/// Main processing function for processing a visa request.
+///
+/// This is just a rough sketch for now.
 async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
     let Some(source_actor) = asm.actor_db.get_actor_by_ip(&job.packet_desc.source_addr) else {
         debug!(
