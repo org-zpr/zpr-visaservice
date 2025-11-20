@@ -2,6 +2,8 @@
 //! This will know all the connected actors, their addresses, the services the offer, etc.
 //! Including all nodes and links between them.
 
+use std::sync::RwLock;
+
 use tracing::info;
 
 use libeval::actor::Actor;
@@ -19,5 +21,10 @@ impl ActorDb {
     pub fn add_node(&self, _actor: Actor) -> Result<(), VSError> {
         info!(target: ADB, "(TODO) adding node actor {:?}", _actor.get_cn());
         Ok(())
+    }
+
+    /// Returns a copy of an actor record if found.
+    pub fn get_actor_by_ip(&self, _ip: &std::net::IpAddr) -> Option<Actor> {
+        None
     }
 }

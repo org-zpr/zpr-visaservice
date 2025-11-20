@@ -11,11 +11,12 @@ use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
 use libeval::actor::Actor;
+use vs_dt::vsapi_types::PacketDesc;
 
 use crate::assembly::Assembly;
 use crate::error::VSError;
 use crate::logging::targets::VSAPI;
-use crate::visareq_worker::PacketDesc;
+use crate::visareq_worker::{VisaDecision, VisaRequestJob};
 use crate::zpr;
 
 const PARAM_ZPR_ADDR: &str = "zpr_addr";
@@ -516,12 +517,65 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         Ok(())
     }
 
+    // Create a visa-request "job" for the visa service and await
+    // a reply on the response channel.
+    //
+    // The visa service will:
+    //     - look up the actors make sure they exist, are not expired, etc.
+    //     - may need to request new attributes
+    //     - evaluate against policy
+    //     - (if fails) we can reply fail.
+    //     - (if ok) create the visa - mark it as PENDING.
+    //     - reply over channel back to this function.
+    //     - in this function we build the result and mark visa as INSTALLED.
+    //
+    // The idea is that another process can look for PENDING somehow were not installed....
+    //
+    //
+    // Visa lifetime while we are traking them:
+    //      (not in our DB) -> CREATED -> (after sent to a ndoe) INSTALLED
+    //          -> (after admin revocation) REVOKED -> (after revoke is sent to nodes) (deleted from DB)
+    //
+    // A visa may need to go to many nodes.
+    //
+    // Maybe we keep a table for each node?
+    // So when visa service creates a visa, it installs it as CREATED into all the node tables
+    // where it needs to go.  Maybe a pointer to it?
+    //
+    //
+    // MAIN VISA TABLE -> has list of all active visas created by VS.
+    //                    The states are:
+    //                         CREATED -> waiting to be installed on all relevant nodes.
+    //                         INSTALLED -> installed on all relevant nodes.
+    //                         REVOKED -> revoked, waiting to be deleted from all relevant nodes.
+    //                         DEAD -> deleted from all nodes, can be removed from main table.
+    //
+    // Each node table has entries for visas (BY ID) with states:
+    //                          PENDING -> waiting to be sent to node.
+    //                          INSTALLED -> installed on node.
+    //                          REVOKED -> revoked, waiting to be deleted from node.
+    //
+
     async fn visa_request(
         self: Rc<Self>,
         args: vsapi::v_s_handle::VisaRequestParams,
-        response: vsapi::v_s_handle::VisaRequestResults,
+        mut response: vsapi::v_s_handle::VisaRequestResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "visa_request from {:?}", self.node.get_cn());
+
+        let Some(requestor_ip) = self.node.get_zpr_addr() else {
+            warn!(target: VSAPI, "visa_request called by node {:?} with no ZPR address assigned", self.node.get_cn());
+            let res_builder = response.get().init_resp();
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::InvalidOperation,
+                "node has no ZPR address assigned",
+            );
+            // TODO: Probably should disconnect the node.
+            return Ok(());
+        };
+
         let vreq = args.get()?.get_req()?;
 
         let cp_pdesc = vreq.get_packet()?;
@@ -529,48 +583,77 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             let pid = vreq.get_previous_id();
             if pid > 0 { Some(pid) } else { None }
         };
+        if previous_id.is_some() {
+            warn!(target: VSAPI, "visa_request: supplied previous_id is ignored (TODO)");
+        }
 
-        let pdesc: PacketDesc = cp_pdesc.into();
+        let pdesc: PacketDesc = match cp_pdesc.try_into() {
+            Ok(pd) => pd,
+            Err(e) => {
+                let res_builder = response.get().init_resp();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal, // TODO: New error code for argument-error
+                    format!("invalid packet description: {}", e).as_str(),
+                );
+                return Ok(());
+            }
+        };
 
-        // Create a visa-request "job" for the visa service and await
-        // a reply on the response channel.
-        //
-        // The visa service will:
-        //     - look up the actors make sure they exist, are not expired, etc.
-        //     - may need to request new attributes
-        //     - evaluate against policy
-        //     - (if fails) we can reply fail.
-        //     - (if ok) create the visa - mark it as PENDING.
-        //     - reply over channel back to this function.
-        //     - in this function we build the result and mark visa as INSTALLED.
-        //
-        // The idea is that another process can look for PENDING somehow were not installed....
-        //
-        //
-        // Visa lifetime while we are traking them:
-        //      (not in our DB) -> CREATED -> (after sent to a ndoe) INSTALLED
-        //          -> (after admin revocation) REVOKED -> (after revoke is sent to nodes) (deleted from DB)
-        //
-        // A visa may need to go to many nodes.
-        //
-        // Maybe we keep a table for each node?
-        // So when visa service creates a visa, it installs it as CREATED into all the node tables
-        // where it needs to go.  Maybe a pointer to it?
-        //
-        //
-        // MAIN VISA TABLE -> has list of all active visas created by VS.
-        //                    The states are:
-        //                         CREATED -> waiting to be installed on all relevant nodes.
-        //                         INSTALLED -> installed on all relevant nodes.
-        //                         REVOKED -> revoked, waiting to be deleted from all relevant nodes.
-        //                         DEAD -> deleted from all nodes, can be removed from main table.
-        //
-        // Each node table has entries for visas (BY ID) with states:
-        //                          PENDING -> waiting to be sent to node.
-        //                          INSTALLED -> installed on node.
-        //                          REVOKED -> revoked, waiting to be deleted from node.
-        //
+        let (job, response_rx) = VisaRequestJob::new(requestor_ip.clone(), pdesc);
 
+        match self.asm.vreq_chan.send(job).await {
+            Ok(()) => (),
+            Err(e) => {
+                error!(target: VSAPI, "error enqueuing visa request: {}", e);
+                let res_builder = response.get().init_resp();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "internal error enqueuing visa request",
+                );
+                return Ok(());
+            }
+        }
+
+        // Now wait for a response (TODO: timeout?)
+        // This will fill in the api response.
+        match response_rx.await {
+            Ok(vr_result) => match vr_result {
+                Ok(vd) => match vd {
+                    VisaDecision::Allow(visa) => {
+                        let res_builder = response.get().init_resp();
+                        let mut visa_bldr = res_builder.init_allow();
+                        visa.write_to(&mut visa_bldr);
+                    }
+                    VisaDecision::Deny(denial_reason) => {
+                        let mut res_builder = response.get().init_resp();
+                        res_builder.set_deny(denial_reason.into());
+                    }
+                },
+                Err(e) => {
+                    let res_builder = response.get().init_resp();
+                    let mut err_builder = res_builder.init_error();
+                    write_error(
+                        &mut err_builder,
+                        vsapi::ErrorCode::Internal,
+                        format!("internal error processing visa request: {}", e).as_str(),
+                    );
+                }
+            },
+            Err(e) => {
+                error!(target: VSAPI, "error receiving visa request response: {}", e);
+                let res_builder = response.get().init_resp();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "internal error receiving visa request response",
+                );
+            }
+        }
         Ok(())
     }
 
@@ -613,65 +696,87 @@ impl CParam {
         for param in params.iter() {
             let pname = param.get_name()?.to_string()?;
             let ptype = param.get_ptype()?;
-            let pval = param.get_value()?;
             match ptype {
-                vsapi::ParamT::String => {
-                    let sval = std::str::from_utf8(pval)?.to_string();
-                    results.push(CParam {
-                        name: pname,
-                        value: CParamValue::String(sval),
-                    });
-                }
-                // TODO: This doesn't seem right... we should use a capn proto union or something so
-                // that we are not serializing u64.
-                vsapi::ParamT::U64 => {
-                    if pval.len() != 8 {
+                vsapi::ParamT::String => match param.which()? {
+                    vsapi::param::ValueText(foo) => {
+                        let pval = foo?;
+                        let sval = std::str::from_utf8(pval.as_bytes())?.to_string();
+                        results.push(CParam {
+                            name: pname,
+                            value: CParamValue::String(sval),
+                        });
+                    }
+                    _ => {
                         return Err(VSError::ParamError(format!(
-                            "CParam::from_connect_request: U64 param {} has invalid length {}",
+                            "CParam::from_connect_request: String param {} has invalid value type",
                             pname,
-                            pval.len()
                         )));
                     }
-                    let mut arr = [0u8; 8];
-                    arr.copy_from_slice(&pval[0..8]);
-                    let uval = u64::from_be_bytes(arr);
-                    results.push(CParam {
-                        name: pname,
-                        value: CParamValue::U64(uval),
-                    });
-                }
-                vsapi::ParamT::Ipv4 => {
-                    if pval.len() != 4 {
+                },
+                vsapi::ParamT::U64 => match param.which()? {
+                    vsapi::param::ValueU64(uval) => {
+                        results.push(CParam {
+                            name: pname,
+                            value: CParamValue::U64(uval),
+                        });
+                    }
+                    _ => {
                         return Err(VSError::ParamError(format!(
-                            "CParam::from_connect_request: Ipv4 param {} has invalid length {}",
+                            "CParam::from_connect_request: U64 param {} has invalid value type",
                             pname,
-                            pval.len()
                         )));
                     }
-                    let mut arr = [0u8; 4];
-                    arr.copy_from_slice(&pval[0..4]);
-                    let ipv4 = std::net::Ipv4Addr::from(arr);
-                    results.push(CParam {
-                        name: pname,
-                        value: CParamValue::Ipv4(ipv4),
-                    });
-                }
-                vsapi::ParamT::Ipv6 => {
-                    if pval.len() != 16 {
+                },
+                vsapi::ParamT::Ipv4 => match param.which()? {
+                    vsapi::param::ValueData(data) => {
+                        let pval = data?;
+                        if pval.len() != 4 {
+                            return Err(VSError::ParamError(format!(
+                                "CParam::from_connect_request: Ipv4 param {} has invalid length {}",
+                                pname,
+                                pval.len()
+                            )));
+                        }
+                        let mut arr = [0u8; 4];
+                        arr.copy_from_slice(&pval[0..4]);
+                        let ipv4 = std::net::Ipv4Addr::from(arr);
+                        results.push(CParam {
+                            name: pname,
+                            value: CParamValue::Ipv4(ipv4),
+                        });
+                    }
+                    _ => {
                         return Err(VSError::ParamError(format!(
-                            "CParam::from_connect_request: Ipv6 param {} has invalid length {}",
+                            "CParam::from_connect_request: Ipv4 param {} has invalid value type",
                             pname,
-                            pval.len()
                         )));
                     }
-                    let mut arr = [0u8; 16];
-                    arr.copy_from_slice(&pval[0..16]);
-                    let ipv6 = std::net::Ipv6Addr::from(arr);
-                    results.push(CParam {
-                        name: pname,
-                        value: CParamValue::Ipv6(ipv6),
-                    });
-                }
+                },
+                vsapi::ParamT::Ipv6 => match param.which()? {
+                    vsapi::param::ValueData(data) => {
+                        let pval = data?;
+                        if pval.len() != 16 {
+                            return Err(VSError::ParamError(format!(
+                                "CParam::from_connect_request: Ipv6 param {} has invalid length {}",
+                                pname,
+                                pval.len()
+                            )));
+                        }
+                        let mut arr = [0u8; 16];
+                        arr.copy_from_slice(&pval[0..16]);
+                        let ipv6 = std::net::Ipv6Addr::from(arr);
+                        results.push(CParam {
+                            name: pname,
+                            value: CParamValue::Ipv6(ipv6),
+                        });
+                    }
+                    _ => {
+                        return Err(VSError::ParamError(format!(
+                            "CParam::from_connect_request: Ipv6 param {} has invalid value type",
+                            pname,
+                        )));
+                    }
+                },
             }
             if results.len() >= limit {
                 break;

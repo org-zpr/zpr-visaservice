@@ -17,73 +17,146 @@
 //! Once we have a path, the visa is queued up for install on all the nodes and
 //! returned to the caller.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
+use std::sync::Arc;
 
+use futures::StreamExt;
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::wrappers::ReceiverStream;
+
+use tracing::{debug, info, warn};
+
+use crate::assembly::Assembly;
 use crate::error::VSError;
+use vs_dt::vsapi_types::{PacketDesc, Visa, VisaDenialReason};
 
-pub struct PacketDesc {
-    pub source: IpAddr,
-    pub dest: IpAddr,
-    pub source_port: u16,
-    pub dest_port: u16,
-    pub protocol: u8,
-    pub comm_type: CommType,
+use libeval::eval::{EvalContext, EvalDecision, Hit};
+
+pub enum VisaDecision {
+    Allow(Visa),
+    Deny(VisaDenialReason),
 }
 
-pub enum CommType {
-    bidirectional,
-    unidirectional,
-    rerequest,
+/// The result is either a [Visa], or a regular denial, or there was an unexpected failure
+/// and you get a [VSError].
+pub type VisaRequestResult = Result<VisaDecision, VSError>;
+
+/// TODO: add a job ID for tracing/logging.
+pub struct VisaRequestJob {
+    pub requesting_node: IpAddr,
+    pub packet_desc: PacketDesc,
+    // A channel to send the result back to the requester.
+    response_chan: oneshot::Sender<VisaRequestResult>,
 }
 
-pub struct Visa {}
+// Visa requests come into the arena where they are processed by workers.
+pub async fn launch_arena(
+    asm: Arc<Assembly>,
+    incoming: mpsc::Receiver<VisaRequestJob>,
+    max_concurrent: usize,
+) {
+    let stream = ReceiverStream::new(incoming);
 
-async fn process_visa_request() -> Result<Visa, VSError> {
-    todo!()
+    stream
+        .for_each_concurrent(max_concurrent, |job| {
+            let asm = asm.clone();
+            async move {
+                process_visa_request_job(asm, job).await;
+            }
+        })
+        .await;
 }
 
-// TODO: Need to use try-from instead of from since there are so many possible errors!!
+impl VisaRequestJob {
+    pub fn new(
+        requesting_node: IpAddr,
+        packet_desc: PacketDesc,
+    ) -> (Self, oneshot::Receiver<VisaRequestResult>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            VisaRequestJob {
+                requesting_node,
+                packet_desc,
+                response_chan: tx,
+            },
+            rx,
+        )
+    }
 
-impl From<vsapi::vs_capnp::packet_desc::Reader<'_>> for PacketDesc {
-    fn from(reader: vsapi::vs_capnp::packet_desc::Reader<'_>) -> Self {
-        let src_ip = reader.get_source_addr().unwrap();
-        let source = match src_ip.which().unwrap() {
-            vsapi::vs_capnp::ip_addr::V4(ipv4) => {
-                let octets: [u8; 4] = ipv4.unwrap().try_into().unwrap();
-                IpAddr::V4(Ipv4Addr::from(octets))
-            }
-            vsapi::vs_capnp::ip_addr::V6(ipv6) => {
-                let octets: [u8; 16] = ipv6.unwrap().try_into().unwrap();
-                IpAddr::V6(Ipv6Addr::from(octets))
-            }
-        };
-        let dest_ip = reader.get_dest_addr().unwrap();
-        let dest = match dest_ip.which().unwrap() {
-            vsapi::vs_capnp::ip_addr::V4(ipv4) => {
-                let octets: [u8; 4] = ipv4.unwrap().try_into().unwrap();
-                IpAddr::V4(Ipv4Addr::from(octets))
-            }
-            vsapi::vs_capnp::ip_addr::V6(ipv6) => {
-                let octets: [u8; 16] = ipv6.unwrap().try_into().unwrap();
-                IpAddr::V6(Ipv6Addr::from(octets))
-            }
-        };
-        let source_port = reader.get_source_port();
-        let dest_port = reader.get_dest_port();
-        let protocol = reader.get_protocol();
-        let comm_type = match reader.get_comm_type().unwrap() {
-            vsapi::vs_capnp::CommType::Bidirectional => CommType::bidirectional,
-            vsapi::vs_capnp::CommType::Unidirectional => CommType::unidirectional,
-            vsapi::vs_capnp::CommType::Rerequest => CommType::rerequest,
-        };
+    /// Complete this job be sending a result to the requester.
+    /// Logs a warning if the requester has dropped the reciever.
+    pub fn complete(self, result: VisaRequestResult) {
+        if let Err(_) = self.response_chan.send(result) {
+            // Means the requester has dropped the reciever.
+            warn!(
+                "failed to enqueue visa request result for {:?}",
+                self.requesting_node
+            );
+        }
+    }
+}
 
-        PacketDesc {
-            source,
-            dest,
-            source_port,
-            dest_port,
-            protocol,
-            comm_type,
+async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
+    let Some(source_actor) = asm.actor_db.get_actor_by_ip(&job.packet_desc.source_addr) else {
+        debug!(
+            "source actor not found for visa request from {:?}",
+            job.requesting_node
+        );
+        job.complete(Ok(VisaDecision::Deny(VisaDenialReason::SourceNotFound)));
+        return;
+    };
+    let Some(dest_actor) = asm.actor_db.get_actor_by_ip(&job.packet_desc.dest_addr) else {
+        debug!(
+            "dest actor not found for visa request from {:?}",
+            job.requesting_node
+        );
+        job.complete(Ok(VisaDecision::Deny(VisaDenialReason::DestNotFound)));
+        return;
+    };
+
+    let policy = asm.policy_mgr.get_current();
+    let ctx = EvalContext::new(policy);
+    let decision = match ctx.eval_request(&source_actor, &dest_actor, &job.packet_desc) {
+        Ok(decision) => decision,
+        Err(e) => {
+            debug!(
+                "error evaluating visa request from {:?}: {}",
+                job.requesting_node, e
+            );
+            job.complete(Err(e.into()));
+            return;
+        }
+    };
+    drop(ctx);
+
+    match decision {
+        EvalDecision::NoMatch(message) => {
+            info!(
+                "visa request from {:?} denied (no match): {}",
+                job.requesting_node, message
+            );
+            job.complete(Ok(VisaDecision::Deny(VisaDenialReason::NoMatch)));
+        }
+        EvalDecision::Allow(hits) => {
+            // TODO: For now we pick the first hit.
+            match asm.visa_mgr.create_visa(&job.packet_desc, &hits[0]) {
+                Ok(visa) => job.complete(Ok(VisaDecision::Allow(visa))),
+                Err(e) => {
+                    debug!(
+                        "error creating visa for request from {:?}: {}",
+                        job.requesting_node, e
+                    );
+                    job.complete(Err(e));
+                    return;
+                }
+            }
+        }
+        EvalDecision::Deny(_hits) => {
+            info!(
+                "visa request from {:?} denied by policy",
+                job.requesting_node
+            );
+            job.complete(Ok(VisaDecision::Deny(VisaDenialReason::Denied)));
         }
     }
 }

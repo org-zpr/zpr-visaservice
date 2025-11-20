@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
+
 use crate::actor_db::ActorDb;
 use crate::connection_control::ConnectionControl;
 use crate::policy_mgr::PolicyMgr;
+use crate::visa_mgr::VisaMgr;
 
 #[allow(dead_code)]
 pub struct Assembly {
@@ -11,6 +14,8 @@ pub struct Assembly {
     pub policy_mgr: PolicyMgr,
     pub actor_db: ActorDb, // manages its own locking
     pub vk_conn: Arc<redis::aio::MultiplexedConnection>,
+    pub vreq_chan: mpsc::Sender<crate::visareq_worker::VisaRequestJob>,
+    pub visa_mgr: VisaMgr,
 }
 
 impl Assembly {
