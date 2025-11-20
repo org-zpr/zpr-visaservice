@@ -20,4 +20,9 @@ impl ActorDb {
         info!(target: ADB, "(TODO) adding node actor {:?}", _actor.get_cn());
         Ok(())
     }
+
+    /// Returns a copy of an actor record if found.
+    pub fn get_actor_by_ip(&self, _ip: &std::net::IpAddr) -> Option<Actor> {
+        None
+    }
 }
