@@ -27,6 +27,7 @@ build-rs:
 	$(MAKE) -C vs all
 	$(MAKE) -C zpt all
 	$(MAKE) -C libeval all
+	$(MAKE) -C vs-dt all
 
 test-go:
 	$(MAKE) -C core test
@@ -37,6 +38,7 @@ test-rs:
 	$(MAKE) -C vs test
 	$(MAKE) -C zpt test
 	$(MAKE) -C libeval test
+	$(MAKE) -C vs-dt test
 
 release:
 	$(MAKE) clean
