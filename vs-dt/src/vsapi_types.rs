@@ -1,6 +1,6 @@
 //! API types that are converted into/out-of Capn Proto.
 
-use ::zpr::vsapi::v1 as vsapi;
+use zpr::vsapi::v1 as vsapi;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use crate::error::DTError;
