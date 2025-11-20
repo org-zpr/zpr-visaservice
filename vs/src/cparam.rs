@@ -2,6 +2,9 @@ use crate::error::VSError;
 use ::zpr::vsapi::v1 as vsapi;
 use std::net::IpAddr;
 
+const IPV4_ADDRESS_SIZE: usize = 4;
+const IPV6_ADDRESS_SIZE: usize = 16;
+
 /// CParam models the TLV style connect parameters in the initial connect request for a node.
 #[derive(Debug, Clone)]
 pub struct CParam {
@@ -63,15 +66,15 @@ impl CParam {
                 vsapi::ParamT::Ipv4 => match param.which()? {
                     vsapi::param::ValueData(data) => {
                         let pval = data?;
-                        if pval.len() != 4 {
+                        if pval.len() != IPV4_ADDRESS_SIZE {
                             return Err(VSError::ParamError(format!(
                                 "CParam::from_connect_request: Ipv4 param {} has invalid length {}",
                                 pname,
                                 pval.len()
                             )));
                         }
-                        let mut arr = [0u8; 4];
-                        arr.copy_from_slice(&pval[0..4]);
+                        let mut arr = [0u8; IPV4_ADDRESS_SIZE];
+                        arr.copy_from_slice(&pval[0..IPV4_ADDRESS_SIZE]);
                         let ipv4 = std::net::Ipv4Addr::from(arr);
                         results.push(CParam {
                             name: pname,
@@ -88,15 +91,15 @@ impl CParam {
                 vsapi::ParamT::Ipv6 => match param.which()? {
                     vsapi::param::ValueData(data) => {
                         let pval = data?;
-                        if pval.len() != 16 {
+                        if pval.len() != IPV6_ADDRESS_SIZE {
                             return Err(VSError::ParamError(format!(
                                 "CParam::from_connect_request: Ipv6 param {} has invalid length {}",
                                 pname,
                                 pval.len()
                             )));
                         }
-                        let mut arr = [0u8; 16];
-                        arr.copy_from_slice(&pval[0..16]);
+                        let mut arr = [0u8; IPV6_ADDRESS_SIZE];
+                        arr.copy_from_slice(&pval[0..IPV6_ADDRESS_SIZE]);
                         let ipv6 = std::net::Ipv6Addr::from(arr);
                         results.push(CParam {
                             name: pname,

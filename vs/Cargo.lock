@@ -711,7 +711,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "vs-dt",
- "zpr-policy",
+ "zpr 0.2.1",
 ]
 
 [[package]]
@@ -1598,7 +1598,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vs-dt",
- "zpr",
+ "zpr 0.2.0",
  "zpr-policy",
 ]
 
@@ -1608,7 +1608,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "thiserror",
- "zpr",
+ "zpr 0.2.0",
 ]
 
 [[package]]
@@ -1834,6 +1834,18 @@ dependencies = [
 name = "zpr"
 version = "0.2.0"
 source = "git+https://github.com/org-zpr/zpr-core.git?tag=zpr-0.2.0#7308de36e64db88b1e5c4871a04bb52e9972b851"
+dependencies = [
+ "capnp",
+ "capnpc",
+ "open-enum",
+ "strum",
+ "zerocopy",
+]
+
+[[package]]
+name = "zpr"
+version = "0.2.1"
+source = "git+https://github.com/org-zpr/zpr-core.git?tag=zpr-0.2.1#990e55675e126e5c6a602c7f9c33b770d1b1de72"
 dependencies = [
  "capnp",
  "capnpc",
