@@ -1,5 +1,5 @@
-use libeval::packet;
 use std::path::PathBuf;
+use vs_dt::packet;
 
 use crate::error::ParseError;
 use crate::zmachine::{ActorExpr, InstrExtra, Instruction};
