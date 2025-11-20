@@ -12,6 +12,7 @@ openssl = "0.10.74"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.16"
 tracing = "0.1.41"
+vs-dt = { path = "../vs-dt" }
 zpr = { git = "https://github.com/org-zpr/zpr-core.git", tag = "zpr-0.2.1" }
 
 [dev-dependencies]
