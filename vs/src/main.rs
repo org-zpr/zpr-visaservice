@@ -13,6 +13,7 @@ mod admin_service;
 mod assembly;
 mod config;
 mod connection_control;
+mod cparam;
 mod error;
 mod logging;
 mod policy_mgr;
@@ -32,7 +33,7 @@ use crate::logging::targets::MAIN;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 
-const MAX_VISA_REQUEST_WORKERS: usize = 4;
+const MAX_VISA_REQUEST_WORKERS: usize = 1024;
 
 /// vs - ZPR visa service
 #[derive(Parser, Debug)]
