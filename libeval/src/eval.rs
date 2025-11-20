@@ -1,8 +1,10 @@
 use crate::actor::Actor;
 use crate::attribute::{Attribute, key};
 use crate::logging::targets::EVAL;
-use crate::packet::{PacketDesc, ip_proto};
 use crate::policy::Policy;
+
+use vs_dt::packet::ip_proto;
+use vs_dt::vsapi_types::PacketDesc;
 
 use serde::Serialize;
 use std::collections::HashMap;

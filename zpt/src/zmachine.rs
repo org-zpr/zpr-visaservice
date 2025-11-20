@@ -12,7 +12,8 @@ use crate::out::OutputFormatter;
 use crate::pio;
 use libeval::actor::Actor;
 use libeval::eval::{EvalContext, EvalDecision};
-use libeval::packet::{self, PacketDesc};
+use vs_dt::packet;
+use vs_dt::vsapi_types::PacketDesc;
 
 const DEF_SOURCE_ADDR: &str = "fd5a:5052:3000::1";
 const DEF_DEST_ADDR: &str = "fd5a:5052:3000::2";

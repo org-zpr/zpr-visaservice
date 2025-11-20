@@ -62,12 +62,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.100"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -215,12 +209,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
-name = "either"
-version = "1.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
-
-[[package]]
 name = "embedded-io"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -338,15 +326,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 
 [[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -384,7 +363,8 @@ dependencies = [
  "serde",
  "thiserror",
  "tracing",
- "zpr-policy",
+ "vs-dt",
+ "zpr 0.2.1",
 ]
 
 [[package]]
@@ -542,29 +522,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89ae43fd86e4158d6db51ad8e2b80f313af9cc74f5c0e03ccb87de09998732de"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "prost"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
-dependencies = [
- "bytes",
- "prost-derive",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
-dependencies = [
- "anyhow",
- "itertools",
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -773,18 +730,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.16"
+version = "2.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3467d614147380f2e4e374161426ff399c91084acd2363eaf549172b3d5e60c0"
+checksum = "f63587ca0f12b72a0600bcba1d40081f830876000bb46dd2337a3051618f4fc8"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.16"
+version = "2.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c5e1be1c48b9172ee610da68fd9cd2770e7a4056cb3fc98710ee6906f0c7960"
+checksum = "3ff15c8ecd7de3849db632e14d18d2571fa09dfc5ed93479bc4485c7a517c913"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -892,6 +849,15 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "vs-dt"
+version = "0.1.0"
+dependencies = [
+ "capnp",
+ "thiserror",
+ "zpr 0.2.0",
+]
 
 [[package]]
 name = "wasi"
@@ -1219,8 +1185,8 @@ dependencies = [
 
 [[package]]
 name = "zpr"
-version = "0.2.1"
-source = "git+https://github.com/org-zpr/zpr-core.git?tag=zpr-0.2.1#990e55675e126e5c6a602c7f9c33b770d1b1de72"
+version = "0.2.0"
+source = "git+https://github.com/org-zpr/zpr-core.git?tag=zpr-0.2.0#7308de36e64db88b1e5c4871a04bb52e9972b851"
 dependencies = [
  "capnp",
  "capnpc",
@@ -1230,13 +1196,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "zpr-policy"
-version = "0.14.0"
-source = "git+https://github.com/org-zpr/zpr-policy-rs.git?tag=v0.9.1#1192ff85110b4c01da432b7ace485d9a283720e6"
+name = "zpr"
+version = "0.2.1"
+source = "git+https://github.com/org-zpr/zpr-core.git?tag=zpr-0.2.1#990e55675e126e5c6a602c7f9c33b770d1b1de72"
 dependencies = [
  "capnp",
  "capnpc",
- "prost",
+ "open-enum",
+ "strum",
+ "zerocopy",
 ]
 
 [[package]]
@@ -1256,5 +1224,6 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
- "zpr",
+ "vs-dt",
+ "zpr 0.2.1",
 ]
