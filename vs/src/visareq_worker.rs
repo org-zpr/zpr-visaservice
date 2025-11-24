@@ -98,8 +98,8 @@ impl VisaRequestJob {
 /// This is just a rough sketch for now.
 async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
     // Run the job, send the result back over the job response channel.
-    let rr = process_visa_request(asm, &job).await;
-    job.complete(rr);
+    let vrr = process_visa_request(asm, &job).await;
+    job.complete(vrr);
 }
 
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
