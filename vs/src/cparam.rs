@@ -143,13 +143,13 @@ impl CParam {
         Err(VSError::ParamError(format!("param {name} not found")))
     }
 
-    /// Helper to extract a String type param with given key from a list.
-    pub fn get_string(params: &[CParam], name: &str) -> Result<String, VSError> {
+    /// Get a string param with given key from a list as a reference.
+    pub fn get_string<'a>(params: &'a [CParam], name: &str) -> Result<&'a str, VSError> {
         for pp in params {
             if pp.name == name {
                 match &pp.value {
                     CParamValue::String(s) => {
-                        return Ok(s.clone());
+                        return Ok(s);
                     }
                     _ => {
                         return Err(VSError::ParamError(format!(

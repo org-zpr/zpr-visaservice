@@ -108,7 +108,8 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    let (vreq_tx, vreq_rx) = mpsc::channel::<visareq_worker::VisaRequestJob>(1024);
+    let (vreq_tx, vreq_rx) =
+        mpsc::channel::<visareq_worker::VisaRequestJob>(zpr::VISA_REQUEST_QUEUE_DEPTH);
 
     let asm = Arc::new(Assembly {
         system_start_time: std::time::Instant::now(),
@@ -148,8 +149,7 @@ fn main() -> std::process::ExitCode {
         ));
     });
 
-    // TODO: spawn or spawn local?
-    js.spawn(visareq_worker::launch_arena(
+    js.spawn_local(visareq_worker::launch_arena(
         asm.clone(),
         vreq_rx,
         zpr::MAX_VISA_REQUEST_WORKERS,

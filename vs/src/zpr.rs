@@ -4,6 +4,7 @@
 use std::net::Ipv6Addr;
 
 pub const MAX_VISA_REQUEST_WORKERS: usize = 1024;
+pub const VISA_REQUEST_QUEUE_DEPTH: usize = 1024;
 
 // We only load policy files built by this version or later.
 pub const POLICY_MIN_COMPILER_MAJOR: u32 = 0;

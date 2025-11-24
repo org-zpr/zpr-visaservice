@@ -21,6 +21,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use futures::StreamExt;
+use futures::future::FutureExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
@@ -58,10 +59,7 @@ pub async fn launch_arena(
     // TODO: This looks slick but we may want to know when we are under pressure.
     stream
         .for_each_concurrent(max_concurrent, |job| {
-            let asm = asm.clone();
-            async move {
-                process_visa_request_job(asm, job).await;
-            }
+            tokio::spawn(process_visa_request_job(asm.clone(), job)).map(|r| r.unwrap())
         })
         .await;
 }
@@ -137,7 +135,7 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
                 "visa request from {:?} denied (no match): {}",
                 job.requesting_node, message
             );
-            job.complete(Ok(VisaDecision::Deny(VisaDenialReason::NoMatch)));
+            job.complete(Ok(VisaDecision::Deny(VisaDenialReason::NoMatch)))
         }
         EvalDecision::Allow(hits) => {
             // TODO: For now we pick the first hit.
@@ -148,8 +146,7 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
                         "error creating visa for request from {:?}: {}",
                         job.requesting_node, e
                     );
-                    job.complete(Err(e));
-                    return;
+                    job.complete(Err(e))
                 }
             }
         }
@@ -158,7 +155,7 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
                 "visa request from {:?} denied by policy",
                 job.requesting_node
             );
-            job.complete(Ok(VisaDecision::Deny(VisaDenialReason::Denied)));
+            job.complete(Ok(VisaDecision::Deny(VisaDenialReason::Denied)))
         }
     }
 }
