@@ -1,6 +1,9 @@
 //! ZPR and VS constants.
+//! Placeholder: will be cleaned up and reorganized later.
 
 use std::net::Ipv6Addr;
+
+pub const MAX_VISA_REQUEST_WORKERS: usize = 1024;
 
 // We only load policy files built by this version or later.
 pub const POLICY_MIN_COMPILER_MAJOR: u32 = 0;
@@ -22,3 +25,8 @@ pub const VS_ZPR_ADDR: Ipv6Addr = Ipv6Addr::new(
 
 /// Maximum allowed clock skew allowed during node authentication, in seconds.
 pub const MAX_CLOCK_SKEW_SECS: u64 = 180;
+
+pub const DEFAULT_EXPIRATION_SECONDS: u64 = 4 * 60 * 60; // 4 hours in seconds
+
+pub const PARAM_ZPR_ADDR: &str = "zpr_addr";
+pub const PARAM_AAA_PREFIX: &str = "aaa_prefix";

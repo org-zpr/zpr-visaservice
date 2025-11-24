@@ -2,6 +2,7 @@ use clap::Parser;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{error, info};
 
@@ -12,10 +13,13 @@ mod admin_service;
 mod assembly;
 mod config;
 mod connection_control;
+mod cparam;
 mod error;
 mod logging;
 mod policy_mgr;
 mod signal_worker;
+mod visa_mgr;
+mod visareq_worker;
 mod vsapi_worker;
 mod zpr;
 
@@ -27,6 +31,7 @@ use crate::connection_control::ConnectionControl;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 use crate::policy_mgr::PolicyMgr;
+use crate::visa_mgr::VisaMgr;
 
 /// vs - ZPR visa service
 #[derive(Parser, Debug)]
@@ -103,12 +108,16 @@ fn main() -> std::process::ExitCode {
         }
     };
 
+    let (vreq_tx, vreq_rx) = mpsc::channel::<visareq_worker::VisaRequestJob>(1024);
+
     let asm = Arc::new(Assembly {
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
         policy_mgr: PolicyMgr::new_with_initial_policy(initial_policy),
         actor_db: ActorDb::new(),
         vk_conn: Arc::new(vk_conn),
+        vreq_chan: vreq_tx,
+        visa_mgr: VisaMgr::new(),
     });
 
     let mut js = JoinSet::new();
@@ -126,6 +135,7 @@ fn main() -> std::process::ExitCode {
     ));
 
     let rt_handle = runtime.handle().clone();
+    let admin_asm = asm.clone();
     js.spawn_blocking(move || {
         rt_handle.block_on(start_admin_server(
             &cfg.core.admin_key,
@@ -134,9 +144,16 @@ fn main() -> std::process::ExitCode {
                 cfg.core.vs_addr.unwrap_or(IpAddr::V6(Ipv6Addr::LOCALHOST)),
                 cfg.core.admin_port.unwrap_or(zpr::ADMIN_HTTPS_PORT),
             ),
-            &asm,
+            &admin_asm,
         ));
     });
+
+    // TODO: spawn or spawn local?
+    js.spawn(visareq_worker::launch_arena(
+        asm.clone(),
+        vreq_rx,
+        zpr::MAX_VISA_REQUEST_WORKERS,
+    ));
 
     // TODO: Setup/launch the workers for the visa service. Those that will do the actual work
     // of generating visas, and all the housekeeping.
