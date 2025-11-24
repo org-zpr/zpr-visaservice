@@ -1,11 +1,36 @@
 //! Structs that map to the TOML configuration file for the visa service.
 
 use serde::Deserialize;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::path::PathBuf;
 
 use crate::error::VSError;
-use crate::zpr;
+
+pub const MAX_VISA_REQUEST_WORKERS: usize = 1024;
+pub const VISA_REQUEST_QUEUE_DEPTH: usize = 1024;
+
+// We only load policy files built by this version or later.
+pub const POLICY_MIN_COMPILER_MAJOR: u32 = 0;
+pub const POLICY_MIN_COMPILER_MINOR: u32 = 9;
+pub const POLICY_MIN_COMPILER_PATCH: u32 = 1;
+
+/// Default VSAPI port - must be in sync with compiler since it adds policy for that.
+pub const VSAPI_PORT: u16 = 5002;
+
+/// Default VS admin HTTPS port - must be in sync with compiler since it adds policy for that.
+pub const ADMIN_HTTPS_PORT: u16 = 8182;
+
+pub const VALKEY_URI: &str = "redis://127.0.0.1:6379";
+
+/// Default VS ZPR address - must be in sync with compiler.
+pub const VS_ZPR_ADDR: Ipv6Addr = Ipv6Addr::new(
+    0xfd5a, 0x5052, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001, // fd5a:5052::1
+);
+
+/// Maximum allowed clock skew allowed during node authentication, in seconds.
+pub const MAX_CLOCK_SKEW_SECS: u64 = 180;
+
+pub const DEFAULT_EXPIRATION_SECONDS: u64 = 4 * 60 * 60; // 4 hours in seconds
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields, default)]
@@ -47,12 +72,12 @@ impl Default for VSConfig {
 impl Default for CoreSection {
     fn default() -> Self {
         CoreSection {
-            vs_addr: Some(IpAddr::V6(zpr::VS_ZPR_ADDR)),
-            vsapi_port: Some(zpr::VSAPI_PORT),
-            admin_port: Some(zpr::ADMIN_HTTPS_PORT),
+            vs_addr: Some(IpAddr::V6(VS_ZPR_ADDR)),
+            vsapi_port: Some(VSAPI_PORT),
+            admin_port: Some(ADMIN_HTTPS_PORT),
             admin_cert: PathBuf::from("admin-tls-cert.pem"),
             admin_key: PathBuf::from("admin-tls-key.pem"),
-            vk_uri: Some(zpr::VALKEY_URI.to_string()),
+            vk_uri: Some(VALKEY_URI.to_string()),
         }
     }
 }
@@ -79,7 +104,7 @@ mod test {
         "#,
         )
         .unwrap();
-        assert_eq!(cfg.core.vk_uri, Some(zpr::VALKEY_URI.to_string()));
+        assert_eq!(cfg.core.vk_uri, Some(VALKEY_URI.to_string()));
         assert_eq!(cfg.core.vsapi_port, Some(9999));
     }
 }

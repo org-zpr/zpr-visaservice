@@ -5,6 +5,9 @@ use std::net::IpAddr;
 const IPV4_ADDRESS_SIZE: usize = 4;
 const IPV6_ADDRESS_SIZE: usize = 16;
 
+pub const PARAM_ZPR_ADDR: &str = "zpr_addr";
+pub const PARAM_AAA_PREFIX: &str = "aaa_prefix";
+
 /// CParam models the TLV style connect parameters in the initial connect request for a node.
 #[derive(Debug, Clone)]
 pub struct CParam {

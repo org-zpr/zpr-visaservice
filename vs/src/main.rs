@@ -21,7 +21,6 @@ mod signal_worker;
 mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
-mod zpr;
 
 use crate::actor_db::ActorDb;
 use crate::admin_service::start_admin_server;
@@ -69,9 +68,9 @@ fn main() -> std::process::ExitCode {
     let initial_policy = match pio::load_policy(
         &cli.policy,
         pio::Version(
-            zpr::POLICY_MIN_COMPILER_MAJOR,
-            zpr::POLICY_MIN_COMPILER_MINOR,
-            zpr::POLICY_MIN_COMPILER_PATCH,
+            config::POLICY_MIN_COMPILER_MAJOR,
+            config::POLICY_MIN_COMPILER_MINOR,
+            config::POLICY_MIN_COMPILER_PATCH,
         ),
     ) {
         Ok(p) => p,
@@ -94,7 +93,7 @@ fn main() -> std::process::ExitCode {
     // Just go through steps to get a connection. Placeholder since we don't know
     // where we need it yet.
 
-    let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(zpr::VALKEY_URI);
+    let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(config::VALKEY_URI);
     let vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
     let res = runtime.block_on(async { vk_client.create_multiplexed_tokio_connection().await });
     let (vk_conn, vk_fut) = match res {
@@ -109,7 +108,7 @@ fn main() -> std::process::ExitCode {
     };
 
     let (vreq_tx, vreq_rx) =
-        mpsc::channel::<visareq_worker::VisaRequestJob>(zpr::VISA_REQUEST_QUEUE_DEPTH);
+        mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
 
     let asm = Arc::new(Assembly {
         system_start_time: std::time::Instant::now(),
@@ -130,8 +129,8 @@ fn main() -> std::process::ExitCode {
     js.spawn_local(vsapi_worker::launch(
         asm.clone(),
         SocketAddr::new(
-            cfg.core.vs_addr.unwrap_or(IpAddr::V6(zpr::VS_ZPR_ADDR)),
-            cfg.core.vsapi_port.unwrap_or(zpr::VSAPI_PORT),
+            cfg.core.vs_addr.unwrap_or(IpAddr::V6(config::VS_ZPR_ADDR)),
+            cfg.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
         ),
     ));
 
@@ -143,7 +142,7 @@ fn main() -> std::process::ExitCode {
             &cfg.core.admin_cert,
             SocketAddr::new(
                 cfg.core.vs_addr.unwrap_or(IpAddr::V6(Ipv6Addr::LOCALHOST)),
-                cfg.core.admin_port.unwrap_or(zpr::ADMIN_HTTPS_PORT),
+                cfg.core.admin_port.unwrap_or(config::ADMIN_HTTPS_PORT),
             ),
             &admin_asm,
         ));
@@ -152,7 +151,7 @@ fn main() -> std::process::ExitCode {
     js.spawn_local(visareq_worker::launch_arena(
         asm.clone(),
         vreq_rx,
-        zpr::MAX_VISA_REQUEST_WORKERS,
+        config::MAX_VISA_REQUEST_WORKERS,
     ));
 
     // TODO: Setup/launch the workers for the visa service. Those that will do the actual work
