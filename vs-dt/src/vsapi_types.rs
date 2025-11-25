@@ -1,7 +1,7 @@
 //! API types that are converted into/out-of Capn Proto.
 
-use zpr::vsapi::v1 as vsapi;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use zpr::vsapi::v1 as vsapi;
 
 use crate::error::DTError;
 use crate::packet::ip_proto;
@@ -132,6 +132,13 @@ impl Visa {
                 icmp_bldr.set_icmp_type_code(typecode);
             }
         }
+        if self.constraints.is_some() {
+            unimplemented!("visa constraints serialization not implemented yet");
+        }
+        let mut keyset_bldr = bldr.reborrow().init_session_key();
+        keyset_bldr.set_format(vsapi::KeyFormat::ZprKF01);
+        keyset_bldr.set_ingress_key(&self.session_key.ingress);
+        keyset_bldr.set_egress_key(&self.session_key.egress);
     }
 }
 
