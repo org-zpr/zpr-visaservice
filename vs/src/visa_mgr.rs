@@ -2,8 +2,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::config;
 use crate::error::VSError;
-use crate::zpr;
 use libeval::eval::{Direction, Hit};
 use vs_dt::packet::ip_proto;
 use vs_dt::vsapi_types::{CommFlag, DockPEP, EndpointT, KeySet, PacketDesc, Visa};
@@ -37,7 +37,7 @@ impl VisaMgr {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| VSError::InternalError("system time before UNIX EPOCH".to_string()))?
                 .as_secs();
-            (now + zpr::DEFAULT_EXPIRATION_SECONDS) * 1000
+            (now + config::DEFAULT_EXPIRATION_SECONDS) * 1000
         };
 
         let (source_port, dest_port) = match pdesc.protocol {

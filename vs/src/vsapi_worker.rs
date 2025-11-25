@@ -14,11 +14,12 @@ use libeval::actor::Actor;
 use vs_dt::vsapi_types::PacketDesc;
 
 use crate::assembly::Assembly;
+use crate::config;
+use crate::cparam;
 use crate::cparam::CParam;
 use crate::error::VSError;
 use crate::logging::targets::VSAPI;
 use crate::visareq_worker::{VisaDecision, VisaRequestJob};
-use crate::zpr;
 
 pub async fn launch_capnp(
     asm: Arc<Assembly>,
@@ -298,8 +299,8 @@ impl VisaServiceImpl {
     /// Helper for the connect routine -- returns the two connect params we require: zpr_addr and aaa_prefix,
     /// or errors out.
     fn parse_my_connect_params(&self, params: &[CParam]) -> Result<(IpAddr, IpNet), VSError> {
-        let node_zpr_addr: IpAddr = CParam::get_ipaddr(params, zpr::PARAM_ZPR_ADDR)?;
-        let node_aaa_network_str = CParam::get_string(params, zpr::PARAM_AAA_PREFIX)?;
+        let node_zpr_addr: IpAddr = CParam::get_ipaddr(params, cparam::PARAM_ZPR_ADDR)?;
+        let node_aaa_network_str = CParam::get_string(params, cparam::PARAM_AAA_PREFIX)?;
         let node_aaa_net: IpNet = match node_aaa_network_str.parse() {
             Ok(n) => n,
             Err(_e) => Err(VSError::ParamError(format!(
@@ -443,7 +444,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         let unix_ts = cresp.get_timestamp();
         let now = SystemTime::now();
         let my_unix_ts = now.duration_since(UNIX_EPOCH).unwrap().as_secs();
-        if my_unix_ts.abs_diff(unix_ts) > zpr::MAX_CLOCK_SKEW_SECS {
+        if my_unix_ts.abs_diff(unix_ts) > config::MAX_CLOCK_SKEW_SECS {
             warn!(target: VSAPI, "excess clock skew from {}, authenticate fails", self.remote_cn);
             let mut err_builder = res_builder.init_error();
             write_error(

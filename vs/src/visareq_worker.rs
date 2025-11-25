@@ -21,6 +21,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use futures::StreamExt;
+use futures::future::FutureExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
@@ -58,10 +59,7 @@ pub async fn launch_arena(
     // TODO: This looks slick but we may want to know when we are under pressure.
     stream
         .for_each_concurrent(max_concurrent, |job| {
-            let asm = asm.clone();
-            async move {
-                process_visa_request_job(asm, job).await;
-            }
+            tokio::spawn(process_visa_request_job(asm.clone(), job)).map(|r| r.unwrap())
         })
         .await;
 }
@@ -99,21 +97,25 @@ impl VisaRequestJob {
 ///
 /// This is just a rough sketch for now.
 async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
+    // Run the job, send the result back over the job response channel.
+    let vrr = process_visa_request(asm, &job).await;
+    job.complete(vrr);
+}
+
+async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
     let Some(source_actor) = asm.actor_db.get_actor_by_ip(&job.packet_desc.source_addr) else {
         debug!(
             "source actor not found for visa request from {:?}",
             job.requesting_node
         );
-        job.complete(Ok(VisaDecision::Deny(VisaDenialReason::SourceNotFound)));
-        return;
+        return Ok(VisaDecision::Deny(VisaDenialReason::SourceNotFound));
     };
     let Some(dest_actor) = asm.actor_db.get_actor_by_ip(&job.packet_desc.dest_addr) else {
         debug!(
             "dest actor not found for visa request from {:?}",
             job.requesting_node
         );
-        job.complete(Ok(VisaDecision::Deny(VisaDenialReason::DestNotFound)));
-        return;
+        return Ok(VisaDecision::Deny(VisaDenialReason::DestNotFound));
     };
 
     let policy = asm.policy_mgr.get_current();
@@ -125,8 +127,7 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
                 "error evaluating visa request from {:?}: {}",
                 job.requesting_node, e
             );
-            job.complete(Err(e.into()));
-            return;
+            return Err(e.into());
         }
     };
     drop(ctx);
@@ -137,19 +138,18 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
                 "visa request from {:?} denied (no match): {}",
                 job.requesting_node, message
             );
-            job.complete(Ok(VisaDecision::Deny(VisaDenialReason::NoMatch)));
+            Ok(VisaDecision::Deny(VisaDenialReason::NoMatch))
         }
         EvalDecision::Allow(hits) => {
             // TODO: For now we pick the first hit.
             match asm.visa_mgr.create_visa(&job.packet_desc, &hits[0]) {
-                Ok(visa) => job.complete(Ok(VisaDecision::Allow(visa))),
+                Ok(visa) => Ok(VisaDecision::Allow(visa)),
                 Err(e) => {
                     debug!(
                         "error creating visa for request from {:?}: {}",
                         job.requesting_node, e
                     );
-                    job.complete(Err(e));
-                    return;
+                    Err(e.into())
                 }
             }
         }
@@ -158,7 +158,7 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
                 "visa request from {:?} denied by policy",
                 job.requesting_node
             );
-            job.complete(Ok(VisaDecision::Deny(VisaDenialReason::Denied)));
+            Ok(VisaDecision::Deny(VisaDenialReason::Denied))
         }
     }
 }
