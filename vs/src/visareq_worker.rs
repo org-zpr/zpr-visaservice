@@ -103,14 +103,20 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
 }
 
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
-    let Some(source_actor) = asm.actor_db.get_actor_by_ip(&job.packet_desc.source_addr) else {
+    let Some(source_actor) = asm
+        .actor_db
+        .get_actor_by_zpr_addr(&job.packet_desc.source_addr)
+    else {
         debug!(
             "source actor not found for visa request from {:?}",
             job.requesting_node
         );
         return Ok(VisaDecision::Deny(VisaDenialReason::SourceNotFound));
     };
-    let Some(dest_actor) = asm.actor_db.get_actor_by_ip(&job.packet_desc.dest_addr) else {
+    let Some(dest_actor) = asm
+        .actor_db
+        .get_actor_by_zpr_addr(&job.packet_desc.dest_addr)
+    else {
         debug!(
             "dest actor not found for visa request from {:?}",
             job.requesting_node

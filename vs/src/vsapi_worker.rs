@@ -652,6 +652,14 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             }
         }
 
+        match self.asm.actor_db.remove_actor_by_zpr_addr(&zpr_addr) {
+            Ok(()) => (),
+            Err(e) => {
+                // Caller can't do anything with this. So just log and continue.
+                error!(target: VSAPI, "failed to remove disconnected actor with addr {zpr_addr} from actor db: {}", e);
+            }
+        };
+
         let mut res_builder = resp.get().init_res();
         res_builder.set_ok(());
         Ok(())

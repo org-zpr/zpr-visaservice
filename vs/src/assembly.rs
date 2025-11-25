@@ -12,7 +12,7 @@ pub struct Assembly {
     pub system_start_time: std::time::Instant,
     pub cc: ConnectionControl,
     pub policy_mgr: PolicyMgr,
-    pub actor_db: ActorDb, // manages its own locking
+    pub actor_db: Arc<ActorDb>,
     pub vk_conn: Arc<redis::aio::MultiplexedConnection>,
     pub vreq_chan: mpsc::Sender<crate::visareq_worker::VisaRequestJob>,
     pub visa_mgr: VisaMgr,
