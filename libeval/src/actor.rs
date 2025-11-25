@@ -14,7 +14,7 @@ pub enum AttributeError {
 
 /// Role of the actor. Can be Adapter, Node. As a default
 /// the actor starts as UNKNOWN.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Hash)]
 pub enum Role {
     #[default]
     Unknown,
@@ -25,10 +25,14 @@ pub enum Role {
 /// From the perspective of the evaluator, and actor is just a bunch of
 /// attributes and provided services.  The provided services is stored
 /// under the [Key::SERVICES] attribute key.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Hash)]
 pub struct Actor {
     // Attributes associated with this actor.
     attrs: Vec<Attribute>,
+
+    // Once authenticated, an actor will have one or more identity attributes.
+    // The names are kept here in order.
+    identity_keys: Vec<String>,
 
     // These are all pulled from the attributes vec if/when set.
     cn: Option<String>,
@@ -44,6 +48,25 @@ impl Actor {
 
     pub fn attrs_iter(&self) -> impl Iterator<Item = &Attribute> {
         self.attrs.iter()
+    }
+
+    /// Add the name of an identity attribute. The attribute must
+    /// exist or an error is returned.  The `order` parameter is the
+    /// priority of the key, 0 is highest.  Passing usize::MAX appends
+    /// to the end.
+    pub fn add_identity_key(&mut self, order: usize, key: &str) -> Result<(), AttributeError> {
+        if !self.has_attribute_named(key) {
+            return Err(AttributeError::AttributeError(format!(
+                "cannot add identity key '{}', attribute not present",
+                key
+            )));
+        }
+        if order >= self.identity_keys.len() {
+            self.identity_keys.push(key.to_string());
+        } else {
+            self.identity_keys.insert(order, key.to_string());
+        }
+        Ok(())
     }
 
     /// Adds or replaces the attribute with name `key`.
@@ -91,6 +114,26 @@ impl Actor {
         }
         self.attrs.push(attr);
         Ok(())
+    }
+
+    /// If there are identity attributes, the values are returned here
+    /// in order.
+    pub fn get_identity(&self) -> Option<Vec<&str>> {
+        if self.identity_keys.is_empty() {
+            None
+        } else {
+            Some(
+                self.identity_keys
+                    .iter()
+                    .filter_map(|key| {
+                        self.attrs
+                            .iter()
+                            .find(|a| a.get_key() == key)
+                            .map(|a| a.get_value())
+                    })
+                    .collect(),
+            )
+        }
     }
 
     pub fn is_provider(&self) -> bool {
