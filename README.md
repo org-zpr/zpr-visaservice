@@ -8,8 +8,33 @@ independetly to meet the needs of the reference implementation.
 
 Run `make` to build.  To run the tests do `make test`.
 
+### Required repos
+
+The build will automatically download several other ZPR repositories as
+dependencies. These include:
+
+* `zpr-core` and its submodules
+* `zpr-policy-go`
+* `zpr-policy-rs`
+* `zpr-vsapi-go`
+
+Follow the [Build Notes](https://github.com/org-zpr/zpr-core/blob/main/README.md#build-notes)
+instructions in `zpr-core` to ensure these download successfully.
+
+### Built executables
+
 After a successful build the `vservice` binary will be found in
 `core/build`.
+
+More executables are also built:
+
+* `./core/build/vservice`
+* `./vs/target/debug/vs`
+* `./vs-admin/target/debug/vs-admin`
+* `./vs-conform/build/vs-conform`
+* `./zpt/target/debug/zpt`
+
+<!-- Is this list complete? -->
 
 When compiler is updated you may need to rebuild the pregenerated policy
 files used for testing.  Do that with: `make ZPLC=/path/to/zplc pregen`.
