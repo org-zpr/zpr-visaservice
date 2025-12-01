@@ -14,7 +14,7 @@ pub enum AttributeError {
 
 /// Role of the actor. Can be Adapter, Node. As a default
 /// the actor starts as UNKNOWN.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Hash)]
 pub enum Role {
     #[default]
     Unknown,
@@ -25,10 +25,14 @@ pub enum Role {
 /// From the perspective of the evaluator, and actor is just a bunch of
 /// attributes and provided services.  The provided services is stored
 /// under the [Key::SERVICES] attribute key.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Hash)]
 pub struct Actor {
     // Attributes associated with this actor.
     attrs: Vec<Attribute>,
+
+    // Once authenticated, an actor will have one or more identity attributes.
+    // The names are kept here in order.
+    identity_keys: Vec<String>,
 
     // These are all pulled from the attributes vec if/when set.
     cn: Option<String>,
@@ -44,6 +48,25 @@ impl Actor {
 
     pub fn attrs_iter(&self) -> impl Iterator<Item = &Attribute> {
         self.attrs.iter()
+    }
+
+    /// Add the name of an identity attribute. The attribute must
+    /// exist or an error is returned.  The `order` parameter is the
+    /// priority of the key, 0 is highest.  Passing usize::MAX appends
+    /// to the end.
+    pub fn add_identity_key(&mut self, order: usize, key: &str) -> Result<(), AttributeError> {
+        if !self.has_attribute_named(key) {
+            return Err(AttributeError::AttributeError(format!(
+                "cannot add identity key '{}', attribute not present",
+                key
+            )));
+        }
+        if order >= self.identity_keys.len() {
+            self.identity_keys.push(key.to_string());
+        } else {
+            self.identity_keys.insert(order, key.to_string());
+        }
+        Ok(())
     }
 
     /// Adds or replaces the attribute with name `key`.
@@ -91,6 +114,26 @@ impl Actor {
         }
         self.attrs.push(attr);
         Ok(())
+    }
+
+    /// If there are identity attributes, the values are returned here
+    /// in order.
+    pub fn get_identity(&self) -> Option<Vec<&str>> {
+        if self.identity_keys.is_empty() {
+            None
+        } else {
+            Some(
+                self.identity_keys
+                    .iter()
+                    .filter_map(|key| {
+                        self.attrs
+                            .iter()
+                            .find(|a| a.get_key() == key)
+                            .map(|a| a.get_value())
+                    })
+                    .collect(),
+            )
+        }
     }
 
     pub fn is_provider(&self) -> bool {
@@ -349,5 +392,250 @@ mod tests {
         assert_eq!(actor.role, Role::Node);
         assert!(actor.is_node());
         assert_eq!(actor.attrs.len(), 2); // Both attributes are kept in the list
+    }
+
+    #[test]
+    fn test_add_identity_key_success() {
+        let mut actor = Actor::new();
+        // First add an attribute that can be used as an identity
+        let attr = Attribute::new_expiring_in(
+            "user.email".to_string(),
+            "test@example.com".to_string(),
+            Duration::from_secs(3600),
+        );
+        actor.add_attribute(attr).unwrap();
+
+        // Now add it as an identity key
+        let result = actor.add_identity_key(0, "user.email");
+
+        assert!(result.is_ok());
+        assert_eq!(actor.identity_keys.len(), 1);
+        assert_eq!(actor.identity_keys[0], "user.email");
+    }
+
+    #[test]
+    fn test_add_identity_key_missing_attribute() {
+        let mut actor = Actor::new();
+
+        // Try to add an identity key for an attribute that doesn't exist
+        let result = actor.add_identity_key(0, "user.email");
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("attribute not present")
+        );
+        assert_eq!(actor.identity_keys.len(), 0);
+    }
+
+    #[test]
+    fn test_add_identity_key_at_beginning() {
+        let mut actor = Actor::new();
+        // Add multiple attributes
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.email".to_string(),
+                "test@example.com".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.id".to_string(),
+                "12345".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.name".to_string(),
+                "John Doe".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+
+        // Add identity keys in specific order
+        actor.add_identity_key(0, "user.email").unwrap();
+        actor.add_identity_key(0, "user.id").unwrap(); // Insert at beginning
+
+        assert_eq!(actor.identity_keys.len(), 2);
+        assert_eq!(actor.identity_keys[0], "user.id");
+        assert_eq!(actor.identity_keys[1], "user.email");
+    }
+
+    #[test]
+    fn test_add_identity_key_at_end() {
+        let mut actor = Actor::new();
+        // Add multiple attributes
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.email".to_string(),
+                "test@example.com".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.id".to_string(),
+                "12345".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+
+        // Add identity keys
+        actor.add_identity_key(0, "user.email").unwrap();
+        actor.add_identity_key(usize::MAX, "user.id").unwrap(); // Append to end
+
+        assert_eq!(actor.identity_keys.len(), 2);
+        assert_eq!(actor.identity_keys[0], "user.email");
+        assert_eq!(actor.identity_keys[1], "user.id");
+    }
+
+    #[test]
+    fn test_add_identity_key_in_middle() {
+        let mut actor = Actor::new();
+        // Add multiple attributes
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.email".to_string(),
+                "test@example.com".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.id".to_string(),
+                "12345".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.name".to_string(),
+                "John Doe".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+
+        // Add identity keys
+        actor.add_identity_key(0, "user.email").unwrap();
+        actor.add_identity_key(1, "user.name").unwrap();
+        actor.add_identity_key(1, "user.id").unwrap(); // Insert in middle
+
+        assert_eq!(actor.identity_keys.len(), 3);
+        assert_eq!(actor.identity_keys[0], "user.email");
+        assert_eq!(actor.identity_keys[1], "user.id");
+        assert_eq!(actor.identity_keys[2], "user.name");
+    }
+
+    #[test]
+    fn test_get_identity_empty() {
+        let actor = Actor::new();
+
+        let identity = actor.get_identity();
+
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn test_get_identity_single_key() {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.email".to_string(),
+                "test@example.com".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor.add_identity_key(0, "user.email").unwrap();
+
+        let identity = actor.get_identity();
+
+        assert!(identity.is_some());
+        let identity = identity.unwrap();
+        assert_eq!(identity.len(), 1);
+        assert_eq!(identity[0], "test@example.com");
+    }
+
+    #[test]
+    fn test_get_identity_multiple_keys() {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.email".to_string(),
+                "test@example.com".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.id".to_string(),
+                "12345".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "user.name".to_string(),
+                "John Doe".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+
+        actor.add_identity_key(0, "user.email").unwrap();
+        actor.add_identity_key(1, "user.id").unwrap();
+        actor.add_identity_key(2, "user.name").unwrap();
+
+        let identity = actor.get_identity();
+
+        assert!(identity.is_some());
+        let identity = identity.unwrap();
+        assert_eq!(identity.len(), 3);
+        assert_eq!(identity[0], "test@example.com");
+        assert_eq!(identity[1], "12345");
+        assert_eq!(identity[2], "John Doe");
+    }
+
+    #[test]
+    fn test_get_identity_preserves_order() {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "attr.a".to_string(),
+                "value_a".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "attr.b".to_string(),
+                "value_b".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        actor
+            .add_attribute(Attribute::new_expiring_in(
+                "attr.c".to_string(),
+                "value_c".to_string(),
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+
+        // Add in specific order: b, c, a
+        actor.add_identity_key(0, "attr.b").unwrap();
+        actor.add_identity_key(1, "attr.c").unwrap();
+        actor.add_identity_key(2, "attr.a").unwrap();
+
+        let identity = actor.get_identity();
+
+        assert!(identity.is_some());
+        let identity = identity.unwrap();
+        assert_eq!(identity.len(), 3);
+        // Should return values in the order keys were added
+        assert_eq!(identity[0], "value_b");
+        assert_eq!(identity[1], "value_c");
+        assert_eq!(identity[2], "value_a");
     }
 }

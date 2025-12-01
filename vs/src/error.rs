@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use libeval::actor;
 use libeval::eval::EvalError;
 
 #[derive(Debug, Error)]
@@ -33,4 +34,7 @@ pub enum VSError {
 
     #[error("Capn Proto not in schema: {0}")]
     CpnpNotInSchema(#[from] capnp::NotInSchema),
+
+    #[error("attribute error: {0}")]
+    AttributeError(#[from] actor::AttributeError),
 }

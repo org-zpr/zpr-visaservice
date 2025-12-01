@@ -6,6 +6,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{error, info};
 
+use libeval::actor::Actor;
+use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
 use libeval::pio;
 
 mod actor_db;
@@ -27,6 +29,7 @@ use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
+use crate::error::VSError;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 use crate::policy_mgr::PolicyMgr;
@@ -110,11 +113,20 @@ fn main() -> std::process::ExitCode {
     let (vreq_tx, vreq_rx) =
         mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
 
+    let actor_db =
+        match instantiate_actor_db(cfg.core.vs_addr.unwrap_or(IpAddr::V6(config::VS_ZPR_ADDR))) {
+            Ok(adb) => adb,
+            Err(e) => {
+                error!(target: MAIN, "failed to instantiate actor database: {}", e);
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+
     let asm = Arc::new(Assembly {
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
         policy_mgr: PolicyMgr::new_with_initial_policy(initial_policy),
-        actor_db: ActorDb::new(),
+        actor_db: Arc::new(actor_db),
         vk_conn: Arc::new(vk_conn),
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(),
@@ -165,4 +177,29 @@ fn main() -> std::process::ExitCode {
 
     info!(target: MAIN, "exiting");
     std::process::ExitCode::SUCCESS
+}
+
+fn instantiate_actor_db(vs_addr: IpAddr) -> Result<ActorDb, VSError> {
+    let adb = ActorDb::new();
+    // We are the visa service. As we say so it shall be.
+    let vs_actor = {
+        let mut vsa = Actor::new();
+        vsa.add_attribute(Attribute::new_non_expiring(
+            key::ZPR_ADDR.into(),
+            vs_addr.to_string(),
+        ))?;
+        vsa.add_attribute(Attribute::new_non_expiring(key::CN.into(), "zpr.vs".into()))?;
+        vsa.add_attribute(Attribute::new_non_expiring(
+            key::ROLE.into(),
+            ROLE_ADAPTER.into(),
+        ))?;
+        vsa.add_attribute(Attribute::new_non_expiring(
+            key::SERVICES.into(),
+            "/zpr/visaservice,/zpr/visaservice/admin".into(),
+        ))?;
+        vsa.add_identity_key(0, key::CN.into())?;
+        vsa
+    };
+    adb.add_adapter(vs_actor)?;
+    Ok(adb)
 }

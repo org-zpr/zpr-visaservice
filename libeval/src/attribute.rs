@@ -16,6 +16,8 @@ pub mod key {
     /// List of services provided.
     pub const SERVICES: &str = "zpr.services";
 
+    pub const ACTOR_HASH: &str = "zpr.actor_hash";
+
     /// CN value
     pub const CN: &str = "endpoint.zpr.adapter.cn";
 
@@ -32,7 +34,7 @@ pub mod key {
     pub const VINST: &str = "zpr.vinst";
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Hash)]
 #[allow(dead_code)]
 pub struct Attribute {
     key: String,

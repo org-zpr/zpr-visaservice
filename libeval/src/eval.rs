@@ -9,10 +9,12 @@ use vs_dt::vsapi_types::PacketDesc;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, warn};
+
 use zpr::policy::v1 as policy_capnp;
 
 /// The result of evaluating a policy against a communicating pair of
@@ -407,6 +409,30 @@ impl EvalContext {
                 self.policy.get_vinst().to_string(),
             ))
             .unwrap();
+
+        // Policy configuration also tells us what attributes are tied to identity.
+        // TODO: use policy to figure out the identity attributes.
+        // For now this is just a hack.  We try CN, address, or if those fail we use the hash.
+        if actor.has_attribute_named(key::CN) {
+            // use cn
+            actor.add_identity_key(0, key::CN).unwrap();
+        } else if actor.has_attribute_named(key::ZPR_ADDR) {
+            // use addr
+            actor.add_identity_key(0, key::ZPR_ADDR).unwrap();
+        } else {
+            // use hash
+            let mut s = DefaultHasher::new();
+            actor.hash(&mut s);
+            let hash_str = format!("hash:{:x}", s.finish());
+            actor
+                .add_attribute(Attribute::new_non_expiring(
+                    key::ACTOR_HASH.into(),
+                    hash_str,
+                ))
+                .unwrap();
+            actor.add_identity_key(0, key::ACTOR_HASH).unwrap();
+        }
+
         Ok(actor)
     }
 
