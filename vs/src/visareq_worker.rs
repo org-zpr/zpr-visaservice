@@ -29,11 +29,11 @@ use tracing::{debug, info, warn};
 use crate::assembly::Assembly;
 use crate::error::VSError;
 use libeval::eval::{EvalContext, EvalDecision};
-use vs_dt::vsapi_types::{PacketDesc, Visa, VisaDenialReason};
+use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
 pub enum VisaDecision {
     Allow(Visa),
-    Deny(VisaDenialReason),
+    Deny(DenyCode),
 }
 
 /// The result is either a [Visa], or a regular denial, or there was an unexpected failure
@@ -105,23 +105,23 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
     let Some(source_actor) = asm
         .actor_db
-        .get_actor_by_zpr_addr(&job.packet_desc.source_addr)
+        .get_actor_by_zpr_addr(&job.packet_desc.source_addr())
     else {
         debug!(
             "source actor not found for visa request from {:?}",
             job.requesting_node
         );
-        return Ok(VisaDecision::Deny(VisaDenialReason::SourceNotFound));
+        return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
     };
     let Some(dest_actor) = asm
         .actor_db
-        .get_actor_by_zpr_addr(&job.packet_desc.dest_addr)
+        .get_actor_by_zpr_addr(&job.packet_desc.dest_addr())
     else {
         debug!(
             "dest actor not found for visa request from {:?}",
             job.requesting_node
         );
-        return Ok(VisaDecision::Deny(VisaDenialReason::DestNotFound));
+        return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
     };
 
     let policy = asm.policy_mgr.get_current();
@@ -144,7 +144,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
                 "visa request from {:?} denied (no match): {}",
                 job.requesting_node, message
             );
-            Ok(VisaDecision::Deny(VisaDenialReason::NoMatch))
+            Ok(VisaDecision::Deny(DenyCode::NoMatch))
         }
         EvalDecision::Allow(hits) => {
             // TODO: For now we pick the first hit.
@@ -164,7 +164,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
                 "visa request from {:?} denied by policy",
                 job.requesting_node
             );
-            Ok(VisaDecision::Deny(VisaDenialReason::Denied))
+            Ok(VisaDecision::Deny(DenyCode::Denied))
         }
     }
 }

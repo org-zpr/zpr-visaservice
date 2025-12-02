@@ -1,8 +1,20 @@
 use std::path::PathBuf;
-use vs_dt::packet;
+use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
 use crate::error::ParseError;
 use crate::zmachine::{ActorExpr, InstrExtra, Instruction};
+
+mod packet {
+    #[allow(dead_code)]
+    pub mod tcp {
+        pub const FIN: u8 = 0x01;
+        pub const SYN: u8 = 0x02;
+        pub const RST: u8 = 0x04;
+        pub const PSH: u8 = 0x08;
+        pub const ACK: u8 = 0x10;
+        pub const URG: u8 = 0x20;
+    }
+}
 
 pub fn parse(input_line: &str) -> Result<Instruction, ParseError> {
     let mut parsing = Parsing::new(input_line);
@@ -144,7 +156,7 @@ fn parse_tcp_expr(expr: String) -> Result<Instruction, ParseError> {
     };
 
     Ok(Instruction::Eval {
-        prot: packet::ip_proto::TCP,
+        prot: ip_proto::TCP,
         source_expr,
         dest_expr,
         extra: flags,
@@ -162,7 +174,7 @@ fn parse_udp_expr(expr: String) -> Result<Instruction, ParseError> {
         ));
     }
     Ok(Instruction::Eval {
-        prot: packet::ip_proto::UDP,
+        prot: ip_proto::UDP,
         source_expr,
         dest_expr,
         extra: None,
@@ -245,7 +257,7 @@ fn parse_icmp6_expr(expr: String) -> Result<Instruction, ParseError> {
     }
 
     Ok(Instruction::Eval {
-        prot: packet::ip_proto::IPV6_ICMP,
+        prot: ip_proto::IPV6_ICMP,
         source_expr,
         dest_expr,
         extra: Some(InstrExtra::IcmpTypeCode(icmp_type, icmp_code)),
@@ -521,7 +533,7 @@ mod test {
                 dest_expr,
                 extra,
             } => {
-                assert_eq!(prot, packet::ip_proto::TCP);
+                assert_eq!(prot, ip_proto::TCP);
                 match source_expr {
                     ActorExpr::ActorNameAndPort(name, port) => {
                         assert_eq!(name, "alice");
@@ -562,7 +574,7 @@ mod test {
                     dest_expr,
                     extra,
                 } => {
-                    assert_eq!(prot, packet::ip_proto::TCP);
+                    assert_eq!(prot, ip_proto::TCP);
                     match source_expr {
                         ActorExpr::ActorNameAndPort(name, port) => {
                             assert_eq!(name, "alice");
@@ -597,7 +609,7 @@ mod test {
                 dest_expr,
                 extra,
             } => {
-                assert_eq!(prot, packet::ip_proto::UDP);
+                assert_eq!(prot, ip_proto::UDP);
                 match source_expr {
                     ActorExpr::ActorNameAndPort(name, port) => {
                         assert_eq!(name, "alice");
@@ -636,7 +648,7 @@ mod test {
                     dest_expr,
                     extra,
                 } => {
-                    assert_eq!(prot, packet::ip_proto::IPV6_ICMP);
+                    assert_eq!(prot, ip_proto::IPV6_ICMP);
                     match source_expr {
                         ActorExpr::ActorName(name) => {
                             assert_eq!(name, "alice", "failed to parse {input_line}");
