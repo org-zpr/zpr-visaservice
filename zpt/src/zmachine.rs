@@ -12,8 +12,8 @@ use crate::out::OutputFormatter;
 use crate::pio;
 use libeval::actor::Actor;
 use libeval::eval::{EvalContext, EvalDecision};
-use vs_dt::packet;
-use vs_dt::vsapi_types::PacketDesc;
+use zpr::vsapi_types::PacketDesc;
+use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
 const DEF_SOURCE_ADDR: &str = "fd5a:5052:3000::1";
 const DEF_DEST_ADDR: &str = "fd5a:5052:3000::2";
@@ -114,11 +114,9 @@ impl ZMachine {
                     ));
                 }
                 match *prot {
-                    packet::ip_proto::TCP => {
-                        self.eval_tcp(state, source_expr, dest_expr, *extra, outfmt)
-                    }
-                    packet::ip_proto::UDP => self.eval_udp(state, source_expr, dest_expr, outfmt),
-                    packet::ip_proto::IPV6_ICMP => {
+                    ip_proto::TCP => self.eval_tcp(state, source_expr, dest_expr, *extra, outfmt),
+                    ip_proto::UDP => self.eval_udp(state, source_expr, dest_expr, outfmt),
+                    ip_proto::IPV6_ICMP => {
                         self.eval_icmp(state, source_expr, dest_expr, *extra, outfmt)
                     }
                     _ => {
@@ -262,7 +260,7 @@ impl ZMachine {
         };
         let src_actor = self.resolve_actor_no_port(state, source_expr)?;
         let dst_actor = self.resolve_actor_no_port(state, dest_expr)?;
-        let pd = PacketDesc::new_icmpv6(DEF_SOURCE_ADDR, DEF_DEST_ADDR, icmp_type, icmp_code);
+        let pd = PacketDesc::new_icmp(DEF_SOURCE_ADDR, DEF_DEST_ADDR, icmp_type, icmp_code);
         self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
     }
 

@@ -3,8 +3,8 @@ use crate::attribute::{Attribute, key};
 use crate::logging::targets::EVAL;
 use crate::policy::Policy;
 
-use vs_dt::packet::ip_proto;
-use vs_dt::vsapi_types::PacketDesc;
+use zpr::vsapi_types::PacketDesc;
+use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -232,7 +232,7 @@ impl EvalContext {
         request: &PacketDesc,
     ) -> Result<EvalDecision, EvalError> {
         if !matches!(
-            request.protocol,
+            request.protocol(),
             ip_proto::TCP | ip_proto::UDP | ip_proto::IPV6_ICMP
         ) {
             return Ok(EvalDecision::NoMatch(
@@ -291,7 +291,7 @@ impl EvalContext {
         let match_source_port;
         let match_dest_port;
 
-        match request.protocol {
+        match request.protocol() {
             // For TCP/UDP if request was using a high numberd "client" port, grant the visa for
             // any client port.
             //
@@ -303,41 +303,41 @@ impl EvalContext {
             //
             ip_proto::TCP | ip_proto::UDP => match hit.direction {
                 Direction::Forward => {
-                    if request.source_port > 1023 {
+                    if request.source_port() > 1023 {
                         match_source_port = 0;
                     } else {
-                        match_source_port = request.source_port;
+                        match_source_port = request.source_port();
                     }
-                    match_dest_port = request.dest_port;
+                    match_dest_port = request.dest_port();
                 }
                 Direction::Reverse => {
-                    if request.dest_port > 1023 {
+                    if request.dest_port() > 1023 {
                         match_dest_port = 0;
                     } else {
-                        match_dest_port = request.dest_port;
+                        match_dest_port = request.dest_port();
                     }
-                    match_source_port = request.source_port;
+                    match_source_port = request.source_port();
                 }
             },
             ip_proto::IPV6_ICMP => {
                 // For ICMPv6 the source port is the ICMP type.
                 // The dest port is the ICMP code.
                 // TODO: We do not yet encode ICMP codes into the binary policy format.
-                match_source_port = request.source_port;
-                match_dest_port = request.dest_port;
+                match_source_port = request.source_port();
+                match_dest_port = request.dest_port();
             }
             _ => {
                 return Err(EvalError::UnsupportedProtocol(format!(
                     "unsupported protocol {}",
-                    request.protocol
+                    request.protocol()
                 )));
             }
         }
 
         Ok(VisaProps {
-            source_addr: request.source_addr,
-            dest_addr: request.dest_addr,
-            protocol: request.protocol,
+            source_addr: request.source_addr().clone(),
+            dest_addr: request.dest_addr().clone(),
+            protocol: request.protocol(),
             source_port: match_source_port,
             dest_port: match_dest_port,
             constraints: None, // TODO
@@ -653,23 +653,23 @@ impl EvalContext {
     ) -> Option<ScopeMatchType> {
         // Each policy line describes access to a service.
         for scope in com_policy.get_scope().unwrap().iter() {
-            if scope.get_protocol() != request.protocol {
+            if scope.get_protocol() != request.protocol() {
                 continue;
             }
             let scope_match_type = match scope.which() {
                 Ok(policy_capnp::scope::Port(pnum)) => {
-                    if request.protocol == ip_proto::IPV6_ICMP {
+                    if request.protocol() == ip_proto::IPV6_ICMP {
                         let allow_icmp_type = pnum.get_port_num();
-                        if request.source_port == allow_icmp_type {
+                        if request.source_port() == allow_icmp_type {
                             Some(ScopeMatchType::Forward)
                         } else {
                             None
                         }
                     } else {
                         let allow_service_port_num = pnum.get_port_num();
-                        if request.dest_port == allow_service_port_num {
+                        if request.dest_port() == allow_service_port_num {
                             Some(ScopeMatchType::Forward)
-                        } else if request.source_port == allow_service_port_num {
+                        } else if request.source_port() == allow_service_port_num {
                             Some(ScopeMatchType::Reverse)
                         } else {
                             None
@@ -677,15 +677,15 @@ impl EvalContext {
                     }
                 }
                 Ok(policy_capnp::scope::PortRange(pr)) => {
-                    if request.protocol == ip_proto::IPV6_ICMP {
+                    if request.protocol() == ip_proto::IPV6_ICMP {
                         let icmp_type_request = pr.get_low();
                         let icmp_type_response = pr.get_high();
 
                         // Forward match if SRC->DST using the REQUEST type.
                         // Reverse match is SRC->DST using the RESPONSE type.
-                        if request.source_port == icmp_type_request {
+                        if request.source_port() == icmp_type_request {
                             Some(ScopeMatchType::Forward)
-                        } else if request.source_port == icmp_type_response {
+                        } else if request.source_port() == icmp_type_response {
                             Some(ScopeMatchType::Reverse)
                         } else {
                             None
@@ -693,9 +693,10 @@ impl EvalContext {
                     } else {
                         let lowport = pr.get_low();
                         let highport = pr.get_high();
-                        if request.dest_port >= lowport && request.dest_port <= highport {
+                        if request.dest_port() >= lowport && request.dest_port() <= highport {
                             Some(ScopeMatchType::Forward)
-                        } else if request.source_port >= lowport && request.source_port <= highport
+                        } else if request.source_port() >= lowport
+                            && request.source_port() <= highport
                         {
                             Some(ScopeMatchType::Reverse)
                         } else {
@@ -711,7 +712,7 @@ impl EvalContext {
             let scope_match_type = scope_match_type.unwrap();
 
             // If we are UDP and the UDP-one-way flag is set, then reverse match is not permitted.
-            if request.protocol == ip_proto::UDP && scope_match_type == ScopeMatchType::Reverse {
+            if request.protocol() == ip_proto::UDP && scope_match_type == ScopeMatchType::Reverse {
                 match scope.get_flag() {
                     Ok(policy_capnp::ScopeFlag::UdpOneWay) => {
                         // Reverse not allowed, this is a one-way UDP service.
@@ -848,9 +849,9 @@ mod test {
                     vinfo.zpl,
                     "(line 2) allow red users to access content:red services"
                 );
-                assert_eq!(vinfo.source_addr, packet.source_addr);
-                assert_eq!(vinfo.dest_addr, packet.dest_addr);
-                assert_eq!(vinfo.protocol, packet.protocol);
+                assert_eq!(vinfo.source_addr, packet.five_tuple.src_address);
+                assert_eq!(vinfo.dest_addr, packet.five_tuple.dst_address);
+                assert_eq!(vinfo.protocol, packet.protocol());
                 assert_eq!(vinfo.source_port, 0); // high port becomes 0
                 assert_eq!(vinfo.dest_port, 80);
             }
@@ -949,7 +950,7 @@ mod test {
         service
             .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0);
+        let packet = PacketDesc::new_icmp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0);
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -957,9 +958,9 @@ mod test {
                 assert_eq!(hits.len(), 1);
                 let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
                 assert_eq!(vinfo.zpl, "(line 5) allow red users to access pingdb");
-                assert_eq!(vinfo.source_addr, packet.source_addr);
-                assert_eq!(vinfo.dest_addr, packet.dest_addr);
-                assert_eq!(vinfo.protocol, packet.protocol);
+                assert_eq!(vinfo.source_addr, packet.five_tuple.src_address);
+                assert_eq!(vinfo.dest_addr, packet.five_tuple.dst_address);
+                assert_eq!(vinfo.protocol, packet.protocol());
                 assert_eq!(vinfo.source_port, 0x80);
                 assert_eq!(vinfo.dest_port, 0x0);
             }
@@ -988,7 +989,7 @@ mod test {
 
         // We picked up an echo reply packet.
         // According to policy this should match.
-        let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);
+        let packet = PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);
 
         let decision = ctx.eval_request(&service, &user, &packet).unwrap();
         match decision {
@@ -996,9 +997,9 @@ mod test {
                 assert_eq!(hits.len(), 1);
                 let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
                 assert_eq!(vinfo.zpl, "(line 5) allow red users to access pingdb");
-                assert_eq!(vinfo.source_addr, packet.source_addr);
-                assert_eq!(vinfo.dest_addr, packet.dest_addr);
-                assert_eq!(vinfo.protocol, packet.protocol);
+                assert_eq!(vinfo.source_addr, packet.five_tuple.src_address);
+                assert_eq!(vinfo.dest_addr, packet.five_tuple.dst_address);
+                assert_eq!(vinfo.protocol, packet.protocol());
                 assert_eq!(vinfo.source_port, 0x81);
                 assert_eq!(vinfo.dest_port, 0x0);
             }
@@ -1026,7 +1027,7 @@ mod test {
             .unwrap();
 
         // Echo reply to a red user
-        let packet = PacketDesc::new_icmpv6("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);
+        let packet = PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);
         let decision = ctx.eval_request(&service, &user, &packet).unwrap();
         match decision {
             EvalDecision::NoMatch(s) => {

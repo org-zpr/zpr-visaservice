@@ -11,7 +11,8 @@ use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
 use libeval::actor::Actor;
-use vs_dt::vsapi_types::PacketDesc;
+use zpr::vsapi_types::PacketDesc;
+use zpr::vsapi_types_writers::WriteTo;
 
 use crate::assembly::Assembly;
 use crate::config;
