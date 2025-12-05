@@ -821,6 +821,7 @@ dependencies = [
 [[package]]
 name = "zpr"
 version = "0.2.1"
+source = "git+https://github.com/org-zpr/zpr-core.git?tag=zpr-0.3.0#c31d6f622ccdc73859d97843cdf54d9bc263a65d"
 dependencies = [
  "capnp",
  "capnpc",
