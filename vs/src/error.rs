@@ -38,3 +38,15 @@ pub enum VSError {
     #[error("attribute error: {0}")]
     AttributeError(#[from] actor::AttributeError),
 }
+
+#[derive(Debug, Error)]
+pub enum DBError {
+    #[error("redis error: {0}")]
+    RedisError(#[from] redis::RedisError),
+
+    #[error("policy missing required details: {0}")]
+    MissingRequired(String),
+
+    #[error("openssl error: {0}")]
+    OpenSslError(#[from] openssl::error::ErrorStack),
+}

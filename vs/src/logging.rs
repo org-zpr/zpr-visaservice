@@ -16,6 +16,9 @@ pub mod targets {
 
     /// Actor Database
     pub const ADB: &str = "actor_db";
+
+    /// Policy Database
+    pub const PDB: &str = "policy_db";
 }
 
 pub fn enable_logging(verbose: bool) {

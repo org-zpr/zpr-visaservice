@@ -16,8 +16,10 @@ mod assembly;
 mod config;
 mod connection_control;
 mod cparam;
+mod db;
 mod error;
 mod logging;
+mod policy_db;
 mod policy_mgr;
 mod signal_worker;
 mod visa_mgr;
@@ -34,6 +36,8 @@ use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
+
+use redis::AsyncCommands;
 
 /// vs - ZPR visa service
 #[derive(Parser, Debug)]
@@ -52,7 +56,8 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-fn main() -> std::process::ExitCode {
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     enable_logging(cli.verbose);
     info!(target: MAIN, "vs version {}", env!("CARGO_PKG_VERSION"));
@@ -83,32 +88,28 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let _runtime_guard = runtime.enter();
-
     let local_set = tokio::task::LocalSet::new();
     let _local_set_guard = local_set.enter();
 
-    // ValKey
-    // Just go through steps to get a connection. Placeholder since we don't know
-    // where we need it yet.
-
     let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(config::VALKEY_URI);
     let vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
-    let res = runtime.block_on(async { vk_client.create_multiplexed_tokio_connection().await });
-    let (vk_conn, vk_fut) = match res {
-        Ok((conn, fut)) => {
-            info!(target: MAIN, "connected to ValKey at {vk_uri}");
-            (conn, fut)
-        }
-        Err(e) => {
-            error!(target: MAIN, "failed to connect to ValKey at {vk_uri}: {}", e);
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+
+    // TODO: Should I be creating this and saving it in assembly or or just keeping the client in assembly
+    // and then getting connections when I want them?
+    /*
+    let mut vk_conn = vk_client
+        .get_multiplexed_tokio_connection()
+        .await
+        .expect("failed to get redis connection");
+    */
+    let mut vk_conn = redis::aio::ConnectionManager::new(vk_client)
+        .await
+        .expect("failed to get redis connection");
+
+    let res: String = vk_conn.ping().await.expect("failed to ping ValKey server");
+    info!(target: MAIN, "connected to ValKey at {vk_uri}, ping response: {}", res);
+
+    let mut js = JoinSet::new();
 
     let (vreq_tx, vreq_rx) =
         mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
@@ -122,19 +123,24 @@ fn main() -> std::process::ExitCode {
             }
         };
 
+    let policy_mgr_res = PolicyMgr::new_with_initial_policy(initial_policy, vk_conn.clone()).await;
+    let policy_mgr = match policy_mgr_res {
+        Ok(pm) => pm,
+        Err(e) => {
+            error!(target: MAIN, "failed to instantiate policy manager: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
     let asm = Arc::new(Assembly {
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
-        policy_mgr: PolicyMgr::new_with_initial_policy(initial_policy),
+        policy_mgr: policy_mgr,
         actor_db: Arc::new(actor_db),
-        vk_conn: Arc::new(vk_conn),
+        vk_conn: vk_conn,
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(),
     });
-
-    let mut js = JoinSet::new();
-
-    js.spawn(vk_fut); // runs redis
 
     js.spawn_local(signal_worker::launch(asm.clone()));
 
@@ -146,8 +152,9 @@ fn main() -> std::process::ExitCode {
         ),
     ));
 
-    let rt_handle = runtime.handle().clone();
     let admin_asm = asm.clone();
+
+    let rt_handle = tokio::runtime::Handle::current();
     js.spawn_blocking(move || {
         rt_handle.block_on(start_admin_server(
             &cfg.core.admin_key,
@@ -169,11 +176,13 @@ fn main() -> std::process::ExitCode {
     // TODO: Setup/launch the workers for the visa service. Those that will do the actual work
     // of generating visas, and all the housekeeping.
 
-    local_set.block_on(&runtime, async {
-        while let Some(res) = js.join_next().await {
-            res.unwrap();
-        }
-    });
+    local_set
+        .run_until(async {
+            while let Some(res) = js.join_next().await {
+                res.unwrap();
+            }
+        })
+        .await;
 
     info!(target: MAIN, "exiting");
     std::process::ExitCode::SUCCESS

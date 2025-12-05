@@ -11,10 +11,25 @@
 //! The [libeval::policy::Policy] is designed to be easily cloned (as it is in an Arc) and
 //! accessible by concurrent threads.
 
-use libeval::policy::Policy;
-
 use arc_swap::ArcSwap;
+use libeval::policy::Policy;
 use std::sync::Arc;
+use thiserror::Error;
+use tracing::debug;
+
+use crate::db;
+use crate::error::DBError;
+use crate::logging::targets::PDB;
+use crate::policy_db;
+
+#[derive(Debug, Error)]
+pub enum PMError {
+    #[error("redis error: {0}")]
+    RedisError(#[from] redis::RedisError),
+
+    #[error("policy database error: {0}")]
+    PolicyDBError(#[from] DBError),
+}
 
 #[allow(dead_code)]
 pub struct PolicyMgr {
@@ -22,11 +37,19 @@ pub struct PolicyMgr {
 }
 
 impl PolicyMgr {
-    pub fn new_with_initial_policy(mut policy: Policy) -> Self {
+    pub async fn new_with_initial_policy(
+        mut policy: Policy,
+        vk_conn: db::Conn,
+    ) -> Result<Self, PMError> {
+        debug!(target: PDB, "initializing policy manager");
         policy.set_vinst(1);
-        PolicyMgr {
+
+        let _set_result = policy_db::set_current_policy(vk_conn, &policy).await?;
+
+        debug!(target: PDB, "policy manager initialized successfully");
+        Ok(PolicyMgr {
             inner: ArcSwap::from_pointee(policy),
-        }
+        })
     }
 
     /// Callers should drop the policy as quickly as possible to avoid missing a policy update.
@@ -37,11 +60,12 @@ impl PolicyMgr {
     /// Update the current policy.  The new policy will be assigned a new version instance number (vinst)
     /// that is one greater than the current policy's vinst.
     #[allow(dead_code)]
-    fn update_policy(&self, new_policy: Policy) {
+    fn update_policy(&self, new_policy: Policy) -> Result<(), PMError> {
         let mut np = Arc::new(new_policy);
         self.inner.rcu(move |op| {
             Arc::get_mut(&mut np).unwrap().set_vinst(op.vinst() + 1);
             np.clone()
         });
+        Ok(())
     }
 }

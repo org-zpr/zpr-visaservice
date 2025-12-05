@@ -49,9 +49,10 @@ impl ActorDb {
     }
 
     pub fn remove_actor_by_zpr_addr(&self, zpra: &std::net::IpAddr) -> Result<(), VSError> {
-        let mut self_db = self.db.write().map_err(|e| {
-            VSError::InternalError(format!("ActorDb remove_actor lock poisoned: {}", e))
-        })?;
+        let mut self_db = self
+            .db
+            .write()
+            .map_err(|e| VSError::InternalError(format!("ActorDb lock poisoned: {}", e)))?;
         if let Some(ident) = self_db.addr_index.remove(zpra) {
             debug!(target: ADB, "removing actor from DB: ident={ident} zpr_addr={zpra}");
             self_db.actors.remove(&ident);
@@ -71,11 +72,12 @@ impl ActorDb {
             Some(addr) => Some(addr.clone()),
             None => None,
         };
-        debug!(target: ADB, "Adding node actor to DB: cn={:?} ident={ident}", actor.get_cn());
+        debug!(target: ADB, "Adding actor to DB: cn={:?} ident={ident}", actor.get_cn());
 
-        let mut self_db = self.db.write().map_err(|e| {
-            VSError::InternalError(format!("ActorDb add_node lock poisoned: {}", e))
-        })?;
+        let mut self_db = self
+            .db
+            .write()
+            .map_err(|e| VSError::InternalError(format!("ActorDb lock poisoned: {}", e)))?;
         self_db.actors.insert(ident.clone(), actor);
         if let Some(zpraddr) = maybe_zpraddr {
             self_db.addr_index.insert(zpraddr.clone(), ident.clone());

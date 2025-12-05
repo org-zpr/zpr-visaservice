@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::actor_db::ActorDb;
 use crate::connection_control::ConnectionControl;
+use crate::db;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 
@@ -13,7 +14,7 @@ pub struct Assembly {
     pub cc: ConnectionControl,
     pub policy_mgr: PolicyMgr,
     pub actor_db: Arc<ActorDb>,
-    pub vk_conn: Arc<redis::aio::MultiplexedConnection>,
+    pub vk_conn: db::Conn,
     pub vreq_chan: mpsc::Sender<crate::visareq_worker::VisaRequestJob>,
     pub visa_mgr: VisaMgr,
 }
