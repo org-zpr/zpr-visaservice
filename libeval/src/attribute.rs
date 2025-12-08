@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
 pub const ROLE_NODE: &str = "node";
@@ -34,7 +34,7 @@ pub mod key {
     pub const VINST: &str = "zpr.vinst";
 }
 
-#[derive(Debug, Clone, Serialize, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 #[allow(dead_code)]
 pub struct Attribute {
     key: String,
