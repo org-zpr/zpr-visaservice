@@ -1,9 +1,10 @@
 //! Manage the creating, storage and retrieval of visas for the visa service.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::net::IpAddr;
 use std::time::{Duration, UNIX_EPOCH};
 
 use crate::config;
+use crate::db;
 use crate::error::VSError;
 use libeval::eval::{Direction, Hit};
 
@@ -15,18 +16,12 @@ use zpr::vsapi_types::{
 use tracing::info;
 
 pub struct VisaMgr {
-    next_visa_id: AtomicU64,
+    repo: db::VisaRepo,
 }
 
 impl VisaMgr {
-    pub fn new() -> Self {
-        VisaMgr {
-            next_visa_id: AtomicU64::new(1),
-        }
-    }
-
-    fn take_next_visa_id(&self) -> u64 {
-        self.next_visa_id.fetch_add(1, Ordering::Relaxed)
+    pub fn new(db: db::VisaRepo) -> Self {
+        VisaMgr { repo: db }
     }
 
     // Placeholder implementation, called concurrently.
@@ -34,7 +29,12 @@ impl VisaMgr {
     // No checking to see if visa already exists.
     // No storing of the visas.
     // Fake keys.
-    pub fn create_visa(&self, pdesc: &PacketDesc, hit: &Hit) -> Result<Visa, VSError> {
+    pub async fn create_visa(
+        &self,
+        requesting_node: &IpAddr,
+        pdesc: &PacketDesc,
+        hit: &Hit,
+    ) -> Result<Visa, VSError> {
         // Expiration is millis since UNIX EPOCH
         let expiration = {
             let now = std::time::SystemTime::now()
@@ -91,7 +91,7 @@ impl VisaMgr {
             _ => unreachable!(), // already handled above
         };
 
-        let visa_id = self.take_next_visa_id();
+        let visa_id = self.repo.get_next_visa_id().await?;
         let visa = Visa {
             issuer_id: visa_id,
             config: 0,
@@ -102,6 +102,9 @@ impl VisaMgr {
             cons: None,
             session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
         };
+
+        self.repo.store_visa(requesting_node, &visa).await?;
+
         info!("created visa {visa_id}");
         Ok(visa)
     }

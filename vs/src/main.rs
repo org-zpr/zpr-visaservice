@@ -10,7 +10,7 @@ use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
 use libeval::pio;
 
-mod actor_db;
+mod actor_mgr;
 mod admin_service;
 mod assembly;
 mod config;
@@ -19,14 +19,13 @@ mod cparam;
 mod db;
 mod error;
 mod logging;
-mod policy_db;
 mod policy_mgr;
 mod signal_worker;
 mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
 
-use crate::actor_db::ActorDb;
+use crate::actor_mgr::ActorMgr;
 use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
@@ -109,21 +108,28 @@ async fn main() -> std::process::ExitCode {
     let res: String = vk_conn.ping().await.expect("failed to ping ValKey server");
     info!(target: MAIN, "connected to ValKey at {vk_uri}, ping response: {}", res);
 
+    let db_handle = db::Handle::new(vk_conn);
+
     let mut js = JoinSet::new();
 
     let (vreq_tx, vreq_rx) =
         mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
 
-    let actor_db =
-        match instantiate_actor_db(cfg.core.vs_addr.unwrap_or(IpAddr::V6(config::VS_ZPR_ADDR))) {
-            Ok(adb) => adb,
-            Err(e) => {
-                error!(target: MAIN, "failed to instantiate actor database: {}", e);
-                return std::process::ExitCode::FAILURE;
-            }
-        };
+    let actor_mgr = match create_actor_mgr(
+        &db_handle,
+        cfg.core.vs_addr.unwrap_or(IpAddr::V6(config::VS_ZPR_ADDR)),
+    )
+    .await
+    {
+        Ok(adb) => adb,
+        Err(e) => {
+            error!(target: MAIN, "failed to instantiate actor database: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
-    let policy_mgr_res = PolicyMgr::new_with_initial_policy(initial_policy, vk_conn.clone()).await;
+    let policy_mgr_res =
+        PolicyMgr::new_with_initial_policy(initial_policy, db::PolicyRepo::new(&db_handle)).await;
     let policy_mgr = match policy_mgr_res {
         Ok(pm) => pm,
         Err(e) => {
@@ -132,14 +138,16 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
+    let visa_repo = db::VisaRepo::new(&db_handle);
+
     let asm = Arc::new(Assembly {
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
         policy_mgr: policy_mgr,
-        actor_db: Arc::new(actor_db),
-        vk_conn: vk_conn,
+        actor_mgr: Arc::new(actor_mgr),
+        state_db: db_handle,
         vreq_chan: vreq_tx,
-        visa_mgr: VisaMgr::new(),
+        visa_mgr: VisaMgr::new(visa_repo),
     });
 
     js.spawn_local(signal_worker::launch(asm.clone()));
@@ -188,8 +196,9 @@ async fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-fn instantiate_actor_db(vs_addr: IpAddr) -> Result<ActorDb, VSError> {
-    let adb = ActorDb::new();
+async fn create_actor_mgr(dbh: &db::Handle, vs_addr: IpAddr) -> Result<ActorMgr, VSError> {
+    let adb = db::ActorRepo::new(dbh);
+    let mgr = ActorMgr::new(adb);
     // We are the visa service. As we say so it shall be.
     let vs_actor = {
         let mut vsa = Actor::new();
@@ -209,6 +218,6 @@ fn instantiate_actor_db(vs_addr: IpAddr) -> Result<ActorDb, VSError> {
         vsa.add_identity_key(0, key::CN.into())?;
         vsa
     };
-    adb.add_adapter(vs_actor)?;
-    Ok(adb)
+    mgr.add_adapter(vs_actor).await?;
+    Ok(mgr)
 }

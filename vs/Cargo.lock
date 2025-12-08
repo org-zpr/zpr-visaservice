@@ -1772,6 +1772,7 @@ dependencies = [
  "ipnet",
  "libeval",
  "openssl",
+ "percent-encoding",
  "redis",
  "serde",
  "serde_json",

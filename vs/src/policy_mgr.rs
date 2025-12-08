@@ -19,8 +19,7 @@ use tracing::debug;
 
 use crate::db;
 use crate::error::DBError;
-use crate::logging::targets::PDB;
-use crate::policy_db;
+use crate::logging::targets::MAIN;
 
 #[derive(Debug, Error)]
 pub enum PMError {
@@ -34,21 +33,28 @@ pub enum PMError {
 #[allow(dead_code)]
 pub struct PolicyMgr {
     inner: ArcSwap<Policy>,
+    repo: db::PolicyRepo,
 }
 
 impl PolicyMgr {
+    /// Create a new policy manager, initializing it with the given initial policy.
+    /// This will store the initial policy into the database if not already present.
+    ///
+    /// Note that policy is written to DB for backup purposes. It is kept in memory
+    /// here for general access by rest of visa service.
     pub async fn new_with_initial_policy(
         mut policy: Policy,
-        vk_conn: db::Conn,
+        repo: db::PolicyRepo,
     ) -> Result<Self, PMError> {
-        debug!(target: PDB, "initializing policy manager");
+        debug!(target: MAIN, "initializing policy manager");
         policy.set_vinst(1);
 
-        let _set_result = policy_db::set_current_policy(vk_conn, &policy).await?;
+        let _db_updated = repo.set_current_policy(&policy, false).await?;
 
-        debug!(target: PDB, "policy manager initialized successfully");
+        debug!(target: MAIN, "policy manager initialized successfully");
         Ok(PolicyMgr {
             inner: ArcSwap::from_pointee(policy),
+            repo,
         })
     }
 

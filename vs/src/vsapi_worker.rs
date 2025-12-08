@@ -542,7 +542,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // The VS will create a "real" one and queue it to be sent to the node once
         // it registers its VSS.
 
-        if let Err(e) = self.asm.actor_db.add_node(node_actor.clone()) {
+        if let Err(e) = self.asm.actor_mgr.add_node(node_actor.clone()).await {
             error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", node_actor.get_cn(), e);
             let mut err_builder = res_builder.init_error();
             write_error(
@@ -653,7 +653,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             }
         }
 
-        match self.asm.actor_db.remove_actor_by_zpr_addr(&zpr_addr) {
+        match self.asm.actor_mgr.remove_actor_by_zpr_addr(&zpr_addr).await {
             Ok(()) => (),
             Err(e) => {
                 // Caller can't do anything with this. So just log and continue.

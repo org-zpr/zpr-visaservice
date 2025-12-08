@@ -14,11 +14,8 @@ pub mod targets {
     /// Connection Control.
     pub const CC: &str = "con_ctrl";
 
-    /// Actor Database
-    pub const ADB: &str = "actor_db";
-
-    /// Policy Database
-    pub const PDB: &str = "policy_db";
+    /// Redis/ValKey store
+    pub const REDIS: &str = "redis_db";
 }
 
 pub fn enable_logging(verbose: bool) {
