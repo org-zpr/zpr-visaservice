@@ -1,4 +1,10 @@
-//! ValKey operations related to policy.
+//! Redis/ValKey operations related to policy.
+//!
+//! PHASH is a hash of the policy. Should change if the policy changes or is recompiled.
+//!
+//! This updates:
+//! - policies:<PHASH>:blob maps to a raw string value which is capn proto encoded bytes of the policy.
+//! - policy:current a hash which includes key 'phash' with the current policy PHASH.
 //!
 
 use libeval::policy::Policy;
@@ -40,15 +46,17 @@ impl PolicyRepo {
             Some(h) => h,
             None => String::new(), // empty
         };
-        let exists: bool =
-            (curhash == phash) && vk_conn.exists(format!("{KEY_POLICIES}:{phash}")).await?;
+        let exists: bool = (curhash == phash)
+            && vk_conn
+                .exists(format!("{KEY_POLICIES}:{phash}:blob"))
+                .await?;
         let mut updated = false;
         if !exists || force_overwrite {
             debug!(target: REDIS, "updating current policy in DB to phash {phash}");
             let pbuf = policy.get_serialized(); // get capn proto bytes
 
             let _: () = vk_conn
-                .set(format!("{KEY_POLICIES}:{}", phash), pbuf.as_ref())
+                .set(format!("{KEY_POLICIES}:{phash}:blob"), pbuf.as_ref())
                 .await?;
 
             let key_current = format!("{KEY_POLICY}:current");

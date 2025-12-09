@@ -173,9 +173,6 @@ impl VSHandleImpl {
             ));
         };
 
-        //let vreq = args.get()?.get_req()?;
-        //let cp_pdesc = vreq.get_packet()?;
-
         let vreq = match args.get() {
             Ok(a) => match a.get_req() {
                 Ok(r) => r,
@@ -673,12 +670,25 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "visa_request from {:?}", self.node.get_cn());
 
+        // A node must have an address.
+        let requestor_addr = self.node.get_zpr_addr().expect("programming error - node must have an address");
+
         match self.do_visa_request(args).await {
             Ok(decision) => match decision {
                 VisaDecision::Allow(visa) => {
                     let res_builder = response.get().init_resp();
                     let mut visa_bldr = res_builder.init_allow();
                     visa.write_to(&mut visa_bldr);
+
+                    // At this point visa service assumes the visa is installed.
+                    if let Err(e) = self
+                        .asm
+                        .visa_mgr
+                        .visa_installed(visa.issuer_id, requestor_addr)
+                        .await
+                    {
+                        error!(target: VSAPI, "failed to update visa {} as installed on {}: {}", visa.issuer_id, requestor_addr, e);
+                    }
                 }
                 VisaDecision::Deny(denial_reason) => {
                     let mut res_builder = response.get().init_resp();

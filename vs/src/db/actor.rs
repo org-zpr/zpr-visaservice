@@ -1,3 +1,15 @@
+//! Redis/ValKey operations for actor state.
+//!
+//! Note that a ZADDR is a munged version of the ZPR address - colons replaced with dashes.
+//! Note that the MUNGED_SERVICENAME is a db::KeyString - colons and '%' replaced with percent encoding.
+//!
+//! This updates:
+//! - actor:<ZADDR> a hash for each connected actor
+//! - actor:<ZADDR>:attrs a hash of attributes for each actor maps attribute keys to Attribug in JSON.
+//! - service:<MUNGED_SERVICENAME> a hash. Includes key 'zaddr' with the ZADDR of the actor providing the service.
+//! - nodes set of ZADDRs of all connected nodes.
+//! - adapters set of ZADDRs of all connected adapters.
+
 use libeval::actor::Actor;
 use libeval::attribute::Attribute;
 use redis::AsyncCommands;

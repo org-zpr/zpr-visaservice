@@ -108,6 +108,14 @@ impl VisaMgr {
         info!("created visa {visa_id}");
         Ok(visa)
     }
+
+    /// Register that visa `visa_id` has been installed on node at ZPR address `node_addr`.
+    pub async fn visa_installed(&self, visa_id: u64, node_addr: &IpAddr) -> Result<(), VSError> {
+        self.repo
+            .update_node_visa_state(node_addr, visa_id, db::NodeVisaState::Installed)
+            .await?;
+        Ok(())
+    }
 }
 
 fn ep_from_dir(dir: &Direction) -> EndpointT {

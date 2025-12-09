@@ -6,22 +6,19 @@ mod visa;
 
 pub use actor::ActorRepo;
 pub use policy::PolicyRepo;
-pub use visa::VisaRepo;
+pub use visa::{NodeVisaState, VisaRepo};
 
 use chrono::Utc;
 use percent_encoding::CONTROLS;
 use percent_encoding::{AsciiSet, percent_decode_str, utf8_percent_encode};
 use std::net::IpAddr;
 
+// Encode '%' and ':' for KeyString type strings.
 const KEY_ESCAPES: &AsciiSet = &CONTROLS.add(b'%').add(b':');
-
-/// "Database Connection"
-/// Can be cloned and used across async tasks.
-pub type Conn = redis::aio::ConnectionManager;
 
 #[derive(Clone)]
 pub struct Handle {
-    pub conn: Conn,
+    pub conn: redis::aio::ConnectionManager,
 }
 
 /// In the redis, we sometimes need to use a ZPR address as part of a key.
@@ -95,6 +92,12 @@ impl std::fmt::Display for ZAddr {
     }
 }
 
+impl std::fmt::Display for KeyString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl ZAddr {
     /// Get the string representation of this ZAddr.
     pub fn as_str(&self) -> &str {
@@ -123,7 +126,7 @@ pub fn gen_timestamp() -> String {
 
 impl Handle {
     /// Create a new database handle from a redis connection manager.
-    pub fn new(conn: Conn) -> Self {
+    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
         Handle { conn }
     }
 }
