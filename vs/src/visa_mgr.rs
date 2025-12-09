@@ -6,8 +6,9 @@ use std::time::{Duration, UNIX_EPOCH};
 use crate::config;
 use crate::db;
 use crate::error::VSError;
-use libeval::eval::{Direction, Hit};
+use crate::logging::targets::VMGR;
 
+use libeval::eval::{Direction, Hit};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
     CommFlag, DockPep, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa,
@@ -114,6 +115,18 @@ impl VisaMgr {
         self.repo
             .update_node_visa_state(node_addr, visa_id, db::NodeVisaState::Installed)
             .await?;
+        Ok(())
+    }
+
+    /// TODO!
+    pub async fn remove_visas_for_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
+        info!(target: VMGR, "TODO: remove visas for node at addr {}", node_addr);
+        Ok(())
+    }
+
+    /// TODO!
+    pub async fn remove_visas_for_actors(&self, _actor_addrs: &[IpAddr]) -> Result<(), VSError> {
+        info!(target: VMGR, "TODO: remove visas for actors now removed");
         Ok(())
     }
 }

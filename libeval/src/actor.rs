@@ -120,6 +120,10 @@ impl Actor {
         Ok(())
     }
 
+    pub fn get_attribute(&self, key: &str) -> Option<&Attribute> {
+        self.attrs.iter().find(|a| a.get_key() == key)
+    }
+
     /// If there are identity attributes, the values are returned here
     /// in order.
     pub fn get_identity(&self) -> Option<Vec<&str>> {

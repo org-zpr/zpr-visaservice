@@ -21,7 +21,7 @@ use openssl::sign::Verifier;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_NODE, key};
@@ -130,13 +130,64 @@ impl ConnectionControl {
         }
     }
 
+    /// Disconnect logic. Cleans up actor database and visas.
     pub async fn disconnect(
         &self,
+        asm: Arc<Assembly>,
         zpr_addr: IpAddr,
         reason: vsapi::DisconnectReason,
     ) -> Result<(), VSError> {
-        // Placeholder logic for disconnecting a node
         info!(target: CC, "disconnect actor at {} for reason {:?}", zpr_addr, reason);
+
+        let maybe_actor = asm.actor_mgr.get_actor_by_zpr_addr(&zpr_addr).await?;
+        if maybe_actor.is_none() {
+            warn!(target: CC, "disconnect for addr {zpr_addr} but no actor found in database");
+        }
+
+        match asm.actor_mgr.remove_actor_by_zpr_addr(&zpr_addr).await {
+            Ok(()) => (),
+            Err(e) => {
+                // Caller can't do anything with this. So just log and continue.
+                error!(target: CC, "failed to remove disconnected actor with addr {zpr_addr} from actor db: {}", e);
+            }
+        };
+
+        let mut removed_zpr_addrs = Vec::new();
+        removed_zpr_addrs.push(zpr_addr);
+
+        if let Some(actor) = maybe_actor {
+            if actor.is_node() {
+                let connected_adapters = match asm
+                    .actor_mgr
+                    .get_adapters_connected_to_node(&zpr_addr)
+                    .await
+                {
+                    Ok(addrs) => addrs,
+                    Err(e) => {
+                        error!(target: CC, "failed to get connected adapters for disconnected node at addr {zpr_addr}: {}", e);
+                        Vec::new()
+                    }
+                };
+                for adapter_addr in connected_adapters {
+                    match asm.actor_mgr.remove_actor_by_zpr_addr(&adapter_addr).await {
+                        Ok(()) => {
+                            removed_zpr_addrs.push(adapter_addr);
+                        }
+                        Err(e) => {
+                            // Caller can't do anything with this. So just log and continue.
+                            error!(target: CC, "failed to remove disconnected adapter with addr {adapter_addr} from actor db: {}", e);
+                        }
+                    };
+                }
+                asm.actor_mgr.remove_node(&zpr_addr).await?;
+                asm.visa_mgr.remove_visas_for_node(&zpr_addr).await?;
+            }
+        }
+
+        asm.visa_mgr
+            .remove_visas_for_actors(&removed_zpr_addrs)
+            .await?;
+
         Ok(())
     }
 }

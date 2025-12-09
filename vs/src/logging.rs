@@ -12,10 +12,13 @@ pub mod targets {
     pub const VSAPI: &str = "vsapi";
 
     /// Connection Control.
-    pub const CC: &str = "con_ctrl";
+    pub const CC: &str = "conctrl";
 
     /// Redis/ValKey store
-    pub const REDIS: &str = "redis_db";
+    pub const REDIS: &str = "redisdb";
+
+    /// Visa Manager
+    pub const VMGR: &str = "visamgr";
 }
 
 pub fn enable_logging(verbose: bool) {

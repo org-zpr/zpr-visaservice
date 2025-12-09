@@ -198,8 +198,10 @@ async fn main() -> std::process::ExitCode {
 
 async fn create_actor_mgr(dbh: &db::Handle, vs_addr: IpAddr) -> Result<ActorMgr, VSError> {
     let adb = db::ActorRepo::new(dbh);
-    let mgr = ActorMgr::new(adb);
+    let ndb = db::NodeRepo::new(dbh);
+    let mgr = ActorMgr::new(adb, ndb);
     // We are the visa service. As we say so it shall be.
+    // The odd thing here is that we do not know what node we are connected to yet.
     let vs_actor = {
         let mut vsa = Actor::new();
         vsa.add_attribute(Attribute::new_non_expiring(
@@ -218,6 +220,6 @@ async fn create_actor_mgr(dbh: &db::Handle, vs_addr: IpAddr) -> Result<ActorMgr,
         vsa.add_identity_key(0, key::CN.into())?;
         vsa
     };
-    mgr.add_adapter(vs_actor).await?;
+    mgr.add_magic_adapter(&vs_actor).await?;
     Ok(mgr)
 }

@@ -1,10 +1,12 @@
 //! General database functions.
 
 mod actor;
+mod node;
 mod policy;
 mod visa;
 
 pub use actor::ActorRepo;
+pub use node::{Node, NodeRepo};
 pub use policy::PolicyRepo;
 pub use visa::{NodeVisaState, VisaRepo};
 
