@@ -52,32 +52,30 @@ impl ActorRepo {
         // Including any stale service records.
         let _: () = redis::pipe()
             .atomic()
-            .cmd("DEL")
-            .arg(&base_key)
-            .cmd("DEL")
-            .arg(&attrs_key)
-            .cmd("SREM")
-            .arg(KEY_NODES)
-            .arg(&zpraddr_str)
-            .cmd("SREM")
-            .arg(KEY_ADAPTERS)
-            .arg(&zpraddr_str)
+            .del(&base_key)
+            .del(&attrs_key)
+            .srem(KEY_NODES, &zpraddr_str)
+            .srem(KEY_ADAPTERS, &zpraddr_str)
             .query_async(&mut vk_conn)
             .await?;
 
         if vk_conn.exists(&services_key).await? {
             let service_names: HashSet<String> = vk_conn.smembers(&services_key).await?;
-            for name in &service_names {
-                // The stale names may actually be valid names on new actors. So we need to check the
-                // zaddr value before deleting.
-                let svc_key = service_key_for(&name);
-                let actor_addr_str: Option<String> = vk_conn.hget(&svc_key, "zpr_addr").await?;
-                if let Some(actor_addr) = actor_addr_str {
-                    if actor_addr != zpraddr_str {
-                        continue;
+            if !service_names.is_empty() {
+                let mut piper = redis::pipe();
+                for name in &service_names {
+                    // The stale names may actually be valid names on new actors. So we need to check the
+                    // zaddr value before deleting.
+                    let svc_key = service_key_for(&name);
+                    let actor_addr_str: Option<String> = vk_conn.hget(&svc_key, "zpr_addr").await?;
+                    if let Some(actor_addr) = actor_addr_str {
+                        if actor_addr != zpraddr_str {
+                            continue;
+                        }
+                        piper.del(&service_key_for(&name));
                     }
-                    let _: () = vk_conn.del(&service_key_for(&name)).await?;
                 }
+                let _: () = piper.query_async(&mut vk_conn).await?;
             }
             let _: () = vk_conn.del(&services_key).await?;
         }

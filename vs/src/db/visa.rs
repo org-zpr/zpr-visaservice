@@ -61,10 +61,8 @@ impl VisaRepo {
 
         let _: () = redis::pipe()
             .atomic()
-            .cmd("DEL")
-            .arg(&blob_key)
-            .cmd("DEL")
-            .arg(&visa_id_key)
+            .del(&blob_key)
+            .del(&visa_id_key)
             .query_async(&mut vk_conn)
             .await?;
 
@@ -81,9 +79,13 @@ impl VisaRepo {
             }
             found_keys
         };
-        for k in &nodevisa_keys {
-            debug!(target: REDIS, "removing nodevisa key {}", k);
-            let _: () = vk_conn.del(k).await?;
+        if !nodevisa_keys.is_empty() {
+            let mut piper = redis::pipe();
+            for k in &nodevisa_keys {
+                debug!(target: REDIS, "removing nodevisa key {}", k);
+                piper.del(k);
+            }
+            let _: () = piper.query_async(&mut vk_conn).await?;
         }
 
         Ok(())
@@ -112,9 +114,13 @@ impl VisaRepo {
             }
             found_keys
         };
-        for k in &nodevisa_keys {
-            debug!(target: REDIS, "removing nodevisa key {}", k);
-            let _: () = vk_conn.del(k).await?;
+        if !nodevisa_keys.is_empty() {
+            let mut piper = redis::pipe();
+            for k in &nodevisa_keys {
+                debug!(target: REDIS, "removing nodevisa key {}", k);
+                piper.del(k);
+            }
+            let _: () = piper.query_async(&mut vk_conn).await?;
         }
         Ok(())
     }

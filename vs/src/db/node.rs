@@ -106,6 +106,7 @@ impl NodeRepo {
         let mut vk_conn = self.db.conn.clone();
 
         let _: () = redis::pipe()
+            .atomic()
             .cmd("DEL")
             .arg(&connections_key_for_node(node_addr))
             .arg(&todo_vinstall_key_for_node(node_addr))

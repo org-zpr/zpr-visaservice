@@ -42,10 +42,7 @@ impl PolicyRepo {
         let mut vk_conn = self.db.conn.clone();
         let phash = hash_for_policy(policy)?;
         let maybe_curhash: Option<String> = vk_conn.hget("policy:current", "phash").await?;
-        let curhash = match maybe_curhash {
-            Some(h) => h,
-            None => String::new(), // empty
-        };
+        let curhash = maybe_curhash.unwrap_or_default();
         let exists: bool = (curhash == phash)
             && vk_conn
                 .exists(format!("{KEY_POLICIES}:{phash}:blob"))
@@ -71,14 +68,8 @@ impl PolicyRepo {
             //
             let _: () = redis::pipe()
                 .atomic()
-                .cmd("HSET")
-                .arg(&key_current)
-                .arg("phash")
-                .arg(&phash)
-                .cmd("HSET")
-                .arg(&key_current)
-                .arg("ctime")
-                .arg(db::gen_timestamp())
+                .hset(&key_current, "phash", &phash)
+                .hset(&key_current, "ctime", db::gen_timestamp())
                 .query_async(&mut vk_conn)
                 .await?;
 
