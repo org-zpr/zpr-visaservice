@@ -168,14 +168,14 @@ impl Actor {
 
     pub fn services_iter(&self) -> impl Iterator<Item = &str> {
         // Get the key::SERVICES attribute which is a comma-separated list of services.
-        let services_attr = self.attrs.iter().find(|a| a.get_key() == key::SERVICES);
-
-        let services_str = match services_attr {
+        let services_str = match self.attrs.iter().find(|a| a.get_key() == key::SERVICES) {
             Some(attr) => attr.get_value(),
             None => "",
         };
-
-        services_str.split(',').map(|s| s.trim())
+        services_str
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     }
 
     pub fn has_attribute_named(&self, key: &str) -> bool {
