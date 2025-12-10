@@ -118,13 +118,37 @@ impl VisaMgr {
         Ok(())
     }
 
-    /// TODO!
-    pub async fn remove_visas_for_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
-        info!(target: VMGR, "TODO: remove visas for node at addr {}", node_addr);
+    /// Designed to be used to setup database in clean state as we prepare for a
+    /// fresh node joining.
+    pub async fn clear_node_state(&self, node_addr: &IpAddr) -> Result<(), VSError> {
+        self.repo.clear_node_state(node_addr).await?;
         Ok(())
     }
 
-    /// TODO!
+    /// Remove all visas tied to the given node -- assumes that `node_addr` has departed.
+    ///
+    /// TODO: This probably needs a lock on the node address -- like we do not
+    /// want the same node to be reconnecting while we are doing this clean up.
+    ///
+    /// TODO: Sometimes we want to keep track of visas installed on nodes so that
+    /// nodes could restart and we can then just push them state.  TBD.
+    ///
+    /// For each visa that is marked installed or pending-install on the node,
+    /// collect the ID.  Then wipe all the nodevisa records for the node.
+    ///
+    /// Now we have a bunch of visa IDs. For each ID, if the visa is installed
+    /// or pending on some other node, update the state on that node to pending-revoke
+    /// and then remove the visa:ID record.
+    ///
+    /// The housekeeping job will take care of updating the TODO lists and sending
+    /// the revocation messages out to the other nodes.
+    ///
+    pub async fn remove_visas_for_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
+        info!(target: VMGR, "TODO: remove visas for node {node_addr}");
+        Ok(())
+    }
+
+    /// Remove all visas tied to the listed actors, assumes the actors have departed.
     pub async fn remove_visas_for_actors(&self, _actor_addrs: &[IpAddr]) -> Result<(), VSError> {
         info!(target: VMGR, "TODO: remove visas for actors now removed");
         Ok(())

@@ -539,6 +539,17 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // The VS will create a "real" one and queue it to be sent to the node once
         // it registers its VSS.
 
+        // Since this is a new node and we do not yet support reconnects, make sure visa
+        // table is clean for this node.
+        if let Err(e) = self
+            .asm
+            .visa_mgr
+            .clear_node_state(&node_actor.get_zpr_addr().unwrap())
+            .await
+        {
+            warn!(target: VSAPI, "failed to clear node state for {:?}: {}", node_actor.get_cn(), e);
+        }
+
         if let Err(e) = self.asm.actor_mgr.add_node(&node_actor).await {
             error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", node_actor.get_cn(), e);
             let mut err_builder = res_builder.init_error();

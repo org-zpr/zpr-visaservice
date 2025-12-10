@@ -6,15 +6,17 @@
 //! This updates:
 //! - actor:<ZADDR> a hash for each connected actor
 //! - actor:<ZADDR>:attrs a hash of attributes for each actor maps attribute keys to Attribug in JSON.
-//! - service:<MUNGED_SERVICENAME> a hash. Includes key 'zaddr' with the ZADDR of the actor providing the service.
+//! - actor:<ZADDR>:services a set of service names offered by the actor.
+//! - service:<MUNGED_SERVICENAME> a hash. Includes key 'zpr_addr' with the ZPR address (string) of the actor providing the service.
 //! - nodes set of IP addresses  of all connected nodes.
 //! - adapters set of IP addresses  of all connected adapters.
 
 use libeval::actor::Actor;
 use libeval::attribute::Attribute;
 use redis::AsyncCommands;
+use std::collections::HashSet;
 use std::net::IpAddr;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::db::{Handle, KeyString, ZAddr, gen_timestamp};
 use crate::error::DBError;
@@ -36,8 +38,75 @@ impl ActorRepo {
         }
     }
 
-    /// Add an actor record.
+    /// Undo all the redis additions performed by `add_actor`.
+    async fn clean_up(&self, zpraddr: &IpAddr) -> Result<(), DBError> {
+        let mut vk_conn = self.db.conn.clone();
+
+        let zpraddr_str = zpraddr.to_string();
+
+        let base_key = actor_key_for(&zpraddr);
+        let attrs_key = attrs_key_for(&zpraddr);
+        let services_key = actor_services_key_for(&zpraddr);
+
+        // Sanity check- remove any existing records for this actor.
+        // Including any stale service records.
+        let _: () = redis::pipe()
+            .atomic()
+            .cmd("DEL")
+            .arg(&base_key)
+            .cmd("DEL")
+            .arg(&attrs_key)
+            .cmd("SREM")
+            .arg(KEY_NODES)
+            .arg(&zpraddr_str)
+            .cmd("SREM")
+            .arg(KEY_ADAPTERS)
+            .arg(&zpraddr_str)
+            .query_async(&mut vk_conn)
+            .await?;
+
+        if vk_conn.exists(&services_key).await? {
+            let service_names: HashSet<String> = vk_conn.smembers(&services_key).await?;
+            for name in &service_names {
+                // The stale names may actually be valid names on new actors. So we need to check the
+                // zaddr value before deleting.
+                let svc_key = service_key_for(&name);
+                let actor_addr_str: Option<String> = vk_conn.hget(&svc_key, "zpr_addr").await?;
+                if let Some(actor_addr) = actor_addr_str {
+                    if actor_addr != zpraddr_str {
+                        continue;
+                    }
+                    let _: () = vk_conn.del(&service_key_for(&name)).await?;
+                }
+            }
+            let _: () = vk_conn.del(&services_key).await?;
+        }
+        Ok(())
+    }
+
     pub async fn add_actor(&self, actor: &Actor) -> Result<(), DBError> {
+        match self.try_add_actor(actor).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // Attempt to clean up after ourselves...
+                warn!(target: REDIS, "add_actor failed, attempting cleanup");
+                if let Some(zpraddr) = actor.get_zpr_addr() {
+                    match self.clean_up(zpraddr).await {
+                        Ok(_) => (),
+                        Err(cleanup_err) => {
+                            error!(target: REDIS, "actor insert failed and so did clean up for addr={}: {}", zpraddr, cleanup_err);
+                        }
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Add an actor record which must only be called after initial authentication (there
+    /// will likely be changes to an actor later from trusted services or re-authentication,
+    /// but the updates should use a different function.)
+    async fn try_add_actor(&self, actor: &Actor) -> Result<(), DBError> {
         let zpraddr = match actor.get_zpr_addr() {
             Some(addr) => addr.clone(),
             None => {
@@ -47,29 +116,40 @@ impl ActorRepo {
             }
         };
 
-        let base_key = actor_key_for(&zpraddr);
+        self.clean_up(&zpraddr).await?;
 
         let mut vk_conn = self.db.conn.clone();
-        let exists: bool = vk_conn.exists(&base_key).await?;
+
+        let zpraddr_str = zpraddr.to_string();
+        let base_key = actor_key_for(&zpraddr);
+        let attrs_key = attrs_key_for(&zpraddr);
+        let services_key = actor_services_key_for(&zpraddr);
+
         let ts = gen_timestamp();
 
+        //
+        // actor:<ZADDR>:attrs
+        //                |- <key> -> JSON(<Attribute>)
+        //
         // Write the attributes. We write out the attributes in JSON.
-        for (_idx, attr) in actor.attrs_iter().enumerate() {
+        for attr in actor.attrs_iter() {
             let _: () = vk_conn
-                .hset(
-                    attrs_key_for(&zpraddr),
-                    attr.get_key(),
-                    serde_json::to_string(&attr)?,
-                )
+                .hset(&attrs_key, attr.get_key(), serde_json::to_string(&attr)?)
                 .await?;
         }
+
+        //
+        // actor:<ZADDR>
+        //         |- identity_keys -> JSON(<IdentityKeysVec>)
+        //         |- ctime -> string
+        //         |- utime -> string
+        //
 
         // Get the identity keys as a vec, write as JSON array
         let identity_keys = actor
             .identity_keys_iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-
         let _: () = vk_conn
             .hset(
                 &base_key,
@@ -77,66 +157,45 @@ impl ActorRepo {
                 serde_json::to_string(&identity_keys)?,
             )
             .await?;
+        let _: () = vk_conn.hset_nx(&base_key, "ctime", &ts).await?; // set create time only if not already there.
+        let _: () = vk_conn.hset(&base_key, "utime", &ts).await?; // always set update time
 
-        if !exists {
-            // new, so write creation time
-            let _: () = vk_conn.hset(&base_key, "ctime", &ts).await?;
-        }
-        // write update time
-        let _: () = vk_conn.hset(&base_key, "utime", &ts).await?;
-
-        // Redis keeps a service list of form service:<NAME>
-        // Note that name is sanititized to replace colons with dashses, and dashes with double-dashes.
         //
+        // service:<NAME>
+        //           |- zpr_addr -> string
+        //
+        // actor:<ZADDR>:services -> SET[ <service_name> ]
+        //
+
         // This means that each service can have just one entry here which we may want
         // to reasses later -- for example a service may be provided by multiple actors.
         for service_name in actor.services_iter() {
+            debug!(target: REDIS, "adding service for actor: addr={zpraddr} service={service_name}");
             let svc_key_str = service_key_for(&service_name);
             let _: () = vk_conn
                 .hset(&svc_key_str, "zpr_addr", &zpraddr.to_string())
                 .await?;
+            let _: () = vk_conn.sadd(&services_key, &service_name).await?;
         }
 
+        //
+        // One of:
+        //    nodes    -> SET [ <zpr_address_string> ]
+        //    adapters -> SET [ <zpr_address_string> ]
+        //
         if actor.is_node() {
-            let _: () = vk_conn.sadd(KEY_NODES, zpraddr.to_string()).await?;
+            let _: () = vk_conn.sadd(KEY_NODES, &zpraddr_str).await?;
         } else {
-            let _: () = vk_conn.sadd(KEY_ADAPTERS, zpraddr.to_string()).await?;
+            let _: () = vk_conn.sadd(KEY_ADAPTERS, &zpraddr_str).await?;
         }
 
-        debug!(target: REDIS, "added actor to DB: addr={zpraddr} cn={:?} new={}", actor.get_cn(), !exists);
+        debug!(target: REDIS, "added actor to DB: addr={zpraddr} cn={:?} node?={}", actor.get_cn(), actor.is_node());
         Ok(())
     }
 
-    /// Remove an actor record.
+    /// Remove actor from the state database, including all services.
     pub async fn rm_actor_by_zpr_addr(&self, zpra: &std::net::IpAddr) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let base_key = actor_key_for(&zpra);
-
-        // In order to remove the services, we need to reconsititute the actor to get the service list.
-        if let Some(found_actor) = self.get_actor_by_zpr_addr(zpra).await.ok() {
-            for service_name in found_actor.services_iter() {
-                let _: () = vk_conn.del(&service_key_for(&service_name)).await?;
-            }
-
-            // If we got the actor, we can see if it is a node or not.
-            if found_actor.is_node() {
-                let _: () = vk_conn.srem(KEY_NODES, zpra.to_string()).await?;
-            } else {
-                let _: () = vk_conn.srem(KEY_ADAPTERS, zpra.to_string()).await?;
-            }
-        } else {
-            warn!(target: REDIS, "attempt to remove actor not found in DB: addr={zpra}");
-            // Not sure if this is a node or an adapter, so try both:
-            let _: () = vk_conn.srem(KEY_NODES, zpra.to_string()).await?;
-            let _: () = vk_conn.srem(KEY_ADAPTERS, zpra.to_string()).await?;
-        }
-
-        // remove actor:<ZADDR>:attrs entry
-        let _: () = vk_conn.del(format!("{base_key}:attrs")).await?;
-
-        // remove actor:<ZADDR> entry
-        let _: () = vk_conn.del(&base_key).await?;
-
+        self.clean_up(zpra).await?;
         debug!(target: REDIS, "removed actor from DB: addr={zpra}");
         Ok(())
     }
@@ -178,11 +237,18 @@ fn actor_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}")
 }
+
 fn attrs_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}:attrs")
 }
+
 fn service_key_for(service_name: &str) -> String {
     let svc_name_clean = KeyString::from(service_name);
     format!("{KEY_SERVICE}:{}", svc_name_clean.as_str())
+}
+
+fn actor_services_key_for(zpr_addr: &IpAddr) -> String {
+    let zaddr: ZAddr = zpr_addr.into();
+    format!("{KEY_ACTOR}:{zaddr}:services")
 }

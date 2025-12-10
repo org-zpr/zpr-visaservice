@@ -20,12 +20,18 @@ impl ActorMgr {
         }
     }
 
+    /// TODO: Support for reconnects (where we still have state).
     pub async fn add_node(&self, actor: &Actor) -> Result<(), VSError> {
         if !actor.is_node() {
             return Err(VSError::InternalError(
                 "attempt to add non-node actor as node".into(),
             ));
         }
+        // Make sure DB is clean (TODO: support for reconnects)
+        self.node_db
+            .remove_node(actor.get_zpr_addr().unwrap())
+            .await?;
+
         self.actor_db.add_actor(actor).await?;
         let node_obj = db::Node::new_from_node_actor(&actor)?;
         self.node_db.add_node(&node_obj).await?;

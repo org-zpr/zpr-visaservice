@@ -1,7 +1,7 @@
 //! Redis/ValKey operations related to visas.
 //!
 //! This updates:
-//! - visa:next_visa_id a counter for the next visa ID to use.
+//! - visa:next_visa_id a counter for the next visa ID to use (actually this is set to the last visa ID handed out).
 //! - visa:<ID> a hash of metadata about each visa.
 //! - visas:<ID>:blob the capnp encoded visa blob itself.
 //! - nodevisa:<ZADDR>:<ID> a hash of state about each visa on each node.
@@ -12,10 +12,9 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
-use tracing::debug;
+use tracing::{debug, error, warn};
 
 use ::zpr::vsapi::v1 as vsapi;
-
 use zpr::vsapi_types::Visa;
 use zpr::vsapi_types_writers::WriteTo;
 
@@ -52,13 +51,97 @@ impl VisaRepo {
         Ok(next_id)
     }
 
+    /// Remove references to a visa from the state datbase. Caller must make sure
+    /// that any revocation messages or whatever have already been sent.
+    async fn clean_up(&self, visa_id: u64) -> Result<(), DBError> {
+        let mut vk_conn = self.db.conn.clone();
+
+        let blob_key = blob_key_for_visa(visa_id);
+        let visa_id_key = visa_key_for_visa(visa_id);
+
+        let _: () = redis::pipe()
+            .atomic()
+            .cmd("DEL")
+            .arg(&blob_key)
+            .cmd("DEL")
+            .arg(&visa_id_key)
+            .query_async(&mut vk_conn)
+            .await?;
+
+        // Remove any nodevisa references to this visa.
+        let nodevisa_keys = {
+            let mut found_keys = Vec::new();
+            let mut iter: redis::AsyncIter<String> = vk_conn
+                .scan_match(format!("{KEY_NODEVISA}:*:{visa_id}"))
+                .await?;
+            while let Some(key_res) = iter.next_item().await {
+                if let Ok(key) = key_res {
+                    found_keys.push(key);
+                }
+            }
+            found_keys
+        };
+        for k in &nodevisa_keys {
+            debug!(target: REDIS, "removing nodevisa key {}", k);
+            let _: () = vk_conn.del(k).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Force remove all the nodevisa:<ZADDR>:<ID> tables that refer to the
+    /// passed `node_addr`.
+    ///
+    /// Does not remove visa:* entries.
+    ///
+    /// TODO: A future version may remove the visa:ID entries so long as they
+    /// are not referenced on another node.
+    ///
+    pub async fn clear_node_state(&self, node_addr: &IpAddr) -> Result<(), DBError> {
+        let zaddr = ZAddr::from(node_addr);
+        let mut vk_conn = self.db.conn.clone();
+        let nodevisa_keys = {
+            let mut found_keys = Vec::new();
+            let mut iter: redis::AsyncIter<String> = vk_conn
+                .scan_match(format!("{KEY_NODEVISA}:{zaddr}:*"))
+                .await?;
+            while let Some(key_res) = iter.next_item().await {
+                if let Ok(key) = key_res {
+                    found_keys.push(key);
+                }
+            }
+            found_keys
+        };
+        for k in &nodevisa_keys {
+            debug!(target: REDIS, "removing nodevisa key {}", k);
+            let _: () = vk_conn.del(k).await?;
+        }
+        Ok(())
+    }
+
     /// Store a new visa in the database, also sets the visa as PENDING install on the indicated
     /// requesting node.
     ///
     /// TODO: We may want to code path that does not include a requsting node.///
     pub async fn store_visa(&self, requesting_node: &IpAddr, visa: &Visa) -> Result<(), DBError> {
+        match self.try_store_visa(requesting_node, visa).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                warn!(target: REDIS, "failed to store visa: {}, attempting cleanup", visa.issuer_id);
+                match self.clean_up(visa.issuer_id).await {
+                    Ok(_) => (),
+                    Err(cleanup_err) => {
+                        error!(target: REDIS, "failed to store visa {} and clean up failed too: {}", visa.issuer_id, cleanup_err);
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn try_store_visa(&self, requesting_node: &IpAddr, visa: &Visa) -> Result<(), DBError> {
         // write capnpn version of visa into the store.
-        let mut vk_conn = self.db.conn.clone();
+
         let visa_id = visa.issuer_id;
 
         let expiration_seconds = seconds_until(visa.expires);
@@ -75,18 +158,25 @@ impl VisaRepo {
             visa.write_to(&mut visa_bldr);
             // Ends up dropping the visa_bldr and forgetting the mut borrow of msg.
         }
-
         let mut words: Vec<u8> = Vec::new();
         capnp::serialize::write_message(&mut words, &msg)?;
 
+        let mut vk_conn = self.db.conn.clone();
+
+        //
+        // visa:<ID>:blob -> <capn proto bytes>
+        //
         let _: () = vk_conn
             .set_ex(&blob_key_for_visa(visa_id), &words, expiration_seconds)
             .await?;
 
         let key_visa = visa_key_for_visa(visa_id);
 
-        // Store metadata about visa too.
-        // This is placeholder.  We may want five tuple here too.
+        //
+        // visa:<ID>
+        //       |- requesting_node -> string, zpr address
+        //       |- ctime           -> string, timestamp
+        //
         let _: () = vk_conn
             .hset_multiple(
                 &key_visa,
@@ -96,8 +186,13 @@ impl VisaRepo {
                 ],
             )
             .await?;
-
         let _: () = vk_conn.expire(&key_visa, expiration_seconds as i64).await?;
+
+        //
+        // nodevisa:<ZADDR>:<ID>
+        //                   |- state -> string, JSON serialized NodeVisaState
+        //                   |- utime -> string, timestamp
+        //
 
         // TODO: We may want to use a struct here for the whole state entry and just serialize it all
         // as JSON, but for now am leaving open option of just updating fields individually using redis.
@@ -110,7 +205,7 @@ impl VisaRepo {
                         "state",
                         serde_json::to_string(&NodeVisaState::PendingInstall)?,
                     ),
-                    ("last_update", gen_timestamp()),
+                    ("utime", gen_timestamp()),
                 ],
             )
             .await?;
@@ -123,7 +218,6 @@ impl VisaRepo {
     }
 
     /// Update the nodevisa state information for the node and visa.
-    /// If the visa has vanished from the database, returns NotFound.
     pub async fn update_node_visa_state(
         &self,
         node_addr: &IpAddr,
@@ -132,15 +226,12 @@ impl VisaRepo {
     ) -> Result<(), DBError> {
         let mut vk_conn = self.db.conn.clone();
 
-        let visa_exists: bool = vk_conn.exists(&blob_key_for_visa(visa_id)).await?;
-        if !visa_exists {
+        let key_nodevisa = node_visa_key_for_visa(node_addr, visa_id);
+        if !vk_conn.exists(&key_nodevisa).await? {
             return Err(DBError::NotFound(format!(
-                "visa {} does not exist",
-                visa_id
+                "node-visa record not found: {key_nodevisa}"
             )));
         }
-
-        let key_nodevisa = node_visa_key_for_visa(node_addr, visa_id);
         let _: () = vk_conn
             .hset_multiple(
                 &key_nodevisa,

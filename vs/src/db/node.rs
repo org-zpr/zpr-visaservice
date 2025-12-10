@@ -2,8 +2,13 @@
 //!
 //!
 //! This updates:
-//! - node:<ZADDR> metadata about a node connection.
-//! - node:<ZADDR>:XXX  TODO - other details about node housekeeping.
+//! - node:<ZADDR> a json Node struct -- metadata about a node connection.
+//! - node:<ZADDR>:connections a set of adapter addresses connected to the node.
+//!
+//! Future stuff (not yet implemented):
+//! - node:<ZADDR>:todo:vinstall - ordered list of visa IDs to be installed on the node
+//! - node:<ZADDR>:todo:vrevoke - ordered list of visa IDs to be revoked from the node
+//! - node:<ZADDR>:todo:crevoke - ordered list of authentication IDs (TBD??) to be revoked from the node
 
 use libeval::actor::Actor;
 use libeval::attribute::key;
@@ -28,6 +33,91 @@ pub struct Node {
 
 pub struct NodeRepo {
     db: Handle,
+}
+
+impl NodeRepo {
+    pub fn new(db: &Handle) -> Self {
+        NodeRepo { db: db.clone() }
+    }
+
+    /// Add the node state record.
+    /// A node record is assoicated with an actor that is a node role.
+    /// Nodes authenticate with the visa service directly.
+    /// One node is also the visa service's dock.
+    pub async fn add_node(&self, node: &Node) -> Result<(), DBError> {
+        let mut vk_conn = self.db.conn.clone();
+
+        //
+        // node:<ZADDR> -> string, json formatted Node struct.
+        //
+        let _: () = vk_conn
+            .set(
+                &node_key_for_node(&node.zpr_addr),
+                serde_json::to_string(&node)?,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Add state that an adapter is connected to a node.
+    pub async fn add_connected_adater(
+        &self,
+        node_addr: &IpAddr,
+        adapter_addr: &IpAddr,
+    ) -> Result<(), DBError> {
+        let mut vk_conn = self.db.conn.clone();
+
+        //
+        // node:<ZADDR>:connections -> SET [ <zpr_address as string> ]
+        //
+        let _: () = vk_conn
+            .sadd(
+                connections_key_for_node(node_addr),
+                adapter_addr.to_string(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Get the list of adapter addresses connected to the given node.
+    pub async fn get_connected_adapters(&self, node_addr: &IpAddr) -> Result<Vec<IpAddr>, DBError> {
+        let mut vk_conn = self.db.conn.clone();
+        let adapter_zaddr_strings: Vec<String> = vk_conn
+            .smembers(connections_key_for_node(node_addr))
+            .await?;
+        // convert to IpAddr - bad parse causes error
+        let mut adapter_addrs = Vec::new();
+        for addr_str in adapter_zaddr_strings {
+            match addr_str.parse::<IpAddr>() {
+                Ok(addr) => adapter_addrs.push(addr),
+                Err(e) => {
+                    return Err(DBError::InvalidData(format!(
+                        "failed to parse address string '{}' as IpAddr: {}",
+                        addr_str, e
+                    )));
+                }
+            }
+        }
+        Ok(adapter_addrs)
+    }
+
+    /// Removes all the ancillary node tables.
+    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), DBError> {
+        let mut vk_conn = self.db.conn.clone();
+
+        let _: () = redis::pipe()
+            .cmd("DEL")
+            .arg(&connections_key_for_node(node_addr))
+            .arg(&todo_vinstall_key_for_node(node_addr))
+            .arg(&todo_vrevoke_key_for_node(node_addr))
+            .arg(&todo_crevoke_key_for_node(node_addr))
+            .arg(&node_key_for_node(node_addr))
+            .query_async(&mut vk_conn)
+            .await?;
+
+        debug!(target: REDIS, "removed node state for node at addr {}", node_addr);
+        Ok(())
+    }
 }
 
 impl Node {
@@ -72,75 +162,6 @@ impl Node {
             cn,
             substrate_addr,
         })
-    }
-}
-
-impl NodeRepo {
-    pub fn new(db: &Handle) -> Self {
-        NodeRepo { db: db.clone() }
-    }
-
-    /// Add the node state record.
-    pub async fn add_node(&self, node: &Node) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let _: () = vk_conn
-            .set(
-                &node_key_for_node(&node.zpr_addr),
-                serde_json::to_string(&node)?,
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// Add state that an adapter is connected to a node.
-    pub async fn add_connected_adater(
-        &self,
-        node_addr: &IpAddr,
-        adapter_addr: &IpAddr,
-    ) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let _: () = vk_conn
-            .sadd(
-                connections_key_for_node(node_addr),
-                adapter_addr.to_string(),
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// Get the list of adapter addresses connected to the given node.
-    pub async fn get_connected_adapters(&self, node_addr: &IpAddr) -> Result<Vec<IpAddr>, DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let adapter_zaddr_strings: Vec<String> = vk_conn
-            .smembers(connections_key_for_node(node_addr))
-            .await?;
-        // convert to IpAddr - bad parse causes error
-        let mut adapter_addrs = Vec::new();
-        for addr_str in adapter_zaddr_strings {
-            match addr_str.parse::<IpAddr>() {
-                Ok(addr) => adapter_addrs.push(addr),
-                Err(e) => {
-                    return Err(DBError::InvalidData(format!(
-                        "failed to parse address string '{}' as IpAddr: {}",
-                        addr_str, e
-                    )));
-                }
-            }
-        }
-        Ok(adapter_addrs)
-    }
-
-    /// Removes all the ancillary node tables.
-    /// Caller must make sure that any cascading state is also removed.
-    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let _: () = vk_conn.del(&connections_key_for_node(node_addr)).await?;
-        let _: () = vk_conn.del(&todo_vinstall_key_for_node(node_addr)).await?;
-        let _: () = vk_conn.del(&todo_vrevoke_key_for_node(node_addr)).await?;
-        let _: () = vk_conn.del(&todo_crevoke_key_for_node(node_addr)).await?;
-        let _: () = vk_conn.del(&node_key_for_node(node_addr)).await?;
-        debug!(target: REDIS, "removed node state for node at addr {}", node_addr);
-        Ok(())
     }
 }
 

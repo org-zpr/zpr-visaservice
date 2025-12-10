@@ -20,7 +20,7 @@ const KEY_ESCAPES: &AsciiSet = &CONTROLS.add(b'%').add(b':');
 
 #[derive(Clone)]
 pub struct Handle {
-    pub conn: redis::aio::ConnectionManager,
+    conn: redis::aio::ConnectionManager,
 }
 
 /// In the redis, we sometimes need to use a ZPR address as part of a key.

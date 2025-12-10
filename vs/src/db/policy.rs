@@ -55,17 +55,33 @@ impl PolicyRepo {
             debug!(target: REDIS, "updating current policy in DB to phash {phash}");
             let pbuf = policy.get_serialized(); // get capn proto bytes
 
+            //
+            // policies:<PHASH>:blob -> <capn proto bytes>
+            //
             let _: () = vk_conn
                 .set(format!("{KEY_POLICIES}:{phash}:blob"), pbuf.as_ref())
                 .await?;
 
             let key_current = format!("{KEY_POLICY}:current");
 
-            let _: () = vk_conn.hset(&key_current, "phash", phash).await?;
-
-            let _: () = vk_conn
-                .hset(&key_current, "ctime", db::gen_timestamp())
+            //
+            // policy:current
+            //          |- phash -> the string <PHASH> value
+            //          |- ctime -> string
+            //
+            let _: () = redis::pipe()
+                .atomic()
+                .cmd("HSET")
+                .arg(&key_current)
+                .arg("phash")
+                .arg(&phash)
+                .cmd("HSET")
+                .arg(&key_current)
+                .arg("ctime")
+                .arg(db::gen_timestamp())
+                .query_async(&mut vk_conn)
                 .await?;
+
             updated = true;
         } else {
             debug!(target: REDIS, "set_current_policy found policy already set, hash={phash}");
