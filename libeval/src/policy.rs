@@ -107,10 +107,7 @@ impl Policy {
         if let Some(policy_rdr) = &self.policy_rdr {
             if let Ok(policy) = policy_rdr.get_root::<policy_capnp::policy::Reader>() {
                 if let Ok(created) = policy.get_created() {
-                    match created.to_str() {
-                        Ok(s) => return Some(s),
-                        Err(_) => return None,
-                    }
+                    return created.to_str().ok();
                 }
             }
         }
