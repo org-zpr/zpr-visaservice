@@ -37,4 +37,34 @@ pub enum VSError {
 
     #[error("attribute error: {0}")]
     AttributeError(#[from] actor::AttributeError),
+
+    #[error("database error: {0}")]
+    DBError(#[from] DBError),
+}
+
+#[derive(Debug, Error)]
+pub enum DBError {
+    #[error("redis error: {0}")]
+    RedisError(#[from] redis::RedisError),
+
+    #[error("policy missing required details: {0}")]
+    MissingRequired(String),
+
+    #[error("invalid data: {0}")]
+    InvalidData(String),
+
+    #[error("openssl error: {0}")]
+    OpenSslError(#[from] openssl::error::ErrorStack),
+
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    #[error("serialization/deserialization error: {0}")]
+    SerializationError(#[from] serde_json::Error),
+
+    #[error("attribute error: {0}")]
+    AttributeError(#[from] actor::AttributeError),
+
+    #[error("Cap'n Proto error: {0}")]
+    Capnp(#[from] capnp::Error),
 }

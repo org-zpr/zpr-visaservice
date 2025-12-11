@@ -10,12 +10,13 @@ use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
 use libeval::pio;
 
-mod actor_db;
+mod actor_mgr;
 mod admin_service;
 mod assembly;
 mod config;
 mod connection_control;
 mod cparam;
+mod db;
 mod error;
 mod logging;
 mod policy_mgr;
@@ -24,7 +25,7 @@ mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
 
-use crate::actor_db::ActorDb;
+use crate::actor_mgr::ActorMgr;
 use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
@@ -34,6 +35,8 @@ use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
+
+use redis::AsyncCommands;
 
 /// vs - ZPR visa service
 #[derive(Parser, Debug)]
@@ -52,7 +55,8 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-fn main() -> std::process::ExitCode {
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     enable_logging(cli.verbose);
     info!(target: MAIN, "vs version {}", env!("CARGO_PKG_VERSION"));
@@ -83,58 +87,68 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let _runtime_guard = runtime.enter();
-
     let local_set = tokio::task::LocalSet::new();
     let _local_set_guard = local_set.enter();
 
-    // ValKey
-    // Just go through steps to get a connection. Placeholder since we don't know
-    // where we need it yet.
-
     let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(config::VALKEY_URI);
     let vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
-    let res = runtime.block_on(async { vk_client.create_multiplexed_tokio_connection().await });
-    let (vk_conn, vk_fut) = match res {
-        Ok((conn, fut)) => {
-            info!(target: MAIN, "connected to ValKey at {vk_uri}");
-            (conn, fut)
-        }
-        Err(e) => {
-            error!(target: MAIN, "failed to connect to ValKey at {vk_uri}: {}", e);
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+
+    // TODO: Should I be creating this and saving it in assembly or or just keeping the client in assembly
+    // and then getting connections when I want them?
+    /*
+    let mut vk_conn = vk_client
+        .get_multiplexed_tokio_connection()
+        .await
+        .expect("failed to get redis connection");
+    */
+    let mut vk_conn = redis::aio::ConnectionManager::new(vk_client)
+        .await
+        .expect("failed to get redis connection");
+
+    let res: String = vk_conn.ping().await.expect("failed to ping ValKey server");
+    info!(target: MAIN, "connected to ValKey at {vk_uri}, ping response: {}", res);
+
+    let db_handle = db::Handle::new(vk_conn);
+
+    let mut js = JoinSet::new();
 
     let (vreq_tx, vreq_rx) =
         mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
 
-    let actor_db =
-        match instantiate_actor_db(cfg.core.vs_addr.unwrap_or(IpAddr::V6(config::VS_ZPR_ADDR))) {
-            Ok(adb) => adb,
-            Err(e) => {
-                error!(target: MAIN, "failed to instantiate actor database: {}", e);
-                return std::process::ExitCode::FAILURE;
-            }
-        };
+    let actor_mgr = match create_actor_mgr(
+        &db_handle,
+        cfg.core.vs_addr.unwrap_or(IpAddr::V6(config::VS_ZPR_ADDR)),
+    )
+    .await
+    {
+        Ok(adb) => adb,
+        Err(e) => {
+            error!(target: MAIN, "failed to instantiate actor database: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    let policy_mgr_res =
+        PolicyMgr::new_with_initial_policy(initial_policy, db::PolicyRepo::new(&db_handle)).await;
+    let policy_mgr = match policy_mgr_res {
+        Ok(pm) => pm,
+        Err(e) => {
+            error!(target: MAIN, "failed to instantiate policy manager: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    let visa_repo = db::VisaRepo::new(&db_handle);
 
     let asm = Arc::new(Assembly {
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
-        policy_mgr: PolicyMgr::new_with_initial_policy(initial_policy),
-        actor_db: Arc::new(actor_db),
-        vk_conn: Arc::new(vk_conn),
+        policy_mgr: policy_mgr,
+        actor_mgr: Arc::new(actor_mgr),
+        state_db: db_handle,
         vreq_chan: vreq_tx,
-        visa_mgr: VisaMgr::new(),
+        visa_mgr: VisaMgr::new(visa_repo),
     });
-
-    let mut js = JoinSet::new();
-
-    js.spawn(vk_fut); // runs redis
 
     js.spawn_local(signal_worker::launch(asm.clone()));
 
@@ -146,8 +160,9 @@ fn main() -> std::process::ExitCode {
         ),
     ));
 
-    let rt_handle = runtime.handle().clone();
     let admin_asm = asm.clone();
+
+    let rt_handle = tokio::runtime::Handle::current();
     js.spawn_blocking(move || {
         rt_handle.block_on(start_admin_server(
             &cfg.core.admin_key,
@@ -169,19 +184,24 @@ fn main() -> std::process::ExitCode {
     // TODO: Setup/launch the workers for the visa service. Those that will do the actual work
     // of generating visas, and all the housekeeping.
 
-    local_set.block_on(&runtime, async {
-        while let Some(res) = js.join_next().await {
-            res.unwrap();
-        }
-    });
+    local_set
+        .run_until(async {
+            while let Some(res) = js.join_next().await {
+                res.unwrap();
+            }
+        })
+        .await;
 
     info!(target: MAIN, "exiting");
     std::process::ExitCode::SUCCESS
 }
 
-fn instantiate_actor_db(vs_addr: IpAddr) -> Result<ActorDb, VSError> {
-    let adb = ActorDb::new();
+async fn create_actor_mgr(dbh: &db::Handle, vs_addr: IpAddr) -> Result<ActorMgr, VSError> {
+    let adb = db::ActorRepo::new(dbh);
+    let ndb = db::NodeRepo::new(dbh);
+    let mgr = ActorMgr::new(adb, ndb);
     // We are the visa service. As we say so it shall be.
+    // The odd thing here is that we do not know what node we are connected to yet.
     let vs_actor = {
         let mut vsa = Actor::new();
         vsa.add_attribute(Attribute::new_non_expiring(
@@ -200,6 +220,6 @@ fn instantiate_actor_db(vs_addr: IpAddr) -> Result<ActorDb, VSError> {
         vsa.add_identity_key(0, key::CN.into())?;
         vsa
     };
-    adb.add_adapter(vs_actor)?;
-    Ok(adb)
+    mgr.add_magic_adapter(&vs_actor).await?;
+    Ok(mgr)
 }

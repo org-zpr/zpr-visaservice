@@ -50,6 +50,10 @@ impl Actor {
         self.attrs.iter()
     }
 
+    pub fn identity_keys_iter(&self) -> impl Iterator<Item = &String> {
+        self.identity_keys.iter()
+    }
+
     /// Add the name of an identity attribute. The attribute must
     /// exist or an error is returned.  The `order` parameter is the
     /// priority of the key, 0 is highest.  Passing usize::MAX appends
@@ -116,6 +120,10 @@ impl Actor {
         Ok(())
     }
 
+    pub fn get_attribute(&self, key: &str) -> Option<&Attribute> {
+        self.attrs.iter().find(|a| a.get_key() == key)
+    }
+
     /// If there are identity attributes, the values are returned here
     /// in order.
     pub fn get_identity(&self) -> Option<Vec<&str>> {
@@ -156,6 +164,18 @@ impl Actor {
         self.attrs
             .iter()
             .any(|a| a.get_key() == key::SERVICES && a.value_has(service_id))
+    }
+
+    pub fn services_iter(&self) -> impl Iterator<Item = &str> {
+        // Get the key::SERVICES attribute which is a comma-separated list of services.
+        let services_str = match self.attrs.iter().find(|a| a.get_key() == key::SERVICES) {
+            Some(attr) => attr.get_value(),
+            None => "",
+        };
+        services_str
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     }
 
     pub fn has_attribute_named(&self, key: &str) -> bool {

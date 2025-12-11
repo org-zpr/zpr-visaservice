@@ -173,9 +173,6 @@ impl VSHandleImpl {
             ));
         };
 
-        //let vreq = args.get()?.get_req()?;
-        //let cp_pdesc = vreq.get_packet()?;
-
         let vreq = match args.get() {
             Ok(a) => match a.get_req() {
                 Ok(r) => r,
@@ -542,7 +539,18 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // The VS will create a "real" one and queue it to be sent to the node once
         // it registers its VSS.
 
-        if let Err(e) = self.asm.actor_db.add_node(node_actor.clone()) {
+        // Since this is a new node and we do not yet support reconnects, make sure visa
+        // table is clean for this node.
+        if let Err(e) = self
+            .asm
+            .visa_mgr
+            .clear_node_state(&node_actor.get_zpr_addr().unwrap())
+            .await
+        {
+            warn!(target: VSAPI, "failed to clear node state for {:?}: {}", node_actor.get_cn(), e);
+        }
+
+        if let Err(e) = self.asm.actor_mgr.add_node(&node_actor).await {
             error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", node_actor.get_cn(), e);
             let mut err_builder = res_builder.init_error();
             write_error(
@@ -638,7 +646,13 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             self.node.get_cn(), zpr_addr, reason
         );
 
-        match self.asm.cc.disconnect(zpr_addr, reason).await {
+        // The disconnect call updates our state database.
+        match self
+            .asm
+            .cc
+            .disconnect(self.asm.clone(), zpr_addr, reason)
+            .await
+        {
             Ok(()) => (),
             Err(e) => {
                 warn!(target: VSAPI, "error processing disconnect of {}: {}", zpr_addr, e);
@@ -653,14 +667,6 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             }
         }
 
-        match self.asm.actor_db.remove_actor_by_zpr_addr(&zpr_addr) {
-            Ok(()) => (),
-            Err(e) => {
-                // Caller can't do anything with this. So just log and continue.
-                error!(target: VSAPI, "failed to remove disconnected actor with addr {zpr_addr} from actor db: {}", e);
-            }
-        };
-
         let mut res_builder = resp.get().init_res();
         res_builder.set_ok(());
         Ok(())
@@ -673,12 +679,28 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "visa_request from {:?}", self.node.get_cn());
 
+        // A node must have an address.
+        let requestor_addr = self
+            .node
+            .get_zpr_addr()
+            .expect("programming error - node must have an address");
+
         match self.do_visa_request(args).await {
             Ok(decision) => match decision {
                 VisaDecision::Allow(visa) => {
                     let res_builder = response.get().init_resp();
                     let mut visa_bldr = res_builder.init_allow();
                     visa.write_to(&mut visa_bldr);
+
+                    // At this point visa service assumes the visa is installed.
+                    if let Err(e) = self
+                        .asm
+                        .visa_mgr
+                        .visa_installed(visa.issuer_id, requestor_addr)
+                        .await
+                    {
+                        error!(target: VSAPI, "failed to update visa {} as installed on {}: {}", visa.issuer_id, requestor_addr, e);
+                    }
                 }
                 VisaDecision::Deny(denial_reason) => {
                     let mut res_builder = response.get().init_resp();

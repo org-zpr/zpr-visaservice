@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::actor_db::ActorDb;
+use crate::actor_mgr::ActorMgr;
 use crate::connection_control::ConnectionControl;
+use crate::db;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 
@@ -12,8 +13,8 @@ pub struct Assembly {
     pub system_start_time: std::time::Instant,
     pub cc: ConnectionControl,
     pub policy_mgr: PolicyMgr,
-    pub actor_db: Arc<ActorDb>,
-    pub vk_conn: Arc<redis::aio::MultiplexedConnection>,
+    pub actor_mgr: Arc<ActorMgr>,
+    pub state_db: db::Handle, // TODO: May not actually need this if db_handle is in all the required "managers".
     pub vreq_chan: mpsc::Sender<crate::visareq_worker::VisaRequestJob>,
     pub visa_mgr: VisaMgr,
 }

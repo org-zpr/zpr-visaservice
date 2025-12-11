@@ -41,6 +41,7 @@ pub struct Policy {
     policy_rdr: Option<Arc<capnp::message::Reader<capnp::serialize::OwnedSegments>>>,
     vinst: u64,
     bootstrap_keys: HashMap<String, PKey<Public>>,
+    serialized: Bytes,
 }
 
 impl Policy {
@@ -50,6 +51,10 @@ impl Policy {
 
     /// Pass a v2 format encoded Policy struct here. This can be found inside a PolicyContainer.
     pub fn new_from_policy_bytes(encoded_policy_bytes: Bytes) -> Result<Self, PolicyError> {
+        // Keep a copy of the bytes so we can make it avaialbe for storage.
+        // TODO: Do we actually want the whole container?
+        let serialized = encoded_policy_bytes.clone();
+
         // parse the policy bytes using capnp
         let policy_reader = capnp::serialize::read_message(
             encoded_policy_bytes.reader(),
@@ -62,6 +67,7 @@ impl Policy {
         Ok(Policy {
             policy_rdr: Some(Arc::new(policy_reader)),
             bootstrap_keys,
+            serialized,
             ..Default::default()
         })
     }
@@ -70,6 +76,10 @@ impl Policy {
         &self,
     ) -> Option<Arc<capnp::message::Reader<capnp::serialize::OwnedSegments>>> {
         self.policy_rdr.clone()
+    }
+
+    pub fn get_serialized(&self) -> &Bytes {
+        &self.serialized
     }
 
     pub fn vinst(&self) -> u64 {
@@ -90,6 +100,43 @@ impl Policy {
 
     pub fn get_bootstrap_key_by_cn(&self, cn: &str) -> Option<PKey<Public>> {
         self.bootstrap_keys.get(cn).cloned()
+    }
+
+    /// Get the created timestamp string from the policy, if present.
+    pub fn get_created(&self) -> Option<&str> {
+        if let Some(policy_rdr) = &self.policy_rdr {
+            if let Ok(policy) = policy_rdr.get_root::<policy_capnp::policy::Reader>() {
+                if let Ok(created) = policy.get_created() {
+                    return created.to_str().ok();
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the version number from the policy, if present.
+    pub fn get_version(&self) -> Option<u64> {
+        if let Some(policy_rdr) = &self.policy_rdr {
+            if let Ok(policy) = policy_rdr.get_root::<policy_capnp::policy::Reader>() {
+                return Some(policy.get_version());
+            }
+        }
+        None
+    }
+
+    /// Get the metadata string from the policy, if present.
+    pub fn get_metadata(&self) -> Option<&str> {
+        if let Some(policy_rdr) = &self.policy_rdr {
+            if let Ok(policy) = policy_rdr.get_root::<policy_capnp::policy::Reader>() {
+                if let Ok(metadata) = policy.get_metadata() {
+                    match metadata.to_str() {
+                        Ok(s) => return Some(s),
+                        Err(_) => return None,
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn load_bootstrap_keys(

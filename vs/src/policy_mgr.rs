@@ -11,22 +11,51 @@
 //! The [libeval::policy::Policy] is designed to be easily cloned (as it is in an Arc) and
 //! accessible by concurrent threads.
 
-use libeval::policy::Policy;
-
 use arc_swap::ArcSwap;
+use libeval::policy::Policy;
 use std::sync::Arc;
+use thiserror::Error;
+use tracing::debug;
+
+use crate::db;
+use crate::error::DBError;
+use crate::logging::targets::MAIN;
+
+#[derive(Debug, Error)]
+pub enum PMError {
+    #[error("redis error: {0}")]
+    RedisError(#[from] redis::RedisError),
+
+    #[error("policy database error: {0}")]
+    PolicyDBError(#[from] DBError),
+}
 
 #[allow(dead_code)]
 pub struct PolicyMgr {
     inner: ArcSwap<Policy>,
+    repo: db::PolicyRepo,
 }
 
 impl PolicyMgr {
-    pub fn new_with_initial_policy(mut policy: Policy) -> Self {
+    /// Create a new policy manager, initializing it with the given initial policy.
+    /// This will store the initial policy into the database if not already present.
+    ///
+    /// Note that policy is written to DB for backup purposes. It is kept in memory
+    /// here for general access by rest of visa service.
+    pub async fn new_with_initial_policy(
+        mut policy: Policy,
+        repo: db::PolicyRepo,
+    ) -> Result<Self, PMError> {
+        debug!(target: MAIN, "initializing policy manager");
         policy.set_vinst(1);
-        PolicyMgr {
+
+        let _db_updated = repo.set_current_policy(&policy, false).await?;
+
+        debug!(target: MAIN, "policy manager initialized successfully");
+        Ok(PolicyMgr {
             inner: ArcSwap::from_pointee(policy),
-        }
+            repo,
+        })
     }
 
     /// Callers should drop the policy as quickly as possible to avoid missing a policy update.
@@ -37,11 +66,12 @@ impl PolicyMgr {
     /// Update the current policy.  The new policy will be assigned a new version instance number (vinst)
     /// that is one greater than the current policy's vinst.
     #[allow(dead_code)]
-    fn update_policy(&self, new_policy: Policy) {
+    fn update_policy(&self, new_policy: Policy) -> Result<(), PMError> {
         let mut np = Arc::new(new_policy);
         self.inner.rcu(move |op| {
             Arc::get_mut(&mut np).unwrap().set_vinst(op.vinst() + 1);
             np.clone()
         });
+        Ok(())
     }
 }

@@ -28,6 +28,7 @@ use tracing::{debug, info, warn};
 
 use crate::assembly::Assembly;
 use crate::error::VSError;
+use libeval::actor::Actor;
 use libeval::eval::{EvalContext, EvalDecision};
 use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
@@ -103,25 +104,14 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
 }
 
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
-    let Some(source_actor) = asm
-        .actor_db
-        .get_actor_by_zpr_addr(&job.packet_desc.source_addr())
-    else {
-        debug!(
-            "source actor not found for visa request from {:?}",
-            job.requesting_node
-        );
-        return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
+    let (source_actor, dest_actor) = get_actors(&asm, job).await?;
+    let source_actor = match source_actor {
+        Some(actor) => actor,
+        None => return Ok(VisaDecision::Deny(DenyCode::SourceNotFound)),
     };
-    let Some(dest_actor) = asm
-        .actor_db
-        .get_actor_by_zpr_addr(&job.packet_desc.dest_addr())
-    else {
-        debug!(
-            "dest actor not found for visa request from {:?}",
-            job.requesting_node
-        );
-        return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
+    let dest_actor = match dest_actor {
+        Some(actor) => actor,
+        None => return Ok(VisaDecision::Deny(DenyCode::DestNotFound)),
     };
 
     let policy = asm.policy_mgr.get_current();
@@ -148,7 +138,11 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         }
         EvalDecision::Allow(hits) => {
             // TODO: For now we pick the first hit.
-            match asm.visa_mgr.create_visa(&job.packet_desc, &hits[0]) {
+            match asm
+                .visa_mgr
+                .create_visa(&job.requesting_node, &job.packet_desc, &hits[0])
+                .await
+            {
                 Ok(visa) => Ok(VisaDecision::Allow(visa)),
                 Err(e) => {
                     debug!(
@@ -167,4 +161,44 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             Ok(VisaDecision::Deny(DenyCode::Denied))
         }
     }
+}
+
+// Lookup source and destination actors in the DB based on ZPR address.
+async fn get_actors(
+    asm: &Arc<Assembly>,
+    job: &VisaRequestJob,
+) -> Result<(Option<Actor>, Option<Actor>), VSError> {
+    let source_actor = match asm
+        .actor_mgr
+        .get_actor_by_zpr_addr(&job.packet_desc.source_addr())
+        .await
+    {
+        Ok(maybe_actor) => maybe_actor,
+        Err(e) => {
+            debug!(
+                "error retrieving source actor for visa request from {:?}: {e}",
+                job.requesting_node
+            );
+            return Err(VSError::InternalError(
+                "error retrieving source actor".into(),
+            ));
+        }
+    };
+
+    let dest_actor = match asm
+        .actor_mgr
+        .get_actor_by_zpr_addr(&job.packet_desc.dest_addr())
+        .await
+    {
+        Ok(maybe_actor) => maybe_actor,
+        Err(e) => {
+            debug!(
+                "error retrieving dest actor for visa request from {:?}: {e}",
+                job.requesting_node
+            );
+            return Err(VSError::InternalError("error retrieving dest actor".into()));
+        }
+    };
+
+    Ok((source_actor, dest_actor))
 }
