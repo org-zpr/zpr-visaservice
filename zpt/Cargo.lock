@@ -503,7 +503,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.17",
  "tracing",
- "zpr",
+ "zpr 0.4.0",
 ]
 
 [[package]]
@@ -1547,6 +1547,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zpr"
+version = "0.4.0"
+source = "git+https://github.com/org-zpr/zpr.git?tag=v0.1.0#7edfe8212acc1d661db01a7f8bb60302f441695e"
+dependencies = [
+ "capnp",
+ "capnpc",
+ "open-enum",
+ "strum",
+ "thiserror 1.0.69",
+ "url",
+ "vsapi",
+ "zerocopy",
+]
+
+[[package]]
 name = "zpt"
 version = "0.1.0"
 dependencies = [
@@ -1563,5 +1578,5 @@ dependencies = [
  "thiserror 2.0.17",
  "tracing",
  "tracing-subscriber",
- "zpr",
+ "zpr 0.2.1",
 ]

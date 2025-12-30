@@ -51,22 +51,22 @@ impl VisaMgr {
                     match hit.direction {
                         Direction::Forward => {
                             // client->server, allow any source port.
-                            (0, pdesc.five_tuple.dst_port)
+                            (0, pdesc.five_tuple.dest_port)
                         }
                         Direction::Reverse => {
                             // server->client, allow any dest port.
-                            (pdesc.five_tuple.src_port, 0)
+                            (pdesc.five_tuple.source_port, 0)
                         }
                     }
                 } else {
                     // unidirectional, exact ports.
                     // TODO: What is ReRequest flag?
-                    (pdesc.five_tuple.src_port, pdesc.five_tuple.dst_port)
+                    (pdesc.five_tuple.source_port, pdesc.five_tuple.dest_port)
                 }
             }
             ip_proto::IPV6_ICMP => {
                 // icmp type/code in ports
-                (pdesc.five_tuple.src_port, pdesc.five_tuple.dst_port)
+                (pdesc.five_tuple.source_port, pdesc.five_tuple.dest_port)
             }
             _ => {
                 return Err(VSError::InternalError(format!(
@@ -97,8 +97,8 @@ impl VisaMgr {
             issuer_id: visa_id,
             config: 0,
             expires: UNIX_EPOCH + Duration::from_millis(expiration),
-            src_addr: pdesc.five_tuple.src_address.clone(),
-            dst_addr: pdesc.five_tuple.dst_address.clone(),
+            source_addr: pdesc.five_tuple.source_addr.clone(),
+            dest_addr: pdesc.five_tuple.dest_addr.clone(),
             dock_pep: pep,
             cons: None,
             session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
