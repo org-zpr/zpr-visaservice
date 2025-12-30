@@ -220,7 +220,7 @@ impl ZMachine {
         // TODO: Someting interesting with TCP flags?
 
         let pd = PacketDesc::new_tcp(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
-        self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
+        self.do_eval(state, src_actor, dst_actor, &pd?, outfmt)
     }
 
     fn eval_udp(
@@ -239,7 +239,7 @@ impl ZMachine {
         )?;
 
         let pd = PacketDesc::new_udp(DEF_SOURCE_ADDR, DEF_DEST_ADDR, src_port, dst_port);
-        self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
+        self.do_eval(state, src_actor, dst_actor, &pd?, outfmt)
     }
 
     fn eval_icmp(
@@ -261,7 +261,7 @@ impl ZMachine {
         let src_actor = self.resolve_actor_no_port(state, source_expr)?;
         let dst_actor = self.resolve_actor_no_port(state, dest_expr)?;
         let pd = PacketDesc::new_icmp(DEF_SOURCE_ADDR, DEF_DEST_ADDR, icmp_type, icmp_code);
-        self.do_eval(state, src_actor, dst_actor, &pd, outfmt)
+        self.do_eval(state, src_actor, dst_actor, &pd?, outfmt)
     }
 
     fn do_eval(

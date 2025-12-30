@@ -2,6 +2,7 @@ use libeval::actor::AttributeError;
 use libeval::policy::PolicyError;
 use rustyline::error::ReadlineError;
 use thiserror::Error;
+use zpr::vsapi_types::VsapiTypeError;
 
 #[derive(Debug, Error)]
 pub enum MachineError {
@@ -11,6 +12,8 @@ pub enum MachineError {
     Pio(#[from] PioError),
     #[error("attribute error: {0}")]
     Attribute(#[from] AttributeError),
+    #[error("vsapi type error: {0}")]
+    VsapiTypeError(#[from] VsapiTypeError),
 }
 
 #[derive(Debug, Error)]
