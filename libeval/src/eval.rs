@@ -792,7 +792,8 @@ mod test {
         service
             .add_attr_from_parts("service.content", "red", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let packet =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -838,7 +839,8 @@ mod test {
         service
             .add_attr_from_parts("service.content", "red", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let packet =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -881,7 +883,8 @@ mod test {
         service
             .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let packet =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -915,7 +918,8 @@ mod test {
         service
             .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let packet =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -950,7 +954,8 @@ mod test {
         service
             .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_icmp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0).unwrap();
+        let packet =
+            PacketDesc::new_icmp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -989,7 +994,8 @@ mod test {
 
         // We picked up an echo reply packet.
         // According to policy this should match.
-        let packet = PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0).unwrap();
+        let packet =
+            PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0).unwrap();
 
         let decision = ctx.eval_request(&service, &user, &packet).unwrap();
         match decision {
@@ -1027,7 +1033,8 @@ mod test {
             .unwrap();
 
         // Echo reply to a red user
-        let packet = PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0).unwrap();
+        let packet =
+            PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0).unwrap();
         let decision = ctx.eval_request(&service, &user, &packet).unwrap();
         match decision {
             EvalDecision::NoMatch(s) => {
