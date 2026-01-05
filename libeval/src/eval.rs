@@ -792,7 +792,8 @@ mod test {
         service
             .add_attr_from_parts("service.content", "red", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -838,7 +839,8 @@ mod test {
         service
             .add_attr_from_parts("service.content", "red", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -849,8 +851,8 @@ mod test {
                     vinfo.zpl,
                     "(line 2) allow red users to access content:red services"
                 );
-                assert_eq!(vinfo.source_addr, packet.five_tuple.src_address);
-                assert_eq!(vinfo.dest_addr, packet.five_tuple.dst_address);
+                assert_eq!(vinfo.source_addr, packet.five_tuple.source_addr);
+                assert_eq!(vinfo.dest_addr, packet.five_tuple.dest_addr);
                 assert_eq!(vinfo.protocol, packet.protocol());
                 assert_eq!(vinfo.source_port, 0); // high port becomes 0
                 assert_eq!(vinfo.dest_port, 80);
@@ -881,7 +883,8 @@ mod test {
         service
             .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -915,7 +918,8 @@ mod test {
         service
             .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80);
+        let packet =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -950,7 +954,8 @@ mod test {
         service
             .add_attr_from_parts("user.bas_id", "1233", Duration::from_secs(60))
             .unwrap();
-        let packet = PacketDesc::new_icmp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0);
+        let packet =
+            PacketDesc::new_icmp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 0x80, 0).unwrap();
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
@@ -958,8 +963,8 @@ mod test {
                 assert_eq!(hits.len(), 1);
                 let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
                 assert_eq!(vinfo.zpl, "(line 5) allow red users to access pingdb");
-                assert_eq!(vinfo.source_addr, packet.five_tuple.src_address);
-                assert_eq!(vinfo.dest_addr, packet.five_tuple.dst_address);
+                assert_eq!(vinfo.source_addr, packet.five_tuple.source_addr);
+                assert_eq!(vinfo.dest_addr, packet.five_tuple.dest_addr);
                 assert_eq!(vinfo.protocol, packet.protocol());
                 assert_eq!(vinfo.source_port, 0x80);
                 assert_eq!(vinfo.dest_port, 0x0);
@@ -989,7 +994,8 @@ mod test {
 
         // We picked up an echo reply packet.
         // According to policy this should match.
-        let packet = PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);
+        let packet =
+            PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0).unwrap();
 
         let decision = ctx.eval_request(&service, &user, &packet).unwrap();
         match decision {
@@ -997,8 +1003,8 @@ mod test {
                 assert_eq!(hits.len(), 1);
                 let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
                 assert_eq!(vinfo.zpl, "(line 5) allow red users to access pingdb");
-                assert_eq!(vinfo.source_addr, packet.five_tuple.src_address);
-                assert_eq!(vinfo.dest_addr, packet.five_tuple.dst_address);
+                assert_eq!(vinfo.source_addr, packet.five_tuple.source_addr);
+                assert_eq!(vinfo.dest_addr, packet.five_tuple.dest_addr);
                 assert_eq!(vinfo.protocol, packet.protocol());
                 assert_eq!(vinfo.source_port, 0x81);
                 assert_eq!(vinfo.dest_port, 0x0);
@@ -1027,7 +1033,8 @@ mod test {
             .unwrap();
 
         // Echo reply to a red user
-        let packet = PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0);
+        let packet =
+            PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0).unwrap();
         let decision = ctx.eval_request(&service, &user, &packet).unwrap();
         match decision {
             EvalDecision::NoMatch(s) => {
