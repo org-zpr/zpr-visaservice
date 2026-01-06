@@ -38,33 +38,65 @@ pub mod key {
 #[allow(dead_code)]
 pub struct Attribute {
     key: String,
-    value: String,
+    value: Vec<String>,
     expires_at: SystemTime,
 }
 
 impl Attribute {
-    pub fn new(key: String, value: String, expires_at: SystemTime) -> Self {
+    pub fn new(key: String, value: &[String], expires_at: SystemTime) -> Self {
         Attribute {
             key,
-            value,
+            value: value.to_vec(),
             expires_at,
         }
     }
 
-    pub fn new_expiring_in(key: String, value: String, expires_in: Duration) -> Self {
+    pub fn new_single_value(key: String, value: String, expires_at: SystemTime) -> Self {
         Attribute {
             key,
-            value,
+            value: vec![value],
+            expires_at,
+        }
+    }
+
+    pub fn new_single_value_expiring_in(key: String, value: String, expires_in: Duration) -> Self {
+        Attribute {
+            key,
+            value: vec![value],
+            expires_at: SystemTime::now() + expires_in,
+        }
+    }
+
+    pub fn new_expiring_in(key: String, value: &[String], expires_in: Duration) -> Self {
+        Attribute {
+            key,
+            value: value.to_vec(),
+            expires_at: SystemTime::now() + expires_in,
+        }
+    }
+
+    pub fn new_expiring_in_strs(key: String, value: &[&str], expires_in: Duration) -> Self {
+        Attribute {
+            key,
+            value: value.iter().map(|s| s.to_string()).collect(),
             expires_at: SystemTime::now() + expires_in,
         }
     }
 
     /// Helper to create an attribute that functionally never expires by setting the
     /// expiration in the far future.
-    pub fn new_non_expiring(key: String, value: String) -> Self {
+    pub fn new_single_value_non_expiring(key: String, value: String) -> Self {
         Attribute {
             key,
-            value,
+            value: vec![value],
+            expires_at: SystemTime::now() + NEVER_EXPIRES,
+        }
+    }
+
+    pub fn new_non_expiring(key: String, value: &[String]) -> Self {
+        Attribute {
+            key,
+            value: value.to_vec(),
             expires_at: SystemTime::now() + NEVER_EXPIRES,
         }
     }
@@ -73,8 +105,12 @@ impl Attribute {
         &self.key
     }
 
-    pub fn get_value(&self) -> &str {
+    pub fn get_value(&self) -> &[String] {
         &self.value
+    }
+
+    pub fn get_value_len(&self) -> usize {
+        self.value.len()
     }
 
     pub fn get_expires(&self) -> SystemTime {
@@ -85,9 +121,8 @@ impl Attribute {
         SystemTime::now() > self.expires_at
     }
 
-    // Treat value as a comma-separated list and check if it contains v.
     pub fn value_has(&self, v: &str) -> bool {
-        self.value.split(',').any(|s| s.trim() == v)
+        self.value.iter().any(|s| s == v)
     }
 
     pub fn value_has_all(&self, vs: &[String]) -> bool {

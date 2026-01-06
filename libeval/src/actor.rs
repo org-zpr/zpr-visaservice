@@ -80,7 +80,7 @@ impl Actor {
         value: &str,
         expires_in: Duration,
     ) -> Result<(), AttributeError> {
-        self.add_attribute(Attribute::new_expiring_in(
+        self.add_attribute(Attribute::new_single_value_expiring_in(
             key.into(),
             value.into(),
             expires_in,
@@ -93,24 +93,24 @@ impl Actor {
         let value = attr.get_value();
         match key {
             key::ZPR_ADDR => {
-                if let Ok(ip) = value.parse::<IpAddr>() {
+                if let Ok(ip) = value[0].parse::<IpAddr>() {
                     self.zpr_addr = Some(ip);
                 } else {
                     return Err(AttributeError::AttributeError(format!(
                         "Invalid IP address in zpr.addr attribute: '{}'",
-                        value
+                        value[0]
                     )));
                 }
             }
-            key::SERVICES => self.provider = !value.is_empty(),
-            key::CN => self.cn = Some(value.to_string()),
-            key::ROLE => match value {
+            key::SERVICES => self.provider = !value.is_empty() && !value[0].is_empty(),
+            key::CN => self.cn = Some(value[0].to_string()),
+            key::ROLE => match value[0].as_str() {
                 ROLE_ADAPTER => self.role = Role::Adapter,
                 ROLE_NODE => self.role = Role::Node,
                 _ => {
                     return Err(AttributeError::AttributeError(format!(
                         "role must be 'node' or 'adapter', not: '{}'",
-                        value
+                        value[0]
                     )));
                 }
             },
@@ -124,23 +124,19 @@ impl Actor {
         self.attrs.iter().find(|a| a.get_key() == key)
     }
 
-    /// If there are identity attributes, the values are returned here
+    /// If there are identity attributes, the values are copied and returned here
     /// in order.
-    pub fn get_identity(&self) -> Option<Vec<&str>> {
+    pub fn get_identity(&self) -> Option<Vec<String>> {
         if self.identity_keys.is_empty() {
             None
         } else {
-            Some(
-                self.identity_keys
-                    .iter()
-                    .filter_map(|key| {
-                        self.attrs
-                            .iter()
-                            .find(|a| a.get_key() == key)
-                            .map(|a| a.get_value())
-                    })
-                    .collect(),
-            )
+            let mut identity_values: Vec<String> = Vec::new();
+            for key in &self.identity_keys {
+                if let Some(attr) = self.get_attribute(key) {
+                    identity_values.push(attr.get_value()[0].clone());
+                }
+            }
+            Some(identity_values)
         }
     }
 
@@ -167,15 +163,11 @@ impl Actor {
     }
 
     pub fn services_iter(&self) -> impl Iterator<Item = &str> {
-        // Get the key::SERVICES attribute which is a comma-separated list of services.
-        let services_str = match self.attrs.iter().find(|a| a.get_key() == key::SERVICES) {
-            Some(attr) => attr.get_value(),
-            None => "",
-        };
-        services_str
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        self.attrs
+            .iter()
+            .find(|a| a.get_key() == key::SERVICES)
+            .into_iter()
+            .flat_map(|attr| attr.get_value().iter().map(|s| s.as_str()))
     }
 
     pub fn has_attribute_named(&self, key: &str) -> bool {
@@ -185,7 +177,7 @@ impl Actor {
     pub fn has_attribute_value(&self, key: &str, value: &str) -> bool {
         self.attrs
             .iter()
-            .any(|a| a.get_key() == key && a.get_value() == value)
+            .any(|a| a.get_key() == key && a.get_value_len() == 1 && a.get_value()[0] == value)
     }
 
     /// TRUE if all attribute values are present.
@@ -211,7 +203,7 @@ mod tests {
     #[test]
     fn test_add_attribute_zpr_addr_ipv4() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             key::ZPR_ADDR.to_string(),
             "192.168.1.100".to_string(),
             Duration::from_secs(3600),
@@ -230,7 +222,7 @@ mod tests {
     #[test]
     fn test_add_attribute_zpr_addr_ipv6() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             key::ZPR_ADDR.to_string(),
             "::1".to_string(),
             Duration::from_secs(3600),
@@ -246,7 +238,7 @@ mod tests {
     #[test]
     fn test_add_attribute_zpr_addr_invalid() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             key::ZPR_ADDR.to_string(),
             "not-an-ip-address".to_string(),
             Duration::from_secs(3600),
@@ -268,9 +260,9 @@ mod tests {
     #[test]
     fn test_add_attribute_services_non_empty() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_expiring_in_strs(
             key::SERVICES.to_string(),
-            "auth,database,logging".to_string(),
+            &["auth", "database", "logging"],
             Duration::from_secs(3600),
         );
 
@@ -284,7 +276,7 @@ mod tests {
     #[test]
     fn test_add_attribute_services_empty() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             key::SERVICES.to_string(),
             "".to_string(),
             Duration::from_secs(3600),
@@ -300,7 +292,7 @@ mod tests {
     #[test]
     fn test_add_attribute_cn() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             key::CN.to_string(),
             "my-test-node".to_string(),
             Duration::from_secs(3600),
@@ -316,7 +308,7 @@ mod tests {
     #[test]
     fn test_add_attribute_role_adapter() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             key::ROLE.to_string(),
             ROLE_ADAPTER.to_string(),
             Duration::from_secs(3600),
@@ -333,7 +325,7 @@ mod tests {
     #[test]
     fn test_add_attribute_role_node() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             key::ROLE.to_string(),
             ROLE_NODE.to_string(),
             Duration::from_secs(3600),
@@ -350,7 +342,7 @@ mod tests {
     #[test]
     fn test_add_attribute_role_invalid() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             key::ROLE.to_string(),
             "invalid-role".to_string(),
             Duration::from_secs(3600),
@@ -367,7 +359,7 @@ mod tests {
     #[test]
     fn test_add_attribute_non_special_key() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             "custom.attribute".to_string(),
             "custom-value".to_string(),
             Duration::from_secs(3600),
@@ -392,7 +384,7 @@ mod tests {
         let mut actor = Actor::new();
 
         // Set initial values
-        let initial_attr = Attribute::new_expiring_in(
+        let initial_attr = Attribute::new_single_value_expiring_in(
             key::ROLE.to_string(),
             ROLE_ADAPTER.to_string(),
             Duration::from_secs(3600),
@@ -401,7 +393,7 @@ mod tests {
         assert_eq!(actor.role, Role::Adapter);
 
         // Overwrite with new value
-        let new_attr = Attribute::new_expiring_in(
+        let new_attr = Attribute::new_single_value_expiring_in(
             key::ROLE.to_string(),
             ROLE_NODE.to_string(),
             Duration::from_secs(3600),
@@ -418,7 +410,7 @@ mod tests {
     fn test_add_identity_key_success() {
         let mut actor = Actor::new();
         // First add an attribute that can be used as an identity
-        let attr = Attribute::new_expiring_in(
+        let attr = Attribute::new_single_value_expiring_in(
             "user.email".to_string(),
             "test@example.com".to_string(),
             Duration::from_secs(3600),
@@ -455,21 +447,21 @@ mod tests {
         let mut actor = Actor::new();
         // Add multiple attributes
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.email".to_string(),
                 "test@example.com".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.id".to_string(),
                 "12345".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.name".to_string(),
                 "John Doe".to_string(),
                 Duration::from_secs(3600),
@@ -490,14 +482,14 @@ mod tests {
         let mut actor = Actor::new();
         // Add multiple attributes
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.email".to_string(),
                 "test@example.com".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.id".to_string(),
                 "12345".to_string(),
                 Duration::from_secs(3600),
@@ -518,21 +510,21 @@ mod tests {
         let mut actor = Actor::new();
         // Add multiple attributes
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.email".to_string(),
                 "test@example.com".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.id".to_string(),
                 "12345".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.name".to_string(),
                 "John Doe".to_string(),
                 Duration::from_secs(3600),
@@ -563,7 +555,7 @@ mod tests {
     fn test_get_identity_single_key() {
         let mut actor = Actor::new();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.email".to_string(),
                 "test@example.com".to_string(),
                 Duration::from_secs(3600),
@@ -583,21 +575,21 @@ mod tests {
     fn test_get_identity_multiple_keys() {
         let mut actor = Actor::new();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.email".to_string(),
                 "test@example.com".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.id".to_string(),
                 "12345".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "user.name".to_string(),
                 "John Doe".to_string(),
                 Duration::from_secs(3600),
@@ -622,21 +614,21 @@ mod tests {
     fn test_get_identity_preserves_order() {
         let mut actor = Actor::new();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "attr.a".to_string(),
                 "value_a".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "attr.b".to_string(),
                 "value_b".to_string(),
                 Duration::from_secs(3600),
             ))
             .unwrap();
         actor
-            .add_attribute(Attribute::new_expiring_in(
+            .add_attribute(Attribute::new_single_value_expiring_in(
                 "attr.c".to_string(),
                 "value_c".to_string(),
                 Duration::from_secs(3600),
