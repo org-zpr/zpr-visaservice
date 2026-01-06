@@ -43,62 +43,58 @@ pub struct Attribute {
 }
 
 impl Attribute {
-    pub fn new(key: String, value: &[String], expires_at: SystemTime) -> Self {
+    fn collect_values<I, S>(values: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        values
+            .into_iter()
+            .map(|value| value.as_ref().to_string())
+            .collect()
+    }
+
+    pub fn new<I, S>(key: String, values: I, expires_at: SystemTime) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         Attribute {
             key,
-            value: value.to_vec(),
+            value: Self::collect_values(values),
             expires_at,
         }
     }
 
+    /// Helper for a common case of a single value attribute.
     pub fn new_single_value(key: String, value: String, expires_at: SystemTime) -> Self {
-        Attribute {
-            key,
-            value: vec![value],
-            expires_at,
-        }
+        Attribute::new(key, std::iter::once(value), expires_at)
     }
 
     pub fn new_single_value_expiring_in(key: String, value: String, expires_in: Duration) -> Self {
-        Attribute {
-            key,
-            value: vec![value],
-            expires_at: SystemTime::now() + expires_in,
-        }
+        Attribute::new_expiring_in(key, std::iter::once(value), expires_in)
     }
 
-    pub fn new_expiring_in(key: String, value: &[String], expires_in: Duration) -> Self {
-        Attribute {
-            key,
-            value: value.to_vec(),
-            expires_at: SystemTime::now() + expires_in,
-        }
-    }
-
-    pub fn new_expiring_in_strs(key: String, value: &[&str], expires_in: Duration) -> Self {
-        Attribute {
-            key,
-            value: value.iter().map(|s| s.to_string()).collect(),
-            expires_at: SystemTime::now() + expires_in,
-        }
+    pub fn new_expiring_in<I, S>(key: String, values: I, expires_in: Duration) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Attribute::new(key, values, SystemTime::now() + expires_in)
     }
 
     /// Helper to create an attribute that functionally never expires by setting the
     /// expiration in the far future.
     pub fn new_single_value_non_expiring(key: String, value: String) -> Self {
-        Attribute {
-            key,
-            value: vec![value],
-            expires_at: SystemTime::now() + NEVER_EXPIRES,
-        }
+        Attribute::new_non_expiring(key, std::iter::once(value))
     }
 
-    pub fn new_non_expiring(key: String, value: &[String]) -> Self {
-        Attribute {
-            key,
-            value: value.to_vec(),
-            expires_at: SystemTime::now() + NEVER_EXPIRES,
-        }
+    pub fn new_non_expiring<I, S>(key: String, values: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Attribute::new(key, values, SystemTime::now() + NEVER_EXPIRES)
     }
 
     pub fn get_key(&self) -> &str {
@@ -141,5 +137,42 @@ impl Attribute {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_value_has_all_true() {
+        let attr = Attribute::new_non_expiring("key".to_string(), vec!["alpha", "beta", "gamma"]);
+        let values = vec!["alpha".to_string(), "gamma".to_string()];
+
+        assert!(attr.value_has_all(&values));
+    }
+
+    #[test]
+    fn test_value_has_all_false() {
+        let attr = Attribute::new_non_expiring("key".to_string(), vec!["alpha", "beta", "gamma"]);
+        let values = vec!["alpha".to_string(), "delta".to_string()];
+
+        assert!(!attr.value_has_all(&values));
+    }
+
+    #[test]
+    fn test_value_has_any_true() {
+        let attr = Attribute::new_non_expiring("key".to_string(), vec!["alpha", "beta", "gamma"]);
+        let values = vec!["delta".to_string(), "beta".to_string()];
+
+        assert!(attr.value_has_any(&values));
+    }
+
+    #[test]
+    fn test_value_has_any_false() {
+        let attr = Attribute::new_non_expiring("key".to_string(), vec!["alpha", "beta", "gamma"]);
+        let values = vec!["delta".to_string(), "epsilon".to_string()];
+
+        assert!(!attr.value_has_any(&values));
     }
 }

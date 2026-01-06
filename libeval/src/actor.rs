@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn test_add_attribute_services_non_empty() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in_strs(
+        let attr = Attribute::new_expiring_in(
             key::SERVICES.to_string(),
             &["auth", "database", "logging"],
             Duration::from_secs(3600),
