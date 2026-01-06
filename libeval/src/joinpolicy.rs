@@ -170,3 +170,190 @@ impl JPolicy {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attr(key: &str, values: Vec<&str>) -> Attribute {
+        Attribute::new_non_expiring(key.to_string(), values)
+    }
+
+    #[test]
+    fn test_attrexp_contains_all() {
+        let exp = AttrExp {
+            key: "k".to_string(),
+            op: AttrOp::Eq,
+            value: vec!["a".to_string(), "b".to_string()],
+        };
+        let values = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let missing = vec!["a".to_string()];
+
+        assert!(exp.contains_all(&values));
+        assert!(!exp.contains_all(&missing));
+    }
+
+    #[test]
+    fn test_attrexp_contains_any() {
+        let exp = AttrExp {
+            key: "k".to_string(),
+            op: AttrOp::Eq,
+            value: vec!["a".to_string(), "b".to_string()],
+        };
+        let values = vec!["c".to_string(), "b".to_string()];
+        let none = vec!["c".to_string(), "d".to_string()];
+
+        assert!(exp.contains_any(&values));
+        assert!(!exp.contains_any(&none));
+    }
+
+    #[test]
+    fn test_attrexp_is_empty_value() {
+        let empty = AttrExp {
+            key: "k".to_string(),
+            op: AttrOp::Eq,
+            value: Vec::new(),
+        };
+        let empty_str = AttrExp {
+            key: "k".to_string(),
+            op: AttrOp::Eq,
+            value: vec!["".to_string()],
+        };
+        let non_empty = AttrExp {
+            key: "k".to_string(),
+            op: AttrOp::Eq,
+            value: vec!["a".to_string(), "".to_string()],
+        };
+
+        assert!(empty.is_empty_value());
+        assert!(empty_str.is_empty_value());
+        assert!(!non_empty.is_empty_value());
+    }
+
+    #[test]
+    fn test_jpolicy_matches_eq() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: None,
+            services: None,
+        };
+        let attrs = vec![attr("k1", vec!["a", "b", "c"])];
+
+        assert!(policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_ne_rejects_full_match() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Ne,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: None,
+            services: None,
+        };
+        let attrs = vec![attr("k1", vec!["a", "b", "c"])];
+
+        assert!(!policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_has_empty_value() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Has,
+                value: vec!["".to_string()],
+            }],
+            flags: None,
+            services: None,
+        };
+        let attrs = vec![attr("k1", vec!["a", "b"])];
+
+        assert!(policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_excludes_value_present() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Excludes,
+                value: vec!["b".to_string()],
+            }],
+            flags: None,
+            services: None,
+        };
+        let attrs = vec![attr("k1", vec!["a", "b"])];
+
+        assert!(!policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_missing_key_fails() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["a".to_string()],
+            }],
+            flags: None,
+            services: None,
+        };
+        let attrs = vec![attr("k2", vec!["a"])];
+
+        assert!(!policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_has_required_values() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Has,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: None,
+            services: None,
+        };
+
+        assert!(policy.matches(&[attr("k1", vec!["a", "b", "c"])]));
+        assert!(!policy.matches(&[attr("k1", vec!["a"])]));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_excludes_empty_value_fails() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Excludes,
+                value: vec!["".to_string()],
+            }],
+            flags: None,
+            services: None,
+        };
+
+        assert!(!policy.matches(&[attr("k1", vec!["a"])]));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_ne_allows_partial_mismatch() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Ne,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: None,
+            services: None,
+        };
+        let attrs = vec![attr("k1", vec!["a"])];
+
+        assert!(policy.matches(&attrs));
+    }
+}
