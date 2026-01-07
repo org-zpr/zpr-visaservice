@@ -32,6 +32,9 @@ pub trait OutputFormatter {
 
     /// Write the current actor database.
     fn write_actor_db(&mut self, db: &HashMap<String, Actor>);
+
+    fn write_connection_approved(&mut self, actor: &Actor);
+    fn write_connection_denied(&mut self, error: &EvalError);
 }
 
 pub struct JsonFormatter<WOut: Write> {
@@ -139,13 +142,36 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
                 let dt: DateTime<Local> = attr.get_expires().into();
                 let _ = writeln!(
                     self.out,
-                    "     {}:{} (exp {})",
+                    "     {}:{:?} (exp {})",
                     attr.get_key(),
                     attr.get_value(),
                     dt.to_rfc3339_opts(SecondsFormat::Secs, false)
                 );
             }
         }
+    }
+
+    fn write_connection_approved(&mut self, actor: &Actor) {
+        let _ = writeln!(self.out, "{}", "Connection Approved".green());
+        for attr in actor.attrs_iter() {
+            let dt: DateTime<Local> = attr.get_expires().into();
+            let _ = writeln!(
+                self.out,
+                "     {}:{:?} (exp {})",
+                attr.get_key(),
+                attr.get_value(),
+                dt.to_rfc3339_opts(SecondsFormat::Secs, false)
+            );
+        }
+    }
+
+    fn write_connection_denied(&mut self, error: &EvalError) {
+        let _ = writeln!(
+            self.out,
+            "{}: Connection denied: {}",
+            "Connection Denied".red(),
+            error
+        );
     }
 }
 
@@ -192,6 +218,7 @@ mod json {
         Error,
         Eval,
         DumpDb,
+        ApproveConnection,
     }
 
     #[derive(Serialize)]
@@ -236,6 +263,12 @@ mod json {
     pub struct JActorDB<'a> {
         pub kind: MsgType,
         pub actors: &'a HashMap<String, Actor>,
+    }
+
+    #[derive(Serialize)]
+    pub struct JConnectionApproved {
+        pub kind: MsgType,
+        pub actor: Actor,
     }
 }
 
@@ -307,6 +340,24 @@ impl<WOut: Write> OutputFormatter for JsonFormatter<WOut> {
             actors: b,
         };
         let _ = serde_json::to_writer(&mut self.out, &adb);
+        let _ = writeln!(self.out);
+    }
+
+    fn write_connection_approved(&mut self, actor: &Actor) {
+        let ca = json::JConnectionApproved {
+            kind: json::MsgType::ApproveConnection,
+            actor: actor.clone(),
+        };
+        let _ = serde_json::to_writer(&mut self.out, &ca);
+        let _ = writeln!(self.out);
+    }
+
+    fn write_connection_denied(&mut self, error: &EvalError) {
+        let e = json::JError {
+            kind: json::MsgType::ApproveConnection,
+            error: error.to_string(),
+        };
+        let _ = serde_json::to_writer(&mut self.out, &e);
         let _ = writeln!(self.out);
     }
 }
