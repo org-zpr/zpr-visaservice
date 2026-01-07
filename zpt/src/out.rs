@@ -157,10 +157,10 @@ impl<WOut: Write> OutputFormatter for HumanFormatter<WOut> {
             let dt: DateTime<Local> = attr.get_expires().into();
             let _ = writeln!(
                 self.out,
-                "     {}:{:?} (exp {})",
-                attr.get_key(),
-                attr.get_value(),
-                dt.to_rfc3339_opts(SecondsFormat::Secs, false)
+                "     {}:{} (exp {})",
+                attr.get_key().blue(),
+                attr.get_value_as_string().yellow(),
+                dt.to_rfc3339_opts(SecondsFormat::Secs, false).cyan()
             );
         }
     }
