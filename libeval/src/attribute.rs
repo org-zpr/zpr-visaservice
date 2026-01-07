@@ -146,6 +146,11 @@ impl Attribute {
         Ok(&self.value[0])
     }
 
+    /// Return true if this is a single valued attribute and the value matches.
+    pub fn is_single_value(&self, value: &str) -> bool {
+        self.value.len() == 1 && self.value[0] == value
+    }
+
     /// Get a "human" formatted version of the value. When there is only one
     /// value you get a simple String. When there are multiple values they are
     /// joined with comma.

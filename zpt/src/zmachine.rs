@@ -239,20 +239,8 @@ impl ZMachine {
         } else {
             None
         };
-
-        let mut unauth_map = HashMap::new();
         let libeval_unauthed_claims = if let Some(uc_vec) = unauthd_claims {
-            for attr in uc_vec {
-                let val_str = if attr.get_value_len() == 0 {
-                    "".to_string()
-                } else if attr.get_value_len() == 1 {
-                    attr.get_value()[0].to_string()
-                } else {
-                    attr.get_value().join(",")
-                };
-                unauth_map.insert(attr.get_key().to_string(), val_str);
-            }
-            Some(&unauth_map)
+            Some(uc_vec.as_slice())
         } else {
             None
         };

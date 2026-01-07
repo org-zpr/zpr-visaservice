@@ -101,19 +101,19 @@ impl ConnectionControl {
         authd_claims.push(Attribute::builder(key::SUBSTRATE_ADDR).value(remote.to_string()));
 
         // Technically we don't know if the node claim is authenticated until it passes policy check.
-        let mut unauthed_claims = HashMap::new();
-        unauthed_claims.insert(key::ROLE.into(), ROLE_NODE.into());
+        let mut unauthed_claims = Vec::new();
+        unauthed_claims.push(Attribute::builder(key::ROLE).value(ROLE_NODE));
 
         // The node may request an address. It will get this address only if policy does
         // not assign it a different one.
         // TODO: VS must check later to see if this address is in use or even valid.
-        unauthed_claims.insert(key::ZPR_ADDR.into(), node_req_addr.to_string().into());
+        unauthed_claims.push(Attribute::builder(key::ZPR_ADDR).value(node_req_addr.to_string()));
 
         // The AAA net stuff is not under control of libeval.
         // The visa service needs to manage the AAA_NET info and ensure that nodes are
         // non-overlapping.  No need to pass this to libeval.
         // TODO: VS must check and track this value.
-        unauthed_claims.insert(key::AAA_NET.into(), node_aaa_net.to_string().into());
+        unauthed_claims.push(Attribute::builder(key::AAA_NET).value(node_aaa_net.to_string()));
 
         // Now that we have checked auth, we need to check policy.
         //

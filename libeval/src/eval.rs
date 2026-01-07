@@ -8,7 +8,7 @@ use zpr::vsapi_types::PacketDesc;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net;
@@ -376,7 +376,7 @@ impl EvalContext {
     pub fn approve_connection(
         &self,
         authenticated_claims: Option<&[Attribute]>,
-        unauthenticated_claims: Option<&HashMap<String, String>>,
+        unauthenticated_claims: Option<&[Attribute]>,
         expiration: Duration,
     ) -> Result<Actor, EvalError> {
         if authenticated_claims.is_none() {
@@ -415,11 +415,10 @@ impl EvalContext {
         }
 
         let node_expected = if let Some(unauth_claims) = unauthenticated_claims {
-            if let Some(role_val) = unauth_claims.get(key::ROLE) {
-                role_val == ROLE_NODE
-            } else {
-                false
-            }
+            // Look for key:ROLE in the unauthenticated claims.
+            unauth_claims
+                .iter()
+                .any(|a| a.get_key() == key::ROLE && a.is_single_value(ROLE_NODE))
         } else {
             false
         };
