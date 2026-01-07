@@ -145,12 +145,21 @@ impl Node {
             }
         };
         let substrate_addr = match actor.get_attribute(key::SUBSTRATE_ADDR) {
-            Some(addr) => addr.get_value().parse::<SocketAddr>().map_err(|e| {
-                DBError::InvalidData(format!(
-                    "failed to parse substrate address attribute as SocketAddr: {}",
-                    e
-                ))
-            })?,
+            Some(addr) => addr
+                .get_single_value()
+                .map_err(|e| {
+                    DBError::InvalidData(format!(
+                        "failed to get single value for substrate address: {}",
+                        e
+                    ))
+                })?
+                .parse::<SocketAddr>()
+                .map_err(|e| {
+                    DBError::InvalidData(format!(
+                        "failed to parse substrate address attribute as SocketAddr: {}",
+                        e
+                    ))
+                })?,
             None => {
                 return Err(DBError::MissingRequired(
                     "node actor missing substrate address".into(),

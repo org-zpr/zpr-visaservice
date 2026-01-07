@@ -21,6 +21,7 @@ use openssl::sign::Verifier;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use tracing::{error, info, warn};
 
 use libeval::actor::Actor;
@@ -29,6 +30,7 @@ use libeval::eval::EvalContext;
 use zpr::vsapi::v1 as vsapi;
 
 use crate::assembly::Assembly;
+use crate::config;
 use crate::error::VSError;
 use crate::logging::targets::CC;
 
@@ -95,16 +97,22 @@ impl ConnectionControl {
 
         // The policy sees everything as a bunch of claims.
         let mut authd_claims: Vec<Attribute> = Vec::new();
-        authd_claims.push(Attribute::new_non_expiring(key::CN.into(), cn.to_string()));
-        authd_claims.push(Attribute::new_non_expiring(
-            key::SUBSTRATE_ADDR.into(),
-            remote.to_string(),
-        ));
+        authd_claims.push(Attribute::builder(key::CN).value(cn));
+        authd_claims.push(Attribute::builder(key::SUBSTRATE_ADDR).value(remote.to_string()));
 
         // Technically we don't know if the node claim is authenticated until it passes policy check.
         let mut unauthed_claims = HashMap::new();
         unauthed_claims.insert(key::ROLE.into(), ROLE_NODE.into());
+
+        // The node may request an address. It will get this address only if policy does
+        // not assign it a different one.
+        // TODO: VS must check later to see if this address is in use or even valid.
         unauthed_claims.insert(key::ZPR_ADDR.into(), node_req_addr.to_string().into());
+
+        // The AAA net stuff is not under control of libeval.
+        // The visa service needs to manage the AAA_NET info and ensure that nodes are
+        // non-overlapping.  No need to pass this to libeval.
+        // TODO: VS must check and track this value.
         unauthed_claims.insert(key::AAA_NET.into(), node_aaa_net.to_string().into());
 
         // Now that we have checked auth, we need to check policy.
@@ -114,7 +122,11 @@ impl ConnectionControl {
 
         let ectx = EvalContext::new(policy);
 
-        match ectx.approve_connection(Some(&authd_claims), Some(&unauthed_claims)) {
+        match ectx.approve_connection(
+            Some(&authd_claims),
+            Some(&unauthed_claims),
+            Duration::from_secs(config::DEFAULT_EXPIRATION_SECONDS),
+        ) {
             Ok(actor) => {
                 // Make sure policy verified that the actor is in fact a node.
                 if !actor.is_node() {
@@ -128,6 +140,33 @@ impl ConnectionControl {
                 Err(e.into())
             }
         }
+
+        // Things remaining to do here:
+        //
+        // (1) ZPR ADDRESS
+        //
+        // VS assigns and tracks addresses. Connection policy could set a static address
+        // for the node. If so, the ZPR_ADDR will be present on the actor. In this case
+        // we need to check that the addr hasn't already been assigned to another actor.
+        // (And if so, do we remove the other actor?)
+        //
+        // If the actor does not have a ZPR_ADDR attribute, then VS needs to assign one.
+        // If the node requested an address, we should try to give it that one if possible.
+        // Otherwise we need to pick one from the available pool.
+        //
+        // (2) AAA NET
+        //
+        // We got the nodes requested AAA network. I don't think we have a way to tell the
+        // node to use a different one. So we need to check here that that AAA net is
+        // not already in use. We need to track that this new AAA net is now in use.
+        //
+        // (3) SERVICES
+        //
+        // The actor may provide services. We need to register those somewhere. The actor
+        // will just have service IDs. We'll need to check policy to get the endpoint
+        // details if needed. Note that addition of auth services and trusted services
+        // requires more work too.
+        //
     }
 
     /// Disconnect logic. Cleans up actor database and visas.

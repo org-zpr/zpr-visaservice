@@ -204,20 +204,13 @@ async fn create_actor_mgr(dbh: &db::Handle, vs_addr: IpAddr) -> Result<ActorMgr,
     // The odd thing here is that we do not know what node we are connected to yet.
     let vs_actor = {
         let mut vsa = Actor::new();
-        vsa.add_attribute(Attribute::new_non_expiring(
-            key::ZPR_ADDR.into(),
-            vs_addr.to_string(),
-        ))?;
-        vsa.add_attribute(Attribute::new_non_expiring(key::CN.into(), "zpr.vs".into()))?;
-        vsa.add_attribute(Attribute::new_non_expiring(
-            key::ROLE.into(),
-            ROLE_ADAPTER.into(),
-        ))?;
-        vsa.add_attribute(Attribute::new_non_expiring(
-            key::SERVICES.into(),
-            "/zpr/visaservice,/zpr/visaservice/admin".into(),
-        ))?;
-        vsa.add_identity_key(0, key::CN.into())?;
+        vsa.add_attribute(Attribute::builder(key::ZPR_ADDR).value(vs_addr.to_string()))?;
+        vsa.add_attribute(Attribute::builder(key::CN).value("zpr.vs"))?;
+        vsa.add_attribute(Attribute::builder(key::ROLE).value(ROLE_ADAPTER))?;
+        vsa.add_attribute(
+            Attribute::builder(key::SERVICES).value("/zpr/visaservice,/zpr/visaservice/admin"),
+        )?;
+        vsa.add_identity_key(0, key::CN)?;
         vsa
     };
     mgr.add_magic_adapter(&vs_actor).await?;

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
+use thiserror::Error;
+
 pub const ROLE_NODE: &str = "node";
 pub const ROLE_ADAPTER: &str = "adapter";
 const NEVER_EXPIRES: Duration = Duration::from_secs(60 * 60 * 60 * 24 * 365 * 100); // 100 years
@@ -34,6 +36,12 @@ pub mod key {
     pub const VINST: &str = "zpr.vinst";
 }
 
+#[derive(Debug, Error)]
+pub enum AttributeError {
+    #[error("attribute is not single-valued: {0}")]
+    NotSingleValue(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 #[allow(dead_code)]
 pub struct Attribute {
@@ -49,6 +57,8 @@ pub struct AttributeBuilder {
 
 /// Helper for building attributes.  Allows for addin an expiration time before setting value/values.
 impl AttributeBuilder {
+    /// Create a builder with the given attribute key and a default expiration
+    /// in the far future.
     fn new(key: String) -> Self {
         AttributeBuilder {
             key,
@@ -68,7 +78,7 @@ impl AttributeBuilder {
         self
     }
 
-    /// Construct an attribute with given value
+    /// Finishes the build and returns an attribute with given value.
     pub fn value<S>(self, value: S) -> Attribute
     where
         S: AsRef<str>,
@@ -76,7 +86,7 @@ impl AttributeBuilder {
         Attribute::new(self.key, std::iter::once(value), self.expires_at)
     }
 
-    /// Construct a multi-value attribute
+    /// Finishes the build and returns an attribute with the given set of values.
     pub fn values<I, S>(self, values: I) -> Attribute
     where
         I: IntoIterator<Item = S>,
@@ -98,6 +108,11 @@ impl Attribute {
             .collect()
     }
 
+    /// Create a handy attribute builder initialized with the given key.
+    /// By default the attribute will expire in the far future unless you
+    /// set an expiration using the builder.  To finish the build use
+    /// [AttributeBuilder::value] or [AttributeBuilder::values] depending
+    /// on whether you want to create a single or multi-valued attribute.
     pub fn builder<S: Into<String>>(key: S) -> AttributeBuilder {
         AttributeBuilder::new(key.into())
     }
@@ -120,6 +135,26 @@ impl Attribute {
 
     pub fn get_value(&self) -> &[String] {
         &self.value
+    }
+
+    /// If this is a single valued attribute, return a reference to the single value.
+    /// Otherwise, throws an error.
+    pub fn get_single_value(&self) -> Result<&str, AttributeError> {
+        if self.value.len() != 1 {
+            return Err(AttributeError::NotSingleValue(self.key.clone()));
+        }
+        Ok(&self.value[0])
+    }
+
+    /// Get a "human" formatted version of the value. When there is only one
+    /// value you get a simple String. When there are multiple values they are
+    /// joined with comma.
+    pub fn get_value_as_string(&self) -> String {
+        if self.value.is_empty() || self.value.len() == 1 && self.value[0].is_empty() {
+            "".to_string()
+        } else {
+            self.value.join(", ")
+        }
     }
 
     pub fn get_value_len(&self) -> usize {
