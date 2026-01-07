@@ -30,7 +30,7 @@ pub enum Instruction {
     Set {
         name: String,
         key: String,
-        value: String,
+        value: String, // may be comma separated list for multi-valued attributes
     },
     Eval {
         prot: IpProtoT,
@@ -488,7 +488,12 @@ impl State {
 
         // TODO: Attribute allows duplicate attribute keys -- it should not.
 
-        actor.add_attr_from_parts(key, value, Duration::from_secs(3600))?; // TODO: Expiration
+        // Humans enter multi value attributes as comma separated values.
+        let values: Vec<String> = value.split(',').map(|s| s.trim().to_string()).collect();
+        let attr = Attribute::builder(key)
+            .expires_in(Duration::from_secs(3600))
+            .values(values);
+        actor.add_attribute(attr)?;
         Ok(())
     }
 

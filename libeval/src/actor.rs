@@ -73,7 +73,7 @@ impl Actor {
         Ok(())
     }
 
-    /// Adds or replaces the attribute with name `key`.
+    /// Adds or replaces the attribute with name `key`.  Assumes a single value attribute.
     pub fn add_attr_from_parts(
         &mut self,
         key: &str,
