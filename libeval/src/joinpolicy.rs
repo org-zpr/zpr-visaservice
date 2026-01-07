@@ -176,7 +176,7 @@ mod tests {
     use super::*;
 
     fn attr(key: &str, values: Vec<&str>) -> Attribute {
-        Attribute::new_non_expiring(key.to_string(), values)
+        Attribute::builder(key).values(values)
     }
 
     #[test]

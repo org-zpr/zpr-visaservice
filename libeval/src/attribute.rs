@@ -42,6 +42,50 @@ pub struct Attribute {
     expires_at: SystemTime,
 }
 
+pub struct AttributeBuilder {
+    key: String,
+    expires_at: SystemTime,
+}
+
+/// Helper for building attributes.  Allows for addin an expiration time before setting value/values.
+impl AttributeBuilder {
+    fn new(key: String) -> Self {
+        AttributeBuilder {
+            key,
+            expires_at: SystemTime::now() + NEVER_EXPIRES,
+        }
+    }
+
+    /// Add a expiration time.
+    pub fn expires(mut self, expires_at: SystemTime) -> Self {
+        self.expires_at = expires_at;
+        self
+    }
+
+    /// Add a duration until expiration from now.
+    pub fn expires_in(mut self, expires_in: Duration) -> Self {
+        self.expires_at = SystemTime::now() + expires_in;
+        self
+    }
+
+    /// Construct an attribute with given value
+    pub fn value<S>(self, value: S) -> Attribute
+    where
+        S: AsRef<str>,
+    {
+        Attribute::new(self.key, std::iter::once(value), self.expires_at)
+    }
+
+    /// Construct a multi-value attribute
+    pub fn values<I, S>(self, values: I) -> Attribute
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Attribute::new(self.key, values, self.expires_at)
+    }
+}
+
 impl Attribute {
     fn collect_values<I, S>(values: I) -> Vec<String>
     where
@@ -54,6 +98,10 @@ impl Attribute {
             .collect()
     }
 
+    pub fn builder<S: Into<String>>(key: S) -> AttributeBuilder {
+        AttributeBuilder::new(key.into())
+    }
+
     pub fn new<I, S>(key: String, values: I, expires_at: SystemTime) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -64,37 +112,6 @@ impl Attribute {
             value: Self::collect_values(values),
             expires_at,
         }
-    }
-
-    /// Helper for a common case of a single value attribute.
-    pub fn new_single_value(key: String, value: String, expires_at: SystemTime) -> Self {
-        Attribute::new(key, std::iter::once(value), expires_at)
-    }
-
-    pub fn new_single_value_expiring_in(key: String, value: String, expires_in: Duration) -> Self {
-        Attribute::new_expiring_in(key, std::iter::once(value), expires_in)
-    }
-
-    pub fn new_expiring_in<I, S>(key: String, values: I, expires_in: Duration) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Attribute::new(key, values, SystemTime::now() + expires_in)
-    }
-
-    /// Helper to create an attribute that functionally never expires by setting the
-    /// expiration in the far future.
-    pub fn new_single_value_non_expiring(key: String, value: String) -> Self {
-        Attribute::new_non_expiring(key, std::iter::once(value))
-    }
-
-    pub fn new_non_expiring<I, S>(key: String, values: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Attribute::new(key, values, SystemTime::now() + NEVER_EXPIRES)
     }
 
     pub fn get_key(&self) -> &str {
@@ -146,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_value_has_all_true() {
-        let attr = Attribute::new_non_expiring("key".to_string(), vec!["alpha", "beta", "gamma"]);
+        let attr = Attribute::builder("key").values(vec!["alpha", "beta", "gamma"]);
         let values = vec!["alpha".to_string(), "gamma".to_string()];
 
         assert!(attr.value_has_all(&values));
@@ -154,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_value_has_all_false() {
-        let attr = Attribute::new_non_expiring("key".to_string(), vec!["alpha", "beta", "gamma"]);
+        let attr = Attribute::builder("key").values(vec!["alpha", "beta", "gamma"]);
         let values = vec!["alpha".to_string(), "delta".to_string()];
 
         assert!(!attr.value_has_all(&values));
@@ -162,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_value_has_any_true() {
-        let attr = Attribute::new_non_expiring("key".to_string(), vec!["alpha", "beta", "gamma"]);
+        let attr = Attribute::builder("key").values(vec!["alpha", "beta", "gamma"]);
         let values = vec!["delta".to_string(), "beta".to_string()];
 
         assert!(attr.value_has_any(&values));
@@ -170,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_value_has_any_false() {
-        let attr = Attribute::new_non_expiring("key".to_string(), vec!["alpha", "beta", "gamma"]);
+        let attr = Attribute::builder("key").values(vec!["alpha", "beta", "gamma"]);
         let values = vec!["delta".to_string(), "epsilon".to_string()];
 
         assert!(!attr.value_has_any(&values));

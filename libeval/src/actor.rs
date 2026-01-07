@@ -80,11 +80,7 @@ impl Actor {
         value: &str,
         expires_in: Duration,
     ) -> Result<(), AttributeError> {
-        self.add_attribute(Attribute::new_single_value_expiring_in(
-            key.into(),
-            value.into(),
-            expires_in,
-        ))
+        self.add_attribute(Attribute::builder(key).expires_in(expires_in).value(value))
     }
 
     /// Adds or replaces the attribute on the actor.
@@ -203,12 +199,9 @@ mod tests {
     #[test]
     fn test_add_attribute_zpr_addr_ipv4() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            key::ZPR_ADDR.to_string(),
-            "192.168.1.100".to_string(),
-            Duration::from_secs(3600),
-        );
-
+        let attr = Attribute::builder(key::ZPR_ADDR)
+            .expires_in(Duration::from_secs(3600))
+            .value("192.168.1.100");
         let result = actor.add_attribute(attr);
 
         assert!(result.is_ok());
@@ -222,12 +215,9 @@ mod tests {
     #[test]
     fn test_add_attribute_zpr_addr_ipv6() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            key::ZPR_ADDR.to_string(),
-            "::1".to_string(),
-            Duration::from_secs(3600),
-        );
-
+        let attr = Attribute::builder(key::ZPR_ADDR)
+            .expires_in(Duration::from_secs(3600))
+            .value("::1");
         let result = actor.add_attribute(attr);
 
         assert!(result.is_ok());
@@ -238,12 +228,9 @@ mod tests {
     #[test]
     fn test_add_attribute_zpr_addr_invalid() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            key::ZPR_ADDR.to_string(),
-            "not-an-ip-address".to_string(),
-            Duration::from_secs(3600),
-        );
-
+        let attr = Attribute::builder(key::ZPR_ADDR)
+            .expires_in(Duration::from_secs(3600))
+            .value("not-an-ip-address");
         let result = actor.add_attribute(attr);
 
         assert!(result.is_err());
@@ -260,12 +247,9 @@ mod tests {
     #[test]
     fn test_add_attribute_services_non_empty() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_expiring_in(
-            key::SERVICES.to_string(),
-            &["auth", "database", "logging"],
-            Duration::from_secs(3600),
-        );
-
+        let attr = Attribute::builder(key::SERVICES)
+            .expires_in(Duration::from_secs(3600))
+            .values(&["auth", "database", "logging"]);
         let result = actor.add_attribute(attr);
 
         assert!(result.is_ok());
@@ -276,11 +260,9 @@ mod tests {
     #[test]
     fn test_add_attribute_services_empty() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            key::SERVICES.to_string(),
-            "".to_string(),
-            Duration::from_secs(3600),
-        );
+        let attr = Attribute::builder(key::SERVICES)
+            .expires_in(Duration::from_secs(3600))
+            .value("");
 
         let result = actor.add_attribute(attr);
 
@@ -292,11 +274,9 @@ mod tests {
     #[test]
     fn test_add_attribute_cn() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            key::CN.to_string(),
-            "my-test-node".to_string(),
-            Duration::from_secs(3600),
-        );
+        let attr = Attribute::builder(key::CN)
+            .expires_in(Duration::from_secs(3600))
+            .value("my-test-node");
 
         let result = actor.add_attribute(attr);
 
@@ -308,11 +288,9 @@ mod tests {
     #[test]
     fn test_add_attribute_role_adapter() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            key::ROLE.to_string(),
-            ROLE_ADAPTER.to_string(),
-            Duration::from_secs(3600),
-        );
+        let attr = Attribute::builder(key::ROLE)
+            .expires_in(Duration::from_secs(3600))
+            .value(ROLE_ADAPTER);
 
         let result = actor.add_attribute(attr);
 
@@ -325,12 +303,9 @@ mod tests {
     #[test]
     fn test_add_attribute_role_node() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            key::ROLE.to_string(),
-            ROLE_NODE.to_string(),
-            Duration::from_secs(3600),
-        );
-
+        let attr = Attribute::builder(key::ROLE)
+            .expires_in(Duration::from_secs(3600))
+            .value(ROLE_NODE);
         let result = actor.add_attribute(attr);
 
         assert!(result.is_ok());
@@ -342,12 +317,9 @@ mod tests {
     #[test]
     fn test_add_attribute_role_invalid() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            key::ROLE.to_string(),
-            "invalid-role".to_string(),
-            Duration::from_secs(3600),
-        );
-
+        let attr = Attribute::builder(key::ROLE)
+            .expires_in(Duration::from_secs(3600))
+            .value("invalid-role");
         let result = actor.add_attribute(attr);
 
         assert!(result.is_err());
@@ -359,11 +331,9 @@ mod tests {
     #[test]
     fn test_add_attribute_non_special_key() {
         let mut actor = Actor::new();
-        let attr = Attribute::new_single_value_expiring_in(
-            "custom.attribute".to_string(),
-            "custom-value".to_string(),
-            Duration::from_secs(3600),
-        );
+        let attr = Attribute::builder("custom.attribute")
+            .expires_in(Duration::from_secs(3600))
+            .value("custom-value");
 
         let result = actor.add_attribute(attr);
 
@@ -384,20 +354,16 @@ mod tests {
         let mut actor = Actor::new();
 
         // Set initial values
-        let initial_attr = Attribute::new_single_value_expiring_in(
-            key::ROLE.to_string(),
-            ROLE_ADAPTER.to_string(),
-            Duration::from_secs(3600),
-        );
+        let initial_attr = Attribute::builder(key::ROLE)
+            .expires_in(Duration::from_secs(3600))
+            .value(ROLE_ADAPTER);
         assert!(actor.add_attribute(initial_attr).is_ok());
         assert_eq!(actor.role, Role::Adapter);
 
         // Overwrite with new value
-        let new_attr = Attribute::new_single_value_expiring_in(
-            key::ROLE.to_string(),
-            ROLE_NODE.to_string(),
-            Duration::from_secs(3600),
-        );
+        let new_attr = Attribute::builder(key::ROLE)
+            .expires_in(Duration::from_secs(3600))
+            .value(ROLE_NODE);
         assert!(actor.add_attribute(new_attr).is_ok());
 
         // Should have the new value
@@ -410,11 +376,9 @@ mod tests {
     fn test_add_identity_key_success() {
         let mut actor = Actor::new();
         // First add an attribute that can be used as an identity
-        let attr = Attribute::new_single_value_expiring_in(
-            "user.email".to_string(),
-            "test@example.com".to_string(),
-            Duration::from_secs(3600),
-        );
+        let attr = Attribute::builder("user.email")
+            .expires_in(Duration::from_secs(3600))
+            .value("test@example.com");
         actor.add_attribute(attr).unwrap();
 
         // Now add it as an identity key
@@ -447,25 +411,25 @@ mod tests {
         let mut actor = Actor::new();
         // Add multiple attributes
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.email".to_string(),
-                "test@example.com".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.email")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("test@example.com"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.id".to_string(),
-                "12345".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.id")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("12345"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.name".to_string(),
-                "John Doe".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.name")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("John Doe"),
+            )
             .unwrap();
 
         // Add identity keys in specific order
@@ -482,18 +446,18 @@ mod tests {
         let mut actor = Actor::new();
         // Add multiple attributes
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.email".to_string(),
-                "test@example.com".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.email")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("test@example.com"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.id".to_string(),
-                "12345".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.id")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("12345"),
+            )
             .unwrap();
 
         // Add identity keys
@@ -510,25 +474,25 @@ mod tests {
         let mut actor = Actor::new();
         // Add multiple attributes
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.email".to_string(),
-                "test@example.com".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.email")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("test@example.com"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.id".to_string(),
-                "12345".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.id")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("12345"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.name".to_string(),
-                "John Doe".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.name")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("John Doe"),
+            )
             .unwrap();
 
         // Add identity keys
@@ -555,11 +519,11 @@ mod tests {
     fn test_get_identity_single_key() {
         let mut actor = Actor::new();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.email".to_string(),
-                "test@example.com".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.email")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("test@example.com"),
+            )
             .unwrap();
         actor.add_identity_key(0, "user.email").unwrap();
 
@@ -575,25 +539,25 @@ mod tests {
     fn test_get_identity_multiple_keys() {
         let mut actor = Actor::new();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.email".to_string(),
-                "test@example.com".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.email")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("test@example.com"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.id".to_string(),
-                "12345".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.id")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("12345"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "user.name".to_string(),
-                "John Doe".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("user.name")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("John Doe"),
+            )
             .unwrap();
 
         actor.add_identity_key(0, "user.email").unwrap();
@@ -614,25 +578,25 @@ mod tests {
     fn test_get_identity_preserves_order() {
         let mut actor = Actor::new();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "attr.a".to_string(),
-                "value_a".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("attr.a")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("value_a"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "attr.b".to_string(),
-                "value_b".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("attr.b")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("value_b"),
+            )
             .unwrap();
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                "attr.c".to_string(),
-                "value_c".to_string(),
-                Duration::from_secs(3600),
-            ))
+            .add_attribute(
+                Attribute::builder("attr.c")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("value_c"),
+            )
             .unwrap();
 
         // Add in specific order: b, c, a

@@ -442,13 +442,13 @@ impl EvalContext {
         }
 
         let role_attr = if flags.contains(&JFlag::IsNode) {
-            Attribute::new_single_value_expiring_in(key::ROLE.into(), ROLE_NODE.into(), expiration)
+            Attribute::builder(key::ROLE)
+                .expires_in(expiration)
+                .value(ROLE_NODE)
         } else {
-            Attribute::new_single_value_expiring_in(
-                key::ROLE.into(),
-                ROLE_ADAPTER.into(),
-                expiration,
-            )
+            Attribute::builder(key::ROLE)
+                .expires_in(expiration)
+                .value(ROLE_ADAPTER)
         };
         actor.add_attribute(role_attr).unwrap();
 
@@ -463,11 +463,11 @@ impl EvalContext {
         }
 
         actor
-            .add_attribute(Attribute::new_single_value_expiring_in(
-                key::VINST.into(),
-                self.policy.get_vinst().to_string(),
-                expiration,
-            ))
+            .add_attribute(
+                Attribute::builder(key::VINST)
+                    .expires_in(expiration)
+                    .value(self.policy.get_vinst().to_string()),
+            )
             .unwrap();
 
         // Policy configuration also tells us what attributes are tied to identity.
@@ -485,10 +485,7 @@ impl EvalContext {
             actor.hash(&mut s);
             let hash_str = format!("hash:{:x}", s.finish());
             actor
-                .add_attribute(Attribute::new_single_value_non_expiring(
-                    key::ACTOR_HASH.into(),
-                    hash_str,
-                ))
+                .add_attribute(Attribute::builder(key::ACTOR_HASH).value(hash_str))
                 .unwrap();
             actor.add_identity_key(0, key::ACTOR_HASH).unwrap();
         }
