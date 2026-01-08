@@ -372,7 +372,9 @@ impl EvalContext {
     ///
     /// If the peer is requesting a specific ZPR address, then zpr.addr:<addr> should
     /// be included in the `unauthenticated_claims`. Connection request will fail if the
-    /// policy specifies a different address for the actor.
+    /// policy specifies a different address for the actor.  Caller should scrub ZPR address
+    /// from unauthenticated_claims before calling this function if they do not want it
+    /// used in policy matching.
     pub fn approve_connection(
         &self,
         authenticated_claims: Option<&[Attribute]>,
@@ -386,8 +388,21 @@ impl EvalContext {
         }
         let authenticated_claims = authenticated_claims.unwrap();
 
+        let mut query_claims = Vec::new();
+        query_claims.extend_from_slice(authenticated_claims);
+
+        // If a zpr.addr is present in auth claims, we use that to match
+        // policy too.
+        if let Some(unauth_claims) = unauthenticated_claims {
+            for ua_attr in unauth_claims {
+                if ua_attr.get_key() == key::ZPR_ADDR {
+                    query_claims.push(ua_attr.clone());
+                }
+            }
+        }
+
         // Query to see if the authenticated claims match any join policies.
-        let matching_jps = self.policy.match_join_policies(authenticated_claims);
+        let matching_jps = self.policy.match_join_policies(&query_claims);
         if matching_jps.is_empty() {
             return Err(EvalError::NoMatch);
         }
@@ -434,7 +449,7 @@ impl EvalContext {
 
         let mut actor = Actor::new();
 
-        for attr in authenticated_claims {
+        for attr in &query_claims {
             if let Err(e) = actor.add_attribute(attr.clone()) {
                 warn!(target: EVAL, "dropping invalid authenticated claim attribute: {}", e);
             }
