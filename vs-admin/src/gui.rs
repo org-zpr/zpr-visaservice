@@ -12,7 +12,7 @@ use reqwest::tls::Certificate;
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::time::{Duration, Instant};
 
-use crate::apitypes::{HostRecordBrief, ServiceRecord, VisaDescriptor, reason_for};
+use zpr::adminapi_types::{HostRecordBrief, ServiceRecord, VisaDescriptor, reason_for};
 
 /// Do not hit the VS ADMIN api more than this often.
 const REFRESH_RATE: Duration = Duration::from_millis(2000);
@@ -138,7 +138,7 @@ impl Gui {
             }
 
             self.services = resp.json()?;
-            self.services.sort(); // uses Ord trait
+            // self.services.sort(); // uses Ord trait
         }
 
         {
@@ -363,11 +363,11 @@ impl Gui {
             if row_max_lens.0 < idstr.len() as u16 {
                 row_max_lens.0 = idstr.len() as u16;
             }
-            if row_max_lens.1 < vrec.source.len() as u16 {
-                row_max_lens.1 = vrec.source.len() as u16;
+            if row_max_lens.1 < vrec.source_addr.len() as u16 {
+                row_max_lens.1 = vrec.source_addr.len() as u16;
             }
-            if row_max_lens.2 < vrec.dest.len() as u16 {
-                row_max_lens.2 = vrec.dest.len() as u16;
+            if row_max_lens.2 < vrec.dest_addr.len() as u16 {
+                row_max_lens.2 = vrec.dest_addr.len() as u16;
             }
         }
 
@@ -381,9 +381,9 @@ impl Gui {
 
             let cells = [
                 Cell::from(idstr).style(self.visa_id_style),
-                Cell::from(vrec.source.clone()).style(self.zpr_addr_style),
+                Cell::from(vrec.source_addr.clone()).style(self.zpr_addr_style),
                 Cell::from("->".light_magenta()),
-                Cell::from(vrec.dest.clone()).style(self.zpr_addr_style),
+                Cell::from(vrec.dest_addr.clone()).style(self.zpr_addr_style),
                 Cell::from(expstr),
             ];
             Row::new(cells)
