@@ -37,7 +37,7 @@ use crate::assembly::Assembly;
 use crate::logging::targets::HTADMIN;
 use http::Method;
 
-use zpr::adminapi_types::{
+use admin_api_types::admin_api_types::{
     ActorDescriptor, ListEntry, NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor,
     VisaDescriptor,
 };

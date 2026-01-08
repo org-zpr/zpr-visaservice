@@ -14,8 +14,8 @@ use flate2::write::GzEncoder;
 use reqwest;
 use reqwest::tls::Certificate;
 
-use zpr::adminapi_types::reason_for;
-use zpr::adminapi_types::{
+use admin_api_types::admin_api_types::reason_for;
+use admin_api_types::admin_api_types::{
     ActorDescriptor, ListEntry, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor,
 };
 

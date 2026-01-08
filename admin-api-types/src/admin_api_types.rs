@@ -1,0 +1,372 @@
+use chrono::{DateTime, SecondsFormat, Utc};
+use colored::{Color, Colorize};
+use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+#[derive(Serialize, Deserialize)]
+pub struct ListEntry {
+    pub id: u64,
+}
+
+impl fmt::Display for ListEntry {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} {}", format!("{}", "id".dimmed()), self.id,)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PolicyBundle {
+    pub config_id: u64,  // ignored when installing
+    pub version: String, // use empty string if you don't care
+    pub format: String,
+    pub container: String,
+}
+
+impl fmt::Display for PolicyBundle {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{} {}, {} {}, {} {}, {} {}",
+            format!("{}", "id".dimmed()),
+            self.config_id,
+            format!("{}", "version".dimmed()),
+            self.version,
+            format!("{}", "format".dimmed()),
+            self.format,
+            format!("{}", "container".dimmed()),
+            self.container,
+        )
+    }
+}
+
+#[derive(Serialize, Debug, Deserialize, Eq)]
+pub struct VisaDescriptor {
+    pub id: u64,
+    pub expires: u64, // milliseconds since the epoch
+    pub created: u64, // milliseconds since the epich
+    pub actor_id: String,
+    pub policy_id: String,
+    pub source_addr: String,
+    pub dest_addr: String,
+    pub source_port: String,
+    pub dest_port: String,
+    pub proto: String,
+}
+
+impl PartialEq for VisaDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Ord for VisaDescriptor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl PartialOrd for VisaDescriptor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Display for VisaDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let now = Utc::now();
+
+        let exp_secs = (self.expires / 1000) as i64;
+        let exp_nanos = ((self.expires % 1000) * 1_000_000) as u32;
+        let dt_exp: DateTime<Utc> = DateTime::from_timestamp(exp_secs, exp_nanos).unwrap();
+        let remain_exp = dt_exp.signed_duration_since(now);
+
+        let created_secs = (self.created / 1000) as i64;
+        let created_nanos = ((self.expires % 1000) * 1_000_000) as u32;
+        let dt_created: DateTime<Utc> =
+            DateTime::from_timestamp(created_secs, created_nanos).unwrap();
+
+        write!(
+            f,
+            "{} {} {} {} {} {}  {}:{} {} {}:{}  {} {}  {} {}   {} {} {}{}:{:02}:{:02} {}",
+            format!("{}", "id".dimmed()),
+            self.id,
+            format!("{}", "actor id".dimmed()),
+            self.actor_id,
+            format!("{}", "policy id".dimmed()),
+            self.policy_id,
+            format!("{}", self.source_addr).yellow(),
+            format!("{}", self.source_port).yellow(),
+            "->".bold().green(),
+            format!("{}", self.dest_addr).yellow(),
+            format!("{}", self.dest_port).yellow(),
+            format!("{}", "proto".dimmed()),
+            self.proto,
+            format!("{}", "created".dimmed()),
+            dt_created.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+            format!("{}", "exp".dimmed()),
+            dt_exp.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+            "(".dimmed(),
+            remain_exp.num_hours(),
+            remain_exp.num_minutes() % 60,
+            remain_exp.num_seconds() % 60,
+            format!("{}", "remain)".dimmed()),
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Revokes {
+    pub id: String,
+    pub revoked: Vec<u64>,
+}
+
+impl fmt::Display for Revokes {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {} {:?}",
+            format!("{}", "id".dimmed()),
+            self.id,
+            format!("{}", "revoked".dimmed()),
+            self.revoked
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ActorDescriptor {
+    pub cn: String,
+    pub ctime: u64, // milliseconds since the epoch
+    pub ident: String,
+    pub node: bool,
+    pub zpr_addr: String,
+    pub node_details: NodeRecordBrief,
+}
+
+impl fmt::Display for ActorDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let ts: DateTime<Utc> = DateTime::from_timestamp(self.ctime as i64, 0).unwrap();
+        write!(
+            f,
+            "{} {}{}{} @ {} {}{} {}{} {}",
+            self.cn,
+            "(created: ".dimmed(),
+            ts.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+            ")".dimmed(),
+            self.zpr_addr.yellow(),
+            "identity: ".dimmed(),
+            self.ident,
+            "is node: ".dimmed(),
+            self.node,
+            self.node_details,
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ServiceDescriptor {
+    pub id: u64,
+    pub actor_id: u64,
+}
+
+impl fmt::Display for ServiceDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {} {:?}",
+            format!("{}", "id".dimmed()),
+            self.id,
+            format!("{}", "actor id".dimmed()),
+            self.actor_id
+        )
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Eq)]
+#[allow(dead_code)]
+pub struct HostRecordBrief {
+    pub ctime: i64, // unix SECONDS (not millis)
+    pub cn: String,
+    pub zpr_addr: String,
+    pub ident: String,
+    pub node: bool,
+}
+
+impl PartialEq for HostRecordBrief {
+    fn eq(&self, other: &Self) -> bool {
+        self.cn == other.cn
+    }
+}
+
+impl Ord for HostRecordBrief {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cn.cmp(&other.cn)
+    }
+}
+
+impl PartialOrd for HostRecordBrief {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Display for HostRecordBrief {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let ts: DateTime<Utc> = DateTime::from_timestamp(self.ctime, 0).unwrap();
+        write!(
+            f,
+            "{} {}{}{} @ {} {}",
+            self.cn,
+            "(created: ".dimmed(),
+            ts.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+            ")".dimmed(),
+            self.zpr_addr.yellow(),
+            if self.node {
+                "[node]".green()
+            } else {
+                "".normal()
+            },
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NodeRecordBrief {
+    pub pending: u32,
+    pub last_contact: i64, // unix SECONDS
+    pub visa_requests: u64,
+    pub connect_requests: u64,
+    pub in_sync: bool,
+}
+
+impl fmt::Display for NodeRecordBrief {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let last_contact: DateTime<Utc> = DateTime::from_timestamp(self.last_contact, 0).unwrap();
+        write!(
+            f,
+            "{}{} {} {} {}",
+            "pending: ".dimmed(),
+            self.pending,
+            format!(
+                "{}{}",
+                "SYNC:".dimmed(),
+                if self.in_sync {
+                    "YES".green()
+                } else {
+                    "NO".red()
+                }
+            ),
+            format!(
+                "{} {}",
+                "last_contact:".dimmed(),
+                if self.last_contact == 0 {
+                    "never".to_string().red()
+                } else {
+                    last_contact
+                        .to_rfc3339_opts(SecondsFormat::Secs, true)
+                        .cyan()
+                }
+            ),
+            // '[visas: VAL' '|' 'connects: VAL]'
+            format!(
+                "{} {} {}",
+                format!("{}{}", "[vreqs:".dimmed(), self.visa_requests),
+                "|".dimmed(),
+                format!(
+                    "{}{}{}",
+                    "creqs:".dimmed(),
+                    self.connect_requests,
+                    "]".dimmed()
+                ),
+            ),
+        )
+    }
+}
+
+#[derive(Debug, Deserialize, Eq)]
+#[allow(dead_code)]
+pub struct ServiceRecord {
+    pub ctime: i64, // unix SECONDS (not millis)
+    pub cn: String,
+    pub zpr_addr: String,
+    pub ident: String,
+    pub node: bool,
+    pub services: Vec<String>,
+}
+
+impl fmt::Display for ServiceRecord {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for svc in &self.services {
+            write!(
+                f,
+                "{:<36}  {}  @ {} {}\n",
+                svc,
+                self.cn.cyan(),
+                self.zpr_addr.yellow(),
+                if self.node {
+                    "[node]".green()
+                } else {
+                    "".normal()
+                },
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl PartialEq for ServiceRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.cn == other.cn
+    }
+}
+
+impl Ord for ServiceRecord {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cn.cmp(&other.cn)
+    }
+}
+
+impl PartialOrd for ServiceRecord {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// Not exactly an api type, but the version generated by the compiler has some parts
+// to it separated by colons.  This splits them up and makes it possible to pretty
+// print.
+#[allow(dead_code)]
+pub struct PolicyVersion {
+    parts: Vec<String>,
+}
+
+#[allow(dead_code)]
+impl PolicyVersion {
+    pub fn new(version: &str) -> Self {
+        PolicyVersion {
+            parts: version.split(':').map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+impl fmt::Display for PolicyVersion {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let colors = [Color::Cyan, Color::Green, Color::Blue, Color::BrightBlue];
+        for (i, part) in self.parts.iter().enumerate() {
+            if i > 0 {
+                write!(f, "{}", ":".bold())?;
+            }
+            write!(f, "{}", part.color(colors[i % 4]))?;
+        }
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+pub fn reason_for(sc: StatusCode) -> String {
+    match sc.canonical_reason() {
+        Some(reason) => reason.to_string(),
+        None => "unknown".to_string(),
+    }
+}
