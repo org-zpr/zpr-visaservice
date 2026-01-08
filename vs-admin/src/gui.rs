@@ -12,7 +12,9 @@ use reqwest::tls::Certificate;
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::time::{Duration, Instant};
 
-use admin_api_types::admin_api_types::{HostRecordBrief, ServiceRecord, VisaDescriptor, reason_for};
+use admin_api_types::admin_api_types::{
+    HostRecordBrief, ServiceRecord, VisaDescriptor, reason_for,
+};
 
 /// Do not hit the VS ADMIN api more than this often.
 const REFRESH_RATE: Duration = Duration::from_millis(2000);
