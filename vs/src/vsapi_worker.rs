@@ -1,4 +1,5 @@
 use ::zpr::vsapi::v1 as vsapi;
+use libeval::attribute::{Attribute, key};
 
 use ipnet::IpNet;
 use openssl::rand::rand_bytes;
@@ -457,7 +458,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
         // Perform the authentication
         //
-        let node_actor = match self
+        let mut node_actor = match self
             .asm
             .cc
             .authenticate_node(
@@ -468,7 +469,6 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                 challenge_response,
                 self.remote,
                 self.req_zpr_addr,
-                self.req_aaa_net,
             )
             .await
         {
@@ -526,6 +526,14 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
         // Ok, we have verified the credentials and checked with policy. Time to
         // update our state and return success.
+
+        // TODO: Is this AAA net valid? Is it in use by another node?
+        // Note that the AAA net is a prefix so it must not overlap any other AAA prefix
+        // in use.  When requesting visas, we allow requests from a nodes AAA net to an
+        // auth service.  We may want to track AAA prefix in redis for easy searching.
+        node_actor
+            .add_attribute(Attribute::builder(key::AAA_NET).value(self.req_aaa_net.to_string()))
+            .unwrap();
 
         // TODO: The policy may have changed since started the authentication. Once we add the node
         // it is part of the ZPRnet.  The add_node should check the visa vinst used to grant access

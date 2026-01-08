@@ -168,6 +168,13 @@ async fn get_actors(
     asm: &Arc<Assembly>,
     job: &VisaRequestJob,
 ) -> Result<(Option<Actor>, Option<Actor>), VSError> {
+    // TODO: The source or destination could be from an unauthenticated adapter
+    // using an AAA address to talk to an authentication service.
+
+    // See prototype code in vsinst-core.go (around line 128). In there we create
+    // a fake actor to use for granting the visa.  But we need to establish that
+    // the AAA address is correct for the node the adapter is connected to.
+
     let source_actor = match asm
         .actor_mgr
         .get_actor_by_zpr_addr(&job.packet_desc.source_addr())
