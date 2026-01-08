@@ -1,3 +1,5 @@
+//! Structs for managing the "join policy" records from ZPR policy.
+//! Only as much as is needed for libeval to do its work.
 use zpr::policy::v1;
 
 use crate::attribute::Attribute;
