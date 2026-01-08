@@ -805,13 +805,16 @@ mod test {
     use super::*;
     use crate::attribute::key;
     use bytes::{Buf, Bytes};
+    use std::net::IpAddr;
     use std::time::Duration;
     use std::{path::Path, sync::Once};
     use tracing::Level;
     use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
+    use zpr::policy_capnp::service::kind::Which::Auth;
 
     static TRACING_INIT: Once = Once::new();
 
+    /// init logging
     fn setup() {
         TRACING_INIT.call_once(|| {
             tracing_subscriber::registry()
@@ -870,7 +873,7 @@ mod test {
         match decision {
             EvalDecision::Allow(hits) => {
                 assert_eq!(hits.len(), 1);
-                assert_eq!(hits[0].match_idx, 1);
+                assert_eq!(hits[0].match_idx, 4);
                 assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected allow decision, not {:?}", decision),
@@ -885,7 +888,7 @@ mod test {
         match decision {
             EvalDecision::Deny(hits) => {
                 assert_eq!(hits.len(), 1);
-                assert_eq!(hits[0].match_idx, 0);
+                assert_eq!(hits[0].match_idx, 3);
                 assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected deny decision, not {:?}", decision),
@@ -1113,5 +1116,59 @@ mod test {
             }
             _ => panic!("expected deny decision, not {:?}", decision),
         }
+    }
+
+    #[test]
+    fn test_node_can_connect() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        let mut authenticated_claims = Vec::new();
+        let mut unauthenticated_claims = Vec::new();
+
+        authenticated_claims.push(Attribute::builder(key::CN).value("node.zpr.org"));
+
+        unauthenticated_claims.push(Attribute::builder(key::ZPR_ADDR).value("fd5a:5052:90de::1"));
+        unauthenticated_claims.push(Attribute::builder(key::ROLE).value(ROLE_NODE));
+
+        let actor = ctx
+            .approve_connection(
+                Some(authenticated_claims.as_slice()),
+                Some(unauthenticated_claims.as_slice()),
+                Duration::from_secs(1000),
+            )
+            .unwrap();
+
+        assert!(actor.is_node());
+
+        // And address is set
+        assert!(actor.get_zpr_addr().is_some());
+        let ipaddr = actor.get_zpr_addr().unwrap().clone();
+        assert_eq!(ipaddr, "fd5a:5052:90de::1".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn test_connect_fail() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        let mut authenticated_claims = Vec::new();
+        let mut unauthenticated_claims = Vec::new();
+
+        authenticated_claims.push(Attribute::builder(key::CN).value("nobody.zpr.org"));
+
+        unauthenticated_claims.push(Attribute::builder(key::ZPR_ADDR).value("fd5a:5052:90de::1"));
+        unauthenticated_claims.push(Attribute::builder(key::ROLE).value(ROLE_NODE));
+
+        match ctx.approve_connection(
+            Some(authenticated_claims.as_slice()),
+            Some(unauthenticated_claims.as_slice()),
+            Duration::from_secs(1000),
+        ) {
+            Err(_) => {}
+            Ok(actor) => panic!("expected connection approval to fail, got {:?}", actor),
+        };
     }
 }
