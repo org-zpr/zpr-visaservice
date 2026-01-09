@@ -16,7 +16,7 @@ use reqwest::tls::Certificate;
 
 use admin_api_types::admin_api_types::reason_for;
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, ListEntry, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor,
+    ActorDescriptor, ListEntry, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor, AuthRevokeDescriptor
 };
 
 #[derive(Parser)]
@@ -601,7 +601,7 @@ fn get_revoke(api_url: &str, cert: Certificate, id: u64) -> Result<(), Box<dyn s
         .into());
     }
 
-    let entry: VisaDescriptor = resp.json()?;
+    let entry: AuthRevokeDescriptor = resp.json()?;
     println!("{entry}");
 
     Ok(())

@@ -38,8 +38,7 @@ use crate::logging::targets::HTADMIN;
 use http::Method;
 
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, ListEntry, NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor,
-    VisaDescriptor,
+    ActorDescriptor, AuthRevokeDescriptor, ListEntry, NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor
 };
 
 type SharedState = Arc<RwLock<AdminState>>;
@@ -406,19 +405,11 @@ fn get_revokes() -> Result<Response<Body>, std::convert::Infallible> {
 
 fn get_revoke(id: &str) -> Result<Response<Body>, std::convert::Infallible> {
     info!(target: HTADMIN, "GET /admin/visas/{}", id);
-    let vd = VisaDescriptor {
-        id: 0,
-        expires: 0,
-        created: 0,
-        actor_id: "a".to_string(),
-        policy_id: "p".to_string(),
-        source_addr: "s".to_string(),
-        dest_addr: "d".to_string(),
-        source_port: "s".to_string(),
-        dest_port: "d".to_string(),
-        proto: "p".to_string(),
+    let ard: AuthRevokeDescriptor = AuthRevokeDescriptor {
+        ty: "t".to_string(),
+        cn: "c".to_string(),
     };
-    let json = serde_json::to_string(&vd).unwrap();
+    let json = serde_json::to_string(&ard).unwrap();
 
     let resp = Response::new(Body::new(json));
     Ok(resp)
