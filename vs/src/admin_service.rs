@@ -38,7 +38,8 @@ use crate::logging::targets::HTADMIN;
 use http::Method;
 
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, AuthRevokeDescriptor, ListEntry, NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor
+    ActorDescriptor, AuthRevokeDescriptor, ListEntry, NodeRecordBrief, PolicyBundle, Revokes,
+    ServiceDescriptor, VisaDescriptor,
 };
 
 type SharedState = Arc<RwLock<AdminState>>;

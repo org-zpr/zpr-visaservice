@@ -16,7 +16,8 @@ use reqwest::tls::Certificate;
 
 use admin_api_types::admin_api_types::reason_for;
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, ListEntry, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor, AuthRevokeDescriptor
+    ActorDescriptor, AuthRevokeDescriptor, ListEntry, PolicyBundle, Revokes, ServiceDescriptor,
+    VisaDescriptor,
 };
 
 #[derive(Parser)]
