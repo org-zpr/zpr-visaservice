@@ -15,12 +15,11 @@
 //! Finally, if everything goes well an address is assigned and the actor is
 //! returned.
 
-use ipnet::IpNet;
 use openssl::hash::MessageDigest;
 use openssl::sign::Verifier;
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 use libeval::actor::Actor;
@@ -29,6 +28,7 @@ use libeval::eval::EvalContext;
 use zpr::vsapi::v1 as vsapi;
 
 use crate::assembly::Assembly;
+use crate::config;
 use crate::error::VSError;
 use crate::logging::targets::CC;
 
@@ -44,6 +44,11 @@ impl ConnectionControl {
     /// Perform node specific authentication and run the connect request through policy.
     /// If successful you get an authenticated Actor back. This does not update our
     /// actor database.
+    ///
+    /// Currently a node must pass a request address and it must match policy.
+    ///
+    /// This does not update our actor database, or do anything with the nodes services.
+    ///
     pub async fn authenticate_node(
         &self,
         asm: Arc<Assembly>,
@@ -53,7 +58,6 @@ impl ConnectionControl {
         challenge_response: &[u8],
         remote: SocketAddr,
         node_req_addr: IpAddr,
-        node_aaa_net: IpNet,
     ) -> Result<Actor, VSError> {
         // We need to be aware that the policy could be updated in the manager at any time.
         let policy = asm.policy_mgr.get_current();
@@ -95,17 +99,13 @@ impl ConnectionControl {
 
         // The policy sees everything as a bunch of claims.
         let mut authd_claims: Vec<Attribute> = Vec::new();
-        authd_claims.push(Attribute::new_non_expiring(key::CN.into(), cn.to_string()));
-        authd_claims.push(Attribute::new_non_expiring(
-            key::SUBSTRATE_ADDR.into(),
-            remote.to_string(),
-        ));
+        authd_claims.push(Attribute::builder(key::CN).value(cn));
+        authd_claims.push(Attribute::builder(key::SUBSTRATE_ADDR).value(remote.to_string()));
 
         // Technically we don't know if the node claim is authenticated until it passes policy check.
-        let mut unauthed_claims = HashMap::new();
-        unauthed_claims.insert(key::ROLE.into(), ROLE_NODE.into());
-        unauthed_claims.insert(key::ZPR_ADDR.into(), node_req_addr.to_string().into());
-        unauthed_claims.insert(key::AAA_NET.into(), node_aaa_net.to_string().into());
+        let mut unauthed_claims = Vec::new();
+        unauthed_claims.push(Attribute::builder(key::ROLE).value(ROLE_NODE));
+        unauthed_claims.push(Attribute::builder(key::ZPR_ADDR).value(node_req_addr.to_string()));
 
         // Now that we have checked auth, we need to check policy.
         //
@@ -114,20 +114,26 @@ impl ConnectionControl {
 
         let ectx = EvalContext::new(policy);
 
-        match ectx.approve_connection(Some(&authd_claims), Some(&unauthed_claims)) {
+        let node_actor = match ectx.approve_connection(
+            Some(&authd_claims),
+            Some(&unauthed_claims),
+            Duration::from_secs(config::DEFAULT_EXPIRATION_SECONDS),
+        ) {
             Ok(actor) => {
                 // Make sure policy verified that the actor is in fact a node.
                 if !actor.is_node() {
                     info!(target: CC, "connection not approved for cn {}: not a node", cn);
                     return Err(VSError::AuthenticationFailed("not authorized".into()));
                 }
-                Ok(actor)
+                actor
             }
             Err(e) => {
                 info!(target: CC, "connection not approved for cn {}: {}", cn, e);
-                Err(e.into())
+                return Err(e.into());
             }
-        }
+        };
+
+        Ok(node_actor)
     }
 
     /// Disconnect logic. Cleans up actor database and visas.

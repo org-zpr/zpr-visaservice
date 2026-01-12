@@ -6,6 +6,9 @@ use bytes::{Buf, Bytes};
 use openssl::pkey::{PKey, Public};
 use thiserror::Error;
 
+use crate::attribute::Attribute;
+use crate::joinpolicy::JPolicy;
+
 use zpr::policy::v1 as policy_capnp;
 
 #[derive(Debug, Error)]
@@ -41,6 +44,7 @@ pub struct Policy {
     policy_rdr: Option<Arc<capnp::message::Reader<capnp::serialize::OwnedSegments>>>,
     vinst: u64,
     bootstrap_keys: HashMap<String, PKey<Public>>,
+    join_policies: Vec<JPolicy>,
     serialized: Bytes,
 }
 
@@ -64,9 +68,13 @@ impl Policy {
         let policy = policy_reader.get_root::<policy_capnp::policy::Reader>()?;
 
         let bootstrap_keys = Self::load_bootstrap_keys(&Policy::default(), &policy)?;
+
+        let join_policies = Self::load_join_policies(&Policy::default(), &policy)?;
+
         Ok(Policy {
             policy_rdr: Some(Arc::new(policy_reader)),
             bootstrap_keys,
+            join_policies,
             serialized,
             ..Default::default()
         })
@@ -96,6 +104,18 @@ impl Policy {
     /// The vinst (version instance) is incremented each time the policy is changed.
     pub fn get_vinst(&self) -> u64 {
         self.vinst
+    }
+
+    /// Return all join policies that match the given attributes.
+    pub fn match_join_policies(&self, attrs: &[Attribute]) -> Vec<&JPolicy> {
+        let mut matched_policies: Vec<&JPolicy> = Vec::new();
+
+        for jp in &self.join_policies {
+            if jp.matches(attrs) {
+                matched_policies.push(jp);
+            }
+        }
+        matched_policies
     }
 
     pub fn get_bootstrap_key_by_cn(&self, cn: &str) -> Option<PKey<Public>> {
@@ -167,6 +187,20 @@ impl Policy {
             }
         }
         Ok(bootstrap_keys)
+    }
+
+    fn load_join_policies(
+        &self,
+        policy: &policy_capnp::policy::Reader,
+    ) -> Result<Vec<JPolicy>, PolicyError> {
+        let mut join_policies: Vec<JPolicy> = Vec::new();
+        if policy.has_join_policies() {
+            for jp_rdr in policy.get_join_policies()?.iter() {
+                let jp = JPolicy::try_from(jp_rdr)?;
+                join_policies.push(jp);
+            }
+        }
+        Ok(join_policies)
     }
 }
 

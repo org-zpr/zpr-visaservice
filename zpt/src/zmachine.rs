@@ -10,7 +10,9 @@ use std::time::Duration;
 use crate::error::{MachineError, PioError};
 use crate::out::OutputFormatter;
 use crate::pio;
+
 use libeval::actor::Actor;
+use libeval::attribute::Attribute;
 use libeval::eval::{EvalContext, EvalDecision};
 use zpr::vsapi_types::PacketDesc;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
@@ -28,13 +30,17 @@ pub enum Instruction {
     Set {
         name: String,
         key: String,
-        value: String,
+        value: String, // may be comma separated list for multi-valued attributes
     },
     Eval {
         prot: IpProtoT,
         source_expr: ActorExpr,
         dest_expr: ActorExpr,
         extra: Option<InstrExtra>,
+    },
+    Connect {
+        authd_claims: Option<Vec<Attribute>>,
+        unauthd_claims: Option<Vec<Attribute>>,
     },
     Dumpdb,
 }
@@ -127,6 +133,18 @@ impl ZMachine {
                     }
                 }
             }
+            Instruction::Connect {
+                authd_claims,
+                unauthd_claims,
+            } => {
+                self.eval_counter += 1;
+                if !state.has_policy() {
+                    return Err(MachineError::ExecutionError(
+                        "No policy loaded. Use 'load <path>' to load a policy.".to_string(),
+                    ));
+                }
+                self.eval_connect(state, authd_claims, unauthd_claims, outfmt)
+            }
             Instruction::Dumpdb => {
                 state.dump_db(outfmt);
                 Ok(())
@@ -156,6 +174,12 @@ impl ZMachine {
         println!("  set <actor> <k>:<v>  - Set attribute <k> to value <v> for actor <actor>.");
         println!("  dumpdb               - Dump the current actor database.");
         println!();
+        println!("Connection commands:");
+        println!("  connect [--ac <k>:<v> ...] [--uc <k>:<v> ...] ...");
+        println!("                      - Call approve_connection with given claims.");
+        println!(
+            "                        --ac for an authenticated claim, --uc for unauthenticated."
+        );
         println!("Eval commands:");
         println!("  eval TCP <src_actor>.<src_port> > <dst_actor>.<dst_port> [flags]");
         println!("  eval UDP <src_actor> > <dst_actor>");
@@ -199,6 +223,43 @@ impl ZMachine {
         println!();
         println!("  If code is not specified, it defaults to zero.");
         println!();
+    }
+
+    fn eval_connect(
+        &self,
+        state: &State,
+        authd_claims: &Option<Vec<Attribute>>,
+        unauthd_claims: &Option<Vec<Attribute>>,
+        outfmt: &mut Box<dyn OutputFormatter>,
+    ) -> Result<(), MachineError> {
+        // TODO: libeval should take same types for authd and unauthd claims!!
+
+        let libeval_authd_claims = if let Some(ac_vec) = authd_claims {
+            Some(ac_vec.as_slice())
+        } else {
+            None
+        };
+        let libeval_unauthed_claims = if let Some(uc_vec) = unauthd_claims {
+            Some(uc_vec.as_slice())
+        } else {
+            None
+        };
+
+        if let Some(ctx) = state.get_ctx() {
+            match ctx.approve_connection(
+                libeval_authd_claims,
+                libeval_unauthed_claims,
+                Duration::from_secs(3600),
+            ) {
+                Ok(actor) => {
+                    outfmt.write_connection_approved(&actor);
+                }
+                Err(e) => {
+                    outfmt.write_connection_denied(&e);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn eval_tcp(
@@ -415,7 +476,12 @@ impl State {
 
         // TODO: Attribute allows duplicate attribute keys -- it should not.
 
-        actor.add_attr_from_parts(key, value, Duration::from_secs(3600))?; // TODO: Expiration
+        // Humans enter multi value attributes as comma separated values.
+        let values: Vec<String> = value.split(',').map(|s| s.trim().to_string()).collect();
+        let attr = Attribute::builder(key)
+            .expires_in(Duration::from_secs(3600))
+            .values(values);
+        actor.add_attribute(attr)?;
         Ok(())
     }
 

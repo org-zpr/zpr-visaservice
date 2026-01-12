@@ -1,3 +1,4 @@
+use libeval::attribute::Attribute;
 use std::path::PathBuf;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
@@ -52,6 +53,7 @@ pub fn parse(input_line: &str) -> Result<Instruction, ParseError> {
                 _ => Err(ParseError::UnknownInstruction),
             }
         }
+        "connect" => Ok(parse_connect_expr(parsing.pop_eol()?)?),
         _ => Err(ParseError::UnknownInstruction),
     }
 }
@@ -103,6 +105,61 @@ fn parse_key_value(expr: String) -> Result<(String, String), ParseError> {
             "attribute expression must contain ':' or start with '#'".to_string(),
         ))
     }
+}
+
+// format of a connect expression is:
+//   `connect <claim_expr> [<claim_expr> ...]`
+//
+//   where <claim_expr> is:
+//     `<claim_type> <key>:<value>`
+//
+//   and <claim_type> is one of:
+//     `--ac` for an authentication claim
+//     `--uc` for an unauthenticated claim
+//
+fn parse_connect_expr(expr: String) -> Result<Instruction, ParseError> {
+    let mut authd_claims = Vec::new();
+    let mut unauthd_claims = Vec::new();
+
+    let toks = expr.split_whitespace();
+
+    let mut toks_iter = toks.into_iter();
+    while let Some(claim_type) = toks_iter.next() {
+        let claim_kv = toks_iter.next().ok_or_else(|| {
+            ParseError::InvalidFormat(
+                "missing key:value for claim in connect expression".to_string(),
+            )
+        })?;
+        let (key, value) = parse_key_value(claim_kv.to_string())?;
+
+        // TODO: for humans, a multi value claim is entered as a comma separated list. Need to parse that here.
+        match claim_type {
+            "--ac" => {
+                authd_claims.push(Attribute::builder(key).value(value));
+            }
+            "--uc" => {
+                unauthd_claims.push(Attribute::builder(key).value(value));
+            }
+            _ => {
+                return Err(ParseError::InvalidFormat(format!(
+                    "unknown claim type '{}' in connect expression",
+                    claim_type
+                )));
+            }
+        }
+    }
+    Ok(Instruction::Connect {
+        authd_claims: if authd_claims.is_empty() {
+            None
+        } else {
+            Some(authd_claims)
+        },
+        unauthd_claims: if unauthd_claims.is_empty() {
+            None
+        } else {
+            Some(unauthd_claims)
+        },
+    })
 }
 
 // format is:

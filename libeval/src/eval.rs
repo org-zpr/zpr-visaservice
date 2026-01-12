@@ -1,17 +1,20 @@
 use crate::actor::Actor;
-use crate::attribute::{Attribute, key};
+use crate::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
+use crate::joinpolicy::JFlag;
 use crate::logging::targets::EVAL;
 use crate::policy::Policy;
 
 use zpr::vsapi_types::PacketDesc;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
+use enumset::EnumSet;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tracing::{debug, warn};
 
@@ -53,6 +56,15 @@ pub enum EvalError {
 
     #[error("attribute missing: {0}")]
     AttributeMissing(String),
+
+    #[error("no match")]
+    NoMatch,
+
+    #[error("invalid claim: {0}")]
+    InvalidClaim(String),
+
+    #[error("claim missing: {0}")]
+    ClaimMissing(String),
 }
 
 /// A "hit" is a single matching permission or deny line in policy
@@ -349,65 +361,124 @@ impl EvalContext {
     /// Consult policy and determine if connection is allowed from the actor with
     /// the indicated authenticated and unauthenticated claims.
     ///
-    ///
     /// On success returns an actor object that will include additional attributes set from
     /// policy (eg, ROLE).
     ///
-    /// If any of the unauthenticated claims are permitted they will be included
-    /// with the actor.  Unauthenticated claims that are denied are discarded and
-    /// logged.
+    /// This does not set `zpr.addr` unless one is specified in policy (TODO).
+    ///
+    /// If caller is checking a node connection then zpr.role:NODE attribute must be set
+    /// on the `unauthenticated_claims`.  Connection will then fail if policy does not establish
+    /// that the actor is a node. If policy establishes that the actor is a node, and zpr.role:NODE
+    /// is not set in the `unauthenticated_claims`, then the connection fails also.
+    ///
+    /// If the peer is requesting a specific ZPR address, then zpr.addr:<addr> should
+    /// be included in the `unauthenticated_claims`. Connection request will fail if the
+    /// policy specifies a different address for the actor.  Caller should scrub ZPR address
+    /// from unauthenticated_claims before calling this function if they do not want it
+    /// used in policy matching.
     pub fn approve_connection(
         &self,
         authenticated_claims: Option<&[Attribute]>,
-        unauthenticated_claims: Option<&HashMap<String, String>>,
+        unauthenticated_claims: Option<&[Attribute]>,
+        expiration: Duration,
     ) -> Result<Actor, EvalError> {
-        // Run through the policy, make sure that the set of claims resovles to an actor.
-        // Policy uses claims and some claims may come from trusted services so I think
-        // the idea is to deal with all that prior to calling this and so the claims
-        // map has everything we have gathered.
-
-        // For now we are approving everything and handing out a static node addr.
-        // We skip checking policy.
-
-        let mut actor = Actor::new();
-        for attr in authenticated_claims.unwrap_or_default() {
-            if let Err(e) = actor.add_attribute(attr.clone()) {
-                warn!(target: EVAL, "dropping invalid authenticated claim attribute: {}", e);
-            }
+        if authenticated_claims.is_none() {
+            return Err(EvalError::AttributeMissing(
+                "no authenticated claims provided".into(),
+            ));
         }
+        let authenticated_claims = authenticated_claims.unwrap();
+
+        let mut query_claims = Vec::new();
+        query_claims.extend_from_slice(authenticated_claims);
+
+        // If a zpr.addr is present in auth claims, we use that to match
+        // policy too.
         if let Some(unauth_claims) = unauthenticated_claims {
-            for (k, v) in unauth_claims {
-                if let Err(e) = actor.add_attribute(Attribute::new_non_expiring(k.into(), v.into()))
-                {
-                    warn!(target: EVAL, "dropping invalid unauthenticated claim attribute: {}", e);
+            for ua_attr in unauth_claims {
+                if ua_attr.get_key() == key::ZPR_ADDR {
+                    query_claims.push(ua_attr.clone());
                 }
             }
         }
 
-        // Placeholder - assign an address
-        if !actor.has_attribute_named(key::ZPR_ADDR) {
-            if actor.is_node() {
-                actor
-                    .add_attribute(Attribute::new_non_expiring(
-                        key::ZPR_ADDR.into(),
-                        "fd5a:5052:90de::3000".into(),
-                    ))
-                    .unwrap();
-            } else {
-                actor
-                    .add_attribute(Attribute::new_non_expiring(
-                        key::ZPR_ADDR.into(),
-                        "fd5a:5052:1000::1".into(),
-                    ))
-                    .unwrap();
+        // Query to see if the authenticated claims match any join policies.
+        let matching_jps = self.policy.match_join_policies(&query_claims);
+        if matching_jps.is_empty() {
+            return Err(EvalError::NoMatch);
+        }
+        debug!(
+            target: EVAL,
+            "found {} matching join policies",
+            matching_jps.len()
+        );
+
+        // Each policy may have flags and services.
+        // TODO: Currently we have no way to set a static addr from policy.
+        let mut flags: EnumSet<JFlag> = EnumSet::new();
+        let mut services = HashSet::new();
+        for jp in matching_jps {
+            flags |= jp.flags;
+            if let Some(svcs) = &jp.services {
+                for s in svcs {
+                    services.insert(s.clone());
+                }
             }
         }
 
+        let node_expected = if let Some(unauth_claims) = unauthenticated_claims {
+            // Look for key:ROLE in the unauthenticated claims.
+            unauth_claims
+                .iter()
+                .any(|a| a.get_key() == key::ROLE && a.is_single_value(ROLE_NODE))
+        } else {
+            false
+        };
+
+        if node_expected && !flags.contains(JFlag::IsNode) {
+            debug!(target: EVAL, "connection rejected: node role expected but not established by policy");
+            return Err(EvalError::InvalidClaim(key::ROLE.into()));
+        }
+        if !node_expected && flags.contains(JFlag::IsNode) {
+            debug!(target: EVAL, "connection rejected: node role established by policy but not indicated by caller");
+            return Err(EvalError::ClaimMissing(key::ROLE.into()));
+        }
+
+        let mut actor = Actor::new();
+
+        for attr in &query_claims {
+            if let Err(e) = actor.add_attribute(attr.clone()) {
+                warn!(target: EVAL, "dropping invalid authenticated claim attribute: {}", e);
+            }
+        }
+
+        let role_attr = if flags.contains(JFlag::IsNode) {
+            Attribute::builder(key::ROLE)
+                .expires_in(expiration)
+                .value(ROLE_NODE)
+        } else {
+            Attribute::builder(key::ROLE)
+                .expires_in(expiration)
+                .value(ROLE_ADAPTER)
+        };
+        actor.add_attribute(role_attr).unwrap();
+
+        if !services.is_empty() {
+            debug!(target: EVAL, "actor provides services: {:?}", services);
+            let svc_attr = Attribute::new(
+                key::SERVICES.into(),
+                &services.iter().cloned().collect::<Vec<String>>(),
+                SystemTime::now() + expiration,
+            );
+            actor.add_attribute(svc_attr).unwrap();
+        }
+
         actor
-            .add_attribute(Attribute::new_non_expiring(
-                key::VINST.into(),
-                self.policy.get_vinst().to_string(),
-            ))
+            .add_attribute(
+                Attribute::builder(key::VINST)
+                    .expires_in(expiration)
+                    .value(self.policy.get_vinst().to_string()),
+            )
             .unwrap();
 
         // Policy configuration also tells us what attributes are tied to identity.
@@ -425,10 +496,7 @@ impl EvalContext {
             actor.hash(&mut s);
             let hash_str = format!("hash:{:x}", s.finish());
             actor
-                .add_attribute(Attribute::new_non_expiring(
-                    key::ACTOR_HASH.into(),
-                    hash_str,
-                ))
+                .add_attribute(Attribute::builder(key::ACTOR_HASH).value(hash_str))
                 .unwrap();
             actor.add_identity_key(0, key::ACTOR_HASH).unwrap();
         }
@@ -734,6 +802,7 @@ mod test {
     use super::*;
     use crate::attribute::key;
     use bytes::{Buf, Bytes};
+    use std::net::IpAddr;
     use std::time::Duration;
     use std::{path::Path, sync::Once};
     use tracing::Level;
@@ -741,6 +810,7 @@ mod test {
 
     static TRACING_INIT: Once = Once::new();
 
+    /// init logging
     fn setup() {
         TRACING_INIT.call_once(|| {
             tracing_subscriber::registry()
@@ -799,7 +869,7 @@ mod test {
         match decision {
             EvalDecision::Allow(hits) => {
                 assert_eq!(hits.len(), 1);
-                assert_eq!(hits[0].match_idx, 1);
+                assert_eq!(hits[0].match_idx, 4);
                 assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected allow decision, not {:?}", decision),
@@ -814,7 +884,7 @@ mod test {
         match decision {
             EvalDecision::Deny(hits) => {
                 assert_eq!(hits.len(), 1);
-                assert_eq!(hits[0].match_idx, 0);
+                assert_eq!(hits[0].match_idx, 3);
                 assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected deny decision, not {:?}", decision),
@@ -1042,5 +1112,59 @@ mod test {
             }
             _ => panic!("expected deny decision, not {:?}", decision),
         }
+    }
+
+    #[test]
+    fn test_node_can_connect() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        let mut authenticated_claims = Vec::new();
+        let mut unauthenticated_claims = Vec::new();
+
+        authenticated_claims.push(Attribute::builder(key::CN).value("node.zpr.org"));
+
+        unauthenticated_claims.push(Attribute::builder(key::ZPR_ADDR).value("fd5a:5052:90de::1"));
+        unauthenticated_claims.push(Attribute::builder(key::ROLE).value(ROLE_NODE));
+
+        let actor = ctx
+            .approve_connection(
+                Some(authenticated_claims.as_slice()),
+                Some(unauthenticated_claims.as_slice()),
+                Duration::from_secs(1000),
+            )
+            .unwrap();
+
+        assert!(actor.is_node());
+
+        // And address is set
+        assert!(actor.get_zpr_addr().is_some());
+        let ipaddr = actor.get_zpr_addr().unwrap().clone();
+        assert_eq!(ipaddr, "fd5a:5052:90de::1".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn test_connect_fail() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        let mut authenticated_claims = Vec::new();
+        let mut unauthenticated_claims = Vec::new();
+
+        authenticated_claims.push(Attribute::builder(key::CN).value("nobody.zpr.org"));
+
+        unauthenticated_claims.push(Attribute::builder(key::ZPR_ADDR).value("fd5a:5052:90de::1"));
+        unauthenticated_claims.push(Attribute::builder(key::ROLE).value(ROLE_NODE));
+
+        match ctx.approve_connection(
+            Some(authenticated_claims.as_slice()),
+            Some(unauthenticated_claims.as_slice()),
+            Duration::from_secs(1000),
+        ) {
+            Err(_) => {}
+            Ok(actor) => panic!("expected connection approval to fail, got {:?}", actor),
+        };
     }
 }
