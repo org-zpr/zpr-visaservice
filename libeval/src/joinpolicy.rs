@@ -1,5 +1,6 @@
 //! Structs for managing the "join policy" records from ZPR policy.
 //! Only as much as is needed for libeval to do its work.
+use enumset::{EnumSet, EnumSetType};
 use zpr::policy::v1;
 
 use crate::attribute::Attribute;
@@ -9,11 +10,11 @@ use crate::policy::PolicyError;
 #[derive(Debug)]
 pub struct JPolicy {
     pub matches: Vec<AttrExp>,
-    pub flags: Option<Vec<JFlag>>,
+    pub flags: EnumSet<JFlag>,
     pub services: Option<Vec<String>>, // only service ID
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, EnumSetType)]
 pub enum JFlag {
     IsNode,
     IsVs,
@@ -72,17 +73,17 @@ impl TryFrom<v1::j_policy::Reader<'_>> for JPolicy {
             None
         };
         let flags = if jp_rdr.has_flags() {
-            let mut jflags: Vec<JFlag> = Vec::new();
+            let mut jflags: EnumSet<JFlag> = EnumSet::new();
             for flag_rdr in jp_rdr.get_flags()?.iter() {
                 match flag_rdr? {
-                    v1::JoinFlag::Node => jflags.push(JFlag::IsNode),
-                    v1::JoinFlag::Vs => jflags.push(JFlag::IsVs),
-                    v1::JoinFlag::Vsdock => jflags.push(JFlag::IsVsDock),
+                    v1::JoinFlag::Node => jflags |= JFlag::IsNode,
+                    v1::JoinFlag::Vs => jflags |= JFlag::IsVs,
+                    v1::JoinFlag::Vsdock => jflags |= JFlag::IsVsDock,
                 }
             }
-            Some(jflags)
+            jflags
         } else {
-            None
+            EnumSet::new()
         };
         Ok(JPolicy {
             matches,
@@ -240,7 +241,7 @@ mod tests {
                 op: AttrOp::Eq,
                 value: vec!["a".to_string(), "b".to_string()],
             }],
-            flags: None,
+            flags: EnumSet::new(),
             services: None,
         };
         let attrs = vec![attr("k1", vec!["a", "b", "c"])];
@@ -256,7 +257,7 @@ mod tests {
                 op: AttrOp::Ne,
                 value: vec!["a".to_string(), "b".to_string()],
             }],
-            flags: None,
+            flags: EnumSet::new(),
             services: None,
         };
         let attrs = vec![attr("k1", vec!["a", "b", "c"])];
@@ -272,7 +273,7 @@ mod tests {
                 op: AttrOp::Has,
                 value: vec!["".to_string()],
             }],
-            flags: None,
+            flags: EnumSet::new(),
             services: None,
         };
         let attrs = vec![attr("k1", vec!["a", "b"])];
@@ -288,7 +289,7 @@ mod tests {
                 op: AttrOp::Excludes,
                 value: vec!["b".to_string()],
             }],
-            flags: None,
+            flags: EnumSet::new(),
             services: None,
         };
         let attrs = vec![attr("k1", vec!["a", "b"])];
@@ -304,7 +305,7 @@ mod tests {
                 op: AttrOp::Eq,
                 value: vec!["a".to_string()],
             }],
-            flags: None,
+            flags: EnumSet::new(),
             services: None,
         };
         let attrs = vec![attr("k2", vec!["a"])];
@@ -320,7 +321,7 @@ mod tests {
                 op: AttrOp::Has,
                 value: vec!["a".to_string(), "b".to_string()],
             }],
-            flags: None,
+            flags: EnumSet::new(),
             services: None,
         };
 
@@ -336,7 +337,7 @@ mod tests {
                 op: AttrOp::Excludes,
                 value: vec!["".to_string()],
             }],
-            flags: None,
+            flags: EnumSet::new(),
             services: None,
         };
 
@@ -351,7 +352,7 @@ mod tests {
                 op: AttrOp::Ne,
                 value: vec!["a".to_string(), "b".to_string()],
             }],
-            flags: None,
+            flags: EnumSet::new(),
             services: None,
         };
         let attrs = vec![attr("k1", vec!["a"])];

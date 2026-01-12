@@ -7,6 +7,7 @@ use crate::policy::Policy;
 use zpr::vsapi_types::PacketDesc;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
+use enumset::EnumSet;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fmt;
@@ -414,14 +415,10 @@ impl EvalContext {
 
         // Each policy may have flags and services.
         // TODO: Currently we have no way to set a static addr from policy.
-        let mut flags = HashSet::new();
+        let mut flags: EnumSet<JFlag> = EnumSet::new();
         let mut services = HashSet::new();
         for jp in matching_jps {
-            if let Some(flgs) = &jp.flags {
-                for f in flgs {
-                    flags.insert(f.clone());
-                }
-            }
+            flags |= jp.flags;
             if let Some(svcs) = &jp.services {
                 for s in svcs {
                     services.insert(s.clone());
@@ -438,11 +435,11 @@ impl EvalContext {
             false
         };
 
-        if node_expected && !flags.contains(&JFlag::IsNode) {
+        if node_expected && !flags.contains(JFlag::IsNode) {
             debug!(target: EVAL, "connection rejected: node role expected but not established by policy");
             return Err(EvalError::InvalidClaim(key::ROLE.into()));
         }
-        if !node_expected && flags.contains(&JFlag::IsNode) {
+        if !node_expected && flags.contains(JFlag::IsNode) {
             debug!(target: EVAL, "connection rejected: node role established by policy but not indicated by caller");
             return Err(EvalError::ClaimMissing(key::ROLE.into()));
         }
@@ -455,7 +452,7 @@ impl EvalContext {
             }
         }
 
-        let role_attr = if flags.contains(&JFlag::IsNode) {
+        let role_attr = if flags.contains(JFlag::IsNode) {
             Attribute::builder(key::ROLE)
                 .expires_in(expiration)
                 .value(ROLE_NODE)
