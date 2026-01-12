@@ -188,6 +188,10 @@ impl JPolicy {
                 }
             }
             if !found {
+                // EXCLUDES with an empty value matches not-having the attribute.
+                if jp_exp.op == AttrOp::Excludes && jp_exp.is_empty_value() {
+                    continue;
+                }
                 // Fail - all keys must be present.
                 return false;
             }
@@ -311,6 +315,21 @@ mod tests {
     }
 
     #[test]
+    fn test_jpolicy_matches_has_empty_value_missing_key_fails() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Has,
+                value: vec!["".to_string()],
+            }],
+            flags: EnumSet::new(),
+            services: None,
+        };
+
+        assert!(!policy.matches(&[attr("k2", vec!["a"])]));
+    }
+
+    #[test]
     fn test_jpolicy_matches_excludes_value_present() {
         let policy = JPolicy {
             matches: vec![AttrExp {
@@ -324,6 +343,22 @@ mod tests {
         let attrs = vec![attr("k1", vec!["a", "b"])];
 
         assert!(!policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_excludes_no_values_present() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Excludes,
+                value: vec!["b".to_string(), "c".to_string()],
+            }],
+            flags: EnumSet::new(),
+            services: None,
+        };
+        let attrs = vec![attr("k1", vec!["a"])];
+
+        assert!(policy.matches(&attrs));
     }
 
     #[test]
@@ -381,6 +416,22 @@ mod tests {
     }
 
     #[test]
+    fn test_jpolicy_matches_eq_order_ignored() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: EnumSet::new(),
+            services: None,
+        };
+
+        let attrs = vec![attr("k1", vec!["b", "a"])];
+        assert!(policy.matches(&attrs));
+    }
+
+    #[test]
     fn test_jpolicy_matches_has_required_values() {
         let policy = JPolicy {
             matches: vec![AttrExp {
@@ -409,6 +460,21 @@ mod tests {
         };
 
         assert!(!policy.matches(&[attr("k1", vec!["a"])]));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_excludes_empty_value_missing_key_matches() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Excludes,
+                value: vec!["".to_string()],
+            }],
+            flags: EnumSet::new(),
+            services: None,
+        };
+
+        assert!(policy.matches(&[attr("k2", vec!["a"])]));
     }
 
     #[test]
