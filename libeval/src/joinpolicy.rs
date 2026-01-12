@@ -94,6 +94,7 @@ impl TryFrom<v1::j_policy::Reader<'_>> for JPolicy {
 }
 
 impl AttrExp {
+    /// True if `vals` includes all the values from this AttrExp. Order not important.
     pub fn contains_all(&self, vals: &[String]) -> bool {
         for v in &self.value {
             if !vals.contains(v) {
@@ -101,6 +102,18 @@ impl AttrExp {
             }
         }
         true
+    }
+
+    /// True if `vals` includes only the values from this AttrExp. Order not important.
+    pub fn contains_only(&self, vals: &[String]) -> bool {
+        let mut i = 0;
+        for v in &self.value {
+            if !vals.contains(v) {
+                return false;
+            }
+            i += 1;
+        }
+        i == vals.len()
     }
 
     pub fn contains_any(&self, vals: &[String]) -> bool {
@@ -119,6 +132,16 @@ impl AttrExp {
 
 impl JPolicy {
     /// The list of attributes matches this JPolicy only if all the JPolicy's AttrExps are satisfied.
+    ///
+    /// How attribute expressions match attributes here for reference (@cpacejo)
+    /// - (key, has, v) or (key, has, (v0, v1, v2)) matches if "key" attribute is present and includes all of the specified values.
+    /// - (key,excludes,v) or (key, excludes, (v0, v1,v2)) matches if "key" attribute is present and it has none of the specified values.
+    /// - (key, eq, v) or (key, eq, (v0, v1, v2)) matches if "key" attribute is present and is exactly the specified values.
+    /// - (key, ne, v) or (key, ne, (v0, v1, v2)) matches if "key" attribute is present and is not equal to the specified values.
+    /// - In the case of multi value order is ignored.
+    ///  - Special cases for HAS and EXCLUDES as (key, has, "") and (key, excludes, "").  These match having or not-having (respectively)
+    ///    the attribute.  So (cn, has, "") will match if there is a CN attribute regardless of value.
+    ///
     pub fn matches(&self, attrs: &[Attribute]) -> bool {
         for jp_exp in &self.matches {
             // continue so long as we keep matching the jp_exp's
@@ -132,13 +155,13 @@ impl JPolicy {
                     match jp_exp.op {
                         AttrOp::Eq => {
                             // EQUAL - the attribute must have all values present in the AttrExp. Order not important.
-                            if !jp_exp.contains_all(&attr.get_value()) {
+                            if !jp_exp.contains_only(&attr.get_value()) {
                                 return false;
                             }
                         }
                         AttrOp::Ne => {
                             // The attr must not have same value as the AttrExp.
-                            if jp_exp.contains_all(attr.get_value()) {
+                            if jp_exp.contains_only(&attr.get_value()) {
                                 return false;
                             }
                         }
@@ -244,8 +267,11 @@ mod tests {
             flags: EnumSet::new(),
             services: None,
         };
-        let attrs = vec![attr("k1", vec!["a", "b", "c"])];
 
+        let attrs = vec![attr("k1", vec!["a", "b", "c"])];
+        assert!(!policy.matches(&attrs));
+
+        let attrs = vec![attr("k1", vec!["a", "b"])];
         assert!(policy.matches(&attrs));
     }
 
@@ -261,8 +287,11 @@ mod tests {
             services: None,
         };
         let attrs = vec![attr("k1", vec!["a", "b", "c"])];
-
+        assert!(policy.matches(&attrs));
+        let attrs = vec![attr("k1", vec!["a", "b"])];
         assert!(!policy.matches(&attrs));
+        let attrs = vec![attr("k1", vec!["c"])];
+        assert!(policy.matches(&attrs));
     }
 
     #[test]
@@ -310,6 +339,44 @@ mod tests {
         };
         let attrs = vec![attr("k2", vec!["a"])];
 
+        assert!(!policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_multiple_exact() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: EnumSet::new(),
+            services: None,
+        };
+        let attrs = vec![attr("k1", vec!["a", "b", "c"])];
+
+        // Should not match since our attr also includes "c"
+        assert!(!policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_ne_multiple_exact() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Ne,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: EnumSet::new(),
+            services: None,
+        };
+
+        // (a,b) != (a,b,c)
+        let attrs = vec![attr("k1", vec!["a", "b", "c"])];
+        assert!(policy.matches(&attrs));
+
+        // (a,b) == (b,a)
+        let attrs = vec![attr("k1", vec!["b", "a"])];
         assert!(!policy.matches(&attrs));
     }
 
