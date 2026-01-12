@@ -1,6 +1,7 @@
 //! Structs for managing the "join policy" records from ZPR policy.
 //! Only as much as is needed for libeval to do its work.
 use enumset::{EnumSet, EnumSetType};
+use std::collections::HashMap;
 use zpr::policy::v1;
 
 use crate::attribute::Attribute;
@@ -94,38 +95,31 @@ impl TryFrom<v1::j_policy::Reader<'_>> for JPolicy {
 }
 
 impl AttrExp {
-    /// True if `vals` includes all the values from this AttrExp. Order not important.
-    pub fn contains_all(&self, vals: &[String]) -> bool {
-        for v in &self.value {
-            if !vals.contains(v) {
-                return false;
-            }
+    /// True if `vals` includes exactly the values from this AttrExp. Order not important.
+    /// If there are duplicates in `vals` there must also be duplicates in `self.value`
+    /// and vice versa.
+    ///
+    /// Note that there should never normally be duplicates in `self.value`
+    /// since AttrExprs are created by the compiler and duplicates are not generated.
+    fn contains_exactly<S: AsRef<str>>(&self, vals: &[S]) -> bool {
+        if vals.len() != self.value.len() {
+            return false;
         }
-        true
+
+        let mut m = HashMap::<String, usize>::new();
+        for s in vals {
+            *m.entry(s.as_ref().to_owned()).or_insert(0) += 1;
+        }
+
+        let mut n = HashMap::<String, usize>::new();
+        for s in &self.value {
+            *n.entry(s.to_owned()).or_insert(0) += 1;
+        }
+
+        m == n
     }
 
-    /// True if `vals` includes only the values from this AttrExp. Order not important.
-    pub fn contains_only(&self, vals: &[String]) -> bool {
-        let mut i = 0;
-        for v in &self.value {
-            if !vals.contains(v) {
-                return false;
-            }
-            i += 1;
-        }
-        i == vals.len()
-    }
-
-    pub fn contains_any(&self, vals: &[String]) -> bool {
-        for v in &self.value {
-            if vals.contains(v) {
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn is_empty_value(&self) -> bool {
+    fn is_empty_value(&self) -> bool {
         self.value.is_empty() || self.value[0].is_empty()
     }
 }
@@ -142,6 +136,7 @@ impl JPolicy {
     ///  - Special cases for HAS and EXCLUDES as (key, has, "") and (key, excludes, "").  These match having or not-having (respectively)
     ///    the attribute.  So (cn, has, "") will match if there is a CN attribute regardless of value.
     ///
+    /// Duplicates should be dealt with before calling this. For example `(foo, eq, (a,b))` will not match `foo:(a,a,b)`.
     pub fn matches(&self, attrs: &[Attribute]) -> bool {
         for jp_exp in &self.matches {
             // continue so long as we keep matching the jp_exp's
@@ -154,14 +149,12 @@ impl JPolicy {
 
                     match jp_exp.op {
                         AttrOp::Eq => {
-                            // EQUAL - the attribute must have all values present in the AttrExp. Order not important.
-                            if !jp_exp.contains_only(&attr.get_value()) {
+                            if !jp_exp.contains_exactly(&attr.get_value()) {
                                 return false;
                             }
                         }
                         AttrOp::Ne => {
-                            // The attr must not have same value as the AttrExp.
-                            if jp_exp.contains_only(&attr.get_value()) {
+                            if jp_exp.contains_exactly(&attr.get_value()) {
                                 return false;
                             }
                         }
@@ -210,31 +203,43 @@ mod tests {
     }
 
     #[test]
-    fn test_attrexp_contains_all() {
+    fn test_attrexp_contains_exactly() {
         let exp = AttrExp {
             key: "k".to_string(),
             op: AttrOp::Eq,
             value: vec!["a".to_string(), "b".to_string()],
         };
-        let values = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let missing = vec!["a".to_string()];
+        let values = vec!["a".to_string()];
+        assert!(!exp.contains_exactly(&values));
 
-        assert!(exp.contains_all(&values));
-        assert!(!exp.contains_all(&missing));
+        let values = vec!["a".to_string(), "b".to_string()];
+        assert!(exp.contains_exactly(&values));
+
+        let values = vec!["b".to_string(), "a".to_string()];
+        assert!(exp.contains_exactly(&values));
+
+        let values = vec!["a".to_string(), "b".to_string(), "b".to_string()];
+        assert!(!exp.contains_exactly(&values));
     }
 
     #[test]
-    fn test_attrexp_contains_any() {
+    fn test_attrexp_contains_exactly_dupes() {
+        // This is improbable since compiler does not create AttrExp with dupes,
+        // but it should nevertheless work.
         let exp = AttrExp {
             key: "k".to_string(),
             op: AttrOp::Eq,
-            value: vec!["a".to_string(), "b".to_string()],
+            value: vec!["a".to_string(), "b".to_string(), "a".to_string()],
         };
-        let values = vec!["c".to_string(), "b".to_string()];
-        let none = vec!["c".to_string(), "d".to_string()];
 
-        assert!(exp.contains_any(&values));
-        assert!(!exp.contains_any(&none));
+        // Any combo of two "a" and one "b" should work
+        assert!(exp.contains_exactly(&vec!["a", "b", "a"]));
+        assert!(exp.contains_exactly(&vec!["a", "a", "b"]));
+        assert!(exp.contains_exactly(&vec!["b", "a", "a"]));
+
+        assert!(!exp.contains_exactly(&vec!["b", "a", "a", "b", "a"]));
+        assert!(!exp.contains_exactly(&vec!["a", "b", "b"]));
+        assert!(!exp.contains_exactly(&vec!["a", "b"]));
     }
 
     #[test]
@@ -429,6 +434,40 @@ mod tests {
 
         let attrs = vec![attr("k1", vec!["b", "a"])];
         assert!(policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_eq_dupes() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: EnumSet::new(),
+            services: None,
+        };
+
+        // Duplicates in attributes should cause Eq to fail
+        let attrs = vec![attr("k1", vec!["b", "a", "a", "b"])];
+        assert!(!policy.matches(&attrs));
+    }
+
+    #[test]
+    fn test_jpolicy_matches_has_dupes() {
+        let policy = JPolicy {
+            matches: vec![AttrExp {
+                key: "k1".to_string(),
+                op: AttrOp::Has,
+                value: vec!["a".to_string(), "b".to_string()],
+            }],
+            flags: EnumSet::new(),
+            services: None,
+        };
+
+        // Duplicates in attributes should not affect Has
+        assert!(policy.matches(&[attr("k1", vec!["a", "b", "a", "b"])]));
+        assert!(!policy.matches(&[attr("k1", vec!["a"])]));
     }
 
     #[test]
