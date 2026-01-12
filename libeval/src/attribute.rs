@@ -155,11 +155,7 @@ impl Attribute {
     /// value you get a simple String. When there are multiple values they are
     /// joined with comma.
     pub fn get_value_as_string(&self) -> String {
-        if self.value.is_empty() || self.value.len() == 1 && self.value[0].is_empty() {
-            "".to_string()
-        } else {
-            self.value.join(", ")
-        }
+        self.value.join(", ")
     }
 
     pub fn get_value_len(&self) -> usize {
@@ -231,5 +227,15 @@ mod tests {
         let values = vec!["delta".to_string(), "epsilon".to_string()];
 
         assert!(!attr.value_has_any(&values));
+    }
+
+    #[test]
+    fn test_get_value_as_string() {
+        let attr = Attribute::builder("key").values(vec!["alpha", "beta", "gamma"]);
+        assert_eq!(attr.get_value_as_string(), "alpha, beta, gamma");
+        let attr = Attribute::builder("key").value("");
+        assert_eq!(attr.get_value_as_string(), "");
+        let attr = Attribute::builder("key").value("foo");
+        assert_eq!(attr.get_value_as_string(), "foo");
     }
 }

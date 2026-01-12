@@ -810,7 +810,6 @@ mod test {
     use std::{path::Path, sync::Once};
     use tracing::Level;
     use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
-    use zpr::policy_capnp::service::kind::Which::Auth;
 
     static TRACING_INIT: Once = Once::new();
 
