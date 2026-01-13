@@ -1,12 +1,15 @@
 //! Manage the creating, storage and retrieval of visas for the visa service.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use crate::config;
+use crate::assembly::Assembly;
+use crate::config::{self, VS_ZPR_ADDR};
 use crate::db;
 use crate::error::VSError;
 use crate::logging::targets::VMGR;
+use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval::{Direction, Hit};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
@@ -25,16 +28,46 @@ impl VisaMgr {
         VisaMgr { repo: db }
     }
 
-    // Placeholder implementation, called concurrently.
-    // Using a const expiration (4 hrs).
-    // No checking to see if visa already exists.
-    // No storing of the visas.
-    // Fake keys.
+    /// Ask policy for a visa permitting this visa service to talk to the given node VSS addr.
+    /// If a visa is returned it will have been marked as PENDING to install on the requesting node.
+    pub async fn create_vs_to_node_vss_visa(
+        &self,
+        asm: Arc<Assembly>,
+        node_addr: &IpAddr,
+        vss_port: u16,
+    ) -> Result<Visa, VSError> {
+        // TODO: We may have this visa on hand already, if so return it and do not re-generate.
+
+        // TODO: PacketDesc should have new_xxx functions that take IpAddr (not just string)
+        let pkt_data = PacketDesc::new_tcp(
+            &VS_ZPR_ADDR.to_string(),
+            &node_addr.to_string(),
+            0,
+            vss_port,
+        )
+        .unwrap();
+
+        match request_visa_wait_response(asm, node_addr, pkt_data).await {
+            Ok(VisaDecision::Allow(visa)) => Ok(visa),
+            Ok(VisaDecision::Deny(dcode)) => Err(VSError::VisaDenied(dcode.to_string())),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Placeholder implementation, called concurrently.
+    /// Called after making use of libeval to check policy.
+    /// Using a const expiration (4 hrs).
+    /// No checking to see if visa already exists.
+    /// Fake keys.
+    ///
+    /// If `mark_installed` is true, the visa will be marked as installed on the requesting node otherwise
+    /// it will be marked as pending install.
     pub async fn create_visa(
         &self,
         requesting_node: &IpAddr,
         pdesc: &PacketDesc,
         hit: &Hit,
+        mark_installed: bool,
     ) -> Result<Visa, VSError> {
         // Expiration is millis since UNIX EPOCH
         let expiration = {
@@ -104,7 +137,12 @@ impl VisaMgr {
             session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
         };
 
-        self.repo.store_visa(requesting_node, &visa).await?;
+        let nstate = if mark_installed {
+            db::NodeVisaState::Installed
+        } else {
+            db::NodeVisaState::PendingInstall
+        };
+        self.repo.store_visa(requesting_node, &visa, nstate).await?;
 
         info!("created visa {visa_id}");
         Ok(visa)

@@ -12,7 +12,7 @@ use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
 use libeval::actor::Actor;
-use zpr::vsapi_types::PacketDesc;
+use zpr::vsapi_types::{PacketDesc, SockAddr};
 use zpr::vsapi_types_writers::WriteTo;
 
 use crate::assembly::Assembly;
@@ -586,21 +586,93 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     /// PENDING (TODO) - Recent change to vsapi allows visas to be sent back with this call.
     async fn register_vss(
         self: Rc<Self>,
-        _: vsapi::v_s_handle::RegisterVssParams,
-        _: vsapi::v_s_handle::RegisterVssResults,
+        params: vsapi::v_s_handle::RegisterVssParams,
+        mut res: vsapi::v_s_handle::RegisterVssResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "register_vss from {:?}", self.node.get_cn());
-        Err(capnp::Error::unimplemented(
-            "method v_s_handle::Server::register_vss not implemented".to_string(),
-        ))
+        let saddr_rdr = params.get()?.get_addr()?;
+
+        let vss_sockaddr: SockAddr = match SockAddr::try_from(saddr_rdr) {
+            Ok(addr) => addr,
+            Err(e) => {
+                error!(target: VSAPI, "failed to convert addr arg to SockAddr: {}", e);
+                let res_builder = res.get().init_res();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::ParamError,
+                    "invalid sockaddr",
+                );
+                return Ok(());
+            }
+        };
+
+        // The socket addr address must match node address I think.
+        if vss_sockaddr.addr != *self.node.get_zpr_addr().unwrap() {
+            error!(target: VSAPI, "VSS socket address does not match node address for {:?}", self.node.get_cn());
+            let res_builder = res.get().init_res();
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::ParamError,
+                "VSS socket address does not match node address",
+            );
+            return Ok(());
+        }
+
+        let amgr_asm = self.asm.clone();
+
+        let initial_visas = match self
+            .asm
+            .actor_mgr
+            .initialize_node_vss(
+                amgr_asm,
+                self.node.get_zpr_addr().unwrap(),
+                &vss_sockaddr.into(),
+            )
+            .await
+        {
+            Ok(visas) => visas,
+            Err(e) => {
+                error!(target: VSAPI, "failed to initialize node VSS for {:?}: {}", self.node.get_cn(), e);
+                let res_builder = res.get().init_res();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "failed to initialize node VSS",
+                );
+                return Ok(());
+            }
+        };
+
+        // Return the visas to the node, mark visas installed?
+        //
+        // As we return we kick off the vss worker for this node which will send list of services.
+        // but will not work until visas are installed... So start it with small delay.
+
+        let mut res_builder = res.get().init_res();
+        let mut ok_builder = res_builder.init_ok();
+
+        let mut list_builder: capnp::struct_list::Builder<vsapi::visa_op::Owned> =
+            ok_builder.init_as(initial_visas.len() as u32);
+
+        for (i, visa) in initial_visas.iter().enumerate() {
+            let mut vop_builder = list_builder.reborrow().get(i as u32);
+
+            // convert visa to VisaOp...
+        }
+
+        Ok(())
     }
 
     async fn authorize_connect(
         self: Rc<Self>,
-        _: vsapi::v_s_handle::AuthorizeConnectParams,
-        _: vsapi::v_s_handle::AuthorizeConnectResults,
+        _params: vsapi::v_s_handle::AuthorizeConnectParams,
+        mut _results: vsapi::v_s_handle::AuthorizeConnectResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "authorize_connect from {:?}", self.node.get_cn());
+
         Err(capnp::Error::unimplemented(
             "method v_s_handle::Server::authorize_connect not implemented".to_string(),
         ))

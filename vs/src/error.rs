@@ -29,6 +29,9 @@ pub enum VSError {
     #[error("policy error: {0}")]
     PolicyError(#[from] libeval::policy::PolicyError),
 
+    #[error("visa denied: {0}")]
+    VisaDenied(String),
+
     #[error("UTF8 error: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 

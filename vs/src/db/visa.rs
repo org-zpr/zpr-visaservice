@@ -125,12 +125,18 @@ impl VisaRepo {
         Ok(())
     }
 
-    /// Store a new visa in the database, also sets the visa as PENDING install on the indicated
-    /// requesting node.
+    /// Store a new visa in the database, also sets the visa state with respect to the requesting node as
+    /// `nstate`.
     ///
-    /// TODO: We may want to code path that does not include a requsting node.///
-    pub async fn store_visa(&self, requesting_node: &IpAddr, visa: &Visa) -> Result<(), DBError> {
-        match self.try_store_visa(requesting_node, visa).await {
+    /// TODO: We may want to code path that does not include a requesting node.
+    ///
+    pub async fn store_visa(
+        &self,
+        requesting_node: &IpAddr,
+        visa: &Visa,
+        nstate: NodeVisaState,
+    ) -> Result<(), DBError> {
+        match self.try_store_visa(requesting_node, visa, nstate).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 warn!(target: REDIS, "failed to store visa: {}, attempting cleanup", visa.issuer_id);
@@ -145,7 +151,17 @@ impl VisaRepo {
         }
     }
 
-    async fn try_store_visa(&self, requesting_node: &IpAddr, visa: &Visa) -> Result<(), DBError> {
+    /// Attempt to store a visa.
+    ///
+    /// Will set the state w/ respect to the requesting_node to the passed `nstate`. Normally
+    /// this should be [NodeVisaState::PendingInstall] but there are occasions where you may
+    /// want to set it as [NodeVisaState::Installed].
+    async fn try_store_visa(
+        &self,
+        requesting_node: &IpAddr,
+        visa: &Visa,
+        nstate: NodeVisaState,
+    ) -> Result<(), DBError> {
         // write capnpn version of visa into the store.
 
         let visa_id = visa.issuer_id;
@@ -207,10 +223,7 @@ impl VisaRepo {
             .hset_multiple(
                 &key_nodevisa,
                 &[
-                    (
-                        "state",
-                        serde_json::to_string(&NodeVisaState::PendingInstall)?,
-                    ),
+                    ("state", serde_json::to_string(&nstate)?),
                     ("utime", gen_timestamp()),
                 ],
             )

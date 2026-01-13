@@ -2,8 +2,12 @@
 //!
 
 use libeval::actor::Actor;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
+use zpr::vsapi_types::Visa;
+
+use crate::assembly::Assembly;
 use crate::db;
 use crate::error::{DBError, VSError};
 
@@ -43,6 +47,41 @@ impl ActorMgr {
     pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
         self.node_db.remove_node(node_addr).await?;
         Ok(())
+    }
+
+    /// Initialize the VSS connection for a node.
+    /// - track the vss addr in db
+    /// - create new visa for visa_service<->vss comms, set pending.
+    ///
+    /// - If there are other pending visas for the node, return those too.
+    ///
+    /// Does not start a VSS worker.
+    pub async fn initialize_node_vss(
+        &self,
+        asm: Arc<Assembly>,
+        node_addr: &IpAddr,
+        vss_addr: &SocketAddr,
+    ) -> Result<Vec<Visa>, VSError> {
+        let mut visas = Vec::new();
+
+        match asm
+            .visa_mgr
+            .create_vs_to_node_vss_visa(asm, node_addr, vss_addr.port())
+            .await?
+        {
+            Ok(visa) => visas.push(visa),
+            Err(e) => return Err(e),
+        };
+
+        // Visa has been created and marked as PENDING to install on the requesting node.
+        // At some point there may be a background routine picking up the pending visas
+        // and trying to push them to VSS. Note that we have not set VSS yet in the DB so
+        // that should not be possible at the moment.
+
+        // TODO: Verify that we no longer need to craete a visa so the node can talk to
+        // the visa service itself -- I think that is now built in to the node code.
+
+        Ok(visas)
     }
 
     /// Add an adatpter called "magic" since it is not connected to any node.

@@ -19,6 +19,9 @@ pub mod targets {
 
     /// Visa Manager
     pub const VMGR: &str = "visamgr";
+
+    /// Visa request worker pool
+    pub const VISAREQ: &str = "visareq";
 }
 
 pub fn enable_logging(verbose: bool) {
