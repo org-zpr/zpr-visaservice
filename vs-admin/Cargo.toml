@@ -17,3 +17,16 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 zpr = { git = "https://github.com/org-zpr/zpr-common.git", tag = "v0.1.0", features = ["vsapi"]}
 admin-api-types = { path = "../admin-api-types" }
+clap_complete = { version = "4.5.57", optional = true}
+
+[features]
+complete = ["clap_complete"]
+
+[[bin]]
+name = "vs-admin"
+path = "src/main.rs"
+
+[[bin]]
+name = "generate_completions"
+path = "src/generate_completions.rs"
+required-features = ["complete"]
