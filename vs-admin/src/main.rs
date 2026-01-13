@@ -157,7 +157,8 @@ fn main() {
                 install_policy(&args.svc_url, ca_cert, version.as_str(), Path::new(&path))
             }
             // GET /admin/policy
-            _ => get_curr_policy(&args.svc_url, ca_cert),
+            (None, None) => get_curr_policy(&args.svc_url, ca_cert),
+            _ => Err("Both version and path must be set to install a policy".into()).into(),
         }
         .unwrap_or_else(|e| {
             eprintln!("{} {}", "Error: ".red(), e);
@@ -218,14 +219,14 @@ fn main() {
         }) => match id {
             Some(id) => match remove {
                 true => remove_revoke(&args.svc_url, ca_cert, id),
-                false => get_revoke(&args.svc_url, ca_cert, id),
+                false => match add {
+                    false => get_revoke(&args.svc_url, ca_cert, id),
+                    true => add_revoke(&args.svc_url, ca_cert, id),
+                },
             },
             None => match clear {
                 true => clear_revokes(&args.svc_url, ca_cert),
-                false => match add {
-                    true => add_revoke(&args.svc_url, ca_cert),
-                    false => get_revokes(&args.svc_url, ca_cert),
-                },
+                false => get_revokes(&args.svc_url, ca_cert),
             },
         }
         .unwrap_or_else(|e| {
@@ -671,29 +672,15 @@ fn remove_revoke(
 // TODO figure out how we want to get the visa information from the user.
 // Some options would be take in a file with a JSON VisaDescriptor or take in
 // the parts we care about via arguments on the command line
-fn add_revoke(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
+fn add_revoke(api_url: &str, cert: Certificate, id: u64) -> Result<(), Box<dyn std::error::Error>> {
     let cb = reqwest::blocking::ClientBuilder::new()
         .add_root_certificate(cert)
         .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(10));
     let client = cb.build()?;
 
-    let bundle = VisaDescriptor {
-        id: 0,
-        expires: 0,
-        created: 0,
-        actor_id: "a".to_string(),
-        policy_id: "p".to_string(),
-        source_addr: "s".to_string(),
-        dest_addr: "d".to_string(),
-        source_port: "s".to_string(),
-        dest_port: "d".to_string(),
-        proto: "p".to_string(),
-    };
-
     let resp = client
-        .post(format!("{}/admin/authrevoke", api_url))
-        .json(&bundle)
+        .post(format!("{}/admin/authrevoke/{}", api_url, id))
         .send()?;
 
     if !resp.status().is_success() {
