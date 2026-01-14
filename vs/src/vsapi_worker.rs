@@ -338,6 +338,9 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         };
 
         // We care about two params: zpr_addr and aaa_prefix.
+
+        // TODO: In next version of vsapi the AAA_PREFIX is going away and will instead be handed to the
+        // node by the visa service.
         let (node_zpr_addr, node_aaa_network) = match self.parse_my_connect_params(&parsed_params) {
             Ok((addr, cidr)) => (addr, cidr),
             Err(e) => {
@@ -527,10 +530,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // Ok, we have verified the credentials and checked with policy. Time to
         // update our state and return success.
 
-        // TODO: Is this AAA net valid? Is it in use by another node?
-        // Note that the AAA net is a prefix so it must not overlap any other AAA prefix
-        // in use.  When requesting visas, we allow requests from a nodes AAA net to an
-        // auth service.  We may want to track AAA prefix in redis for easy searching.
+        // TODO: aaa_prefix is going to be set by visa service.
         node_actor
             .add_attribute(Attribute::builder(key::AAA_NET).value(self.req_aaa_net.to_string()))
             .unwrap();
@@ -542,10 +542,6 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // first, then add_node will see the new version and should not allow the node to be added.
 
         // Note that the node may have services on it in addition to its node-ness.
-
-        // The node has a built in temporary(?) visa for communicating with the VS.
-        // The VS will create a "real" one and queue it to be sent to the node once
-        // it registers its VSS.
 
         // Since this is a new node and we do not yet support reconnects, make sure visa
         // table is clean for this node.
@@ -583,7 +579,6 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     /// The VS must generate a visa for VISA->VSS communications and hand it back to
     /// the node with this call.  Any pending visas for the node are handed back with this.
     ///
-    /// PENDING (TODO) - Recent change to vsapi allows visas to be sent back with this call.
     async fn register_vss(
         self: Rc<Self>,
         params: vsapi::v_s_handle::RegisterVssParams,
@@ -611,7 +606,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
 
         // The socket addr address must match node address I think.
         if vss_sockaddr.addr != *node_zpr_addr {
-            error!(target: VSAPI, "VSS socket address does not match node address for {:?}", self.node.get_cn());
+            error!(target: VSAPI, "VSS socket address '{}' does not match node address '{}' for {:?}", vss_sockaddr.addr, node_zpr_addr, self.node.get_cn());
             let res_builder = res.get().init_res();
             let mut err_builder = res_builder.init_error();
             write_error(
@@ -644,11 +639,6 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                 return Ok(());
             }
         };
-        // Return the visas to the node, mark visas installed?
-        //
-        // As we return we kick off the vss worker for this node which will send list of services.
-        // but will not work until visas are installed... So start it with small delay.
-
         let res_builder = res.get().init_res();
         let mut ok_builder = res_builder.initn_ok(initial_visas.len() as u32);
 
@@ -679,6 +669,17 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             .unwrap_or_else(|e| {
                 error!(target: VSAPI, "failed to set VSS for node {:?}: {}", self.node.get_cn(), e);
             });
+
+        // As we return we kick off the vss worker for this node which will send list of services.
+        // but will not work until visas are installed... So start it with small delay.
+        if let Err(e) =
+            self.asm
+                .vss_mgr
+                .start_vss_worker(self.asm.clone(), &saddr, config::VSS_START_DELAY)
+        {
+            warn!(target: VSAPI, "failed to start VSS worker for node {:?}: {}", self.node.get_cn(), e);
+            // TODO: how to recover here?
+        }
 
         Ok(())
     }

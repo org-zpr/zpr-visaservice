@@ -32,6 +32,10 @@ pub const MAX_CLOCK_SKEW_SECS: u64 = 180;
 
 pub const DEFAULT_EXPIRATION_SECONDS: u64 = 4 * 60 * 60; // 4 hours in seconds
 
+/// How long to wait after getting the VSS addr from the node and opening a connection back to it.
+/// This delay allows time for the node to install the visa before we try to use it.
+pub const VSS_START_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields, default)]
 pub struct VSConfig {

@@ -45,6 +45,9 @@ pub enum VSError {
 
     #[error("database error: {0}")]
     DBError(#[from] DBError),
+
+    #[error("duplicate node error: {0}")]
+    DuplicateNode(String),
 }
 
 #[derive(Debug, Error)]

@@ -20,6 +20,9 @@ pub mod targets {
     /// Visa Manager
     pub const VMGR: &str = "visamgr";
 
+    /// VSS Manager
+    pub const VSSMGR: &str = "vssmgr";
+
     /// Visa request worker pool
     pub const VISAREQ: &str = "visareq";
 }

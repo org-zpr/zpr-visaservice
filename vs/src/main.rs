@@ -24,6 +24,7 @@ mod signal_worker;
 mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
+mod vss_mgr;
 
 use crate::actor_mgr::ActorMgr;
 use crate::admin_service::start_admin_server;
@@ -35,6 +36,7 @@ use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
+use crate::vss_mgr::VssMgr;
 
 use redis::AsyncCommands;
 
@@ -148,6 +150,7 @@ async fn main() -> std::process::ExitCode {
         state_db: db_handle,
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(visa_repo),
+        vss_mgr: VssMgr::new(),
     });
 
     js.spawn_local(signal_worker::launch(asm.clone()));
