@@ -17,87 +17,76 @@ pub struct Cmd {
 
 #[derive(Subcommand)]
 pub enum SubCmd {
-    /// List installed policies
+    /// Commands related to policies, provide no additional arguments to see list of IDs of all policies
     #[command()]
     Policies {
-        /// If id is supplied, list only policy with matching ID
-        #[arg(long)]
+        /// See more information on a specific policy
+        #[arg(long, short = 'i', conflicts_with_all = ["version", "path", "curr"])]
         id: Option<u64>,
-    },
-
-    //
-    #[command()]
-    Policy {
-        /// Shows the current policy
-        #[arg(long, short = 'v')]
+        /// Version number of compiled policy when installing a new policy. If version is provided, path must be as well
+        #[arg(long, short = 'v', requires = "path", conflicts_with_all = ["id", "curr"])]
         version: Option<String>,
-        #[arg(long, short = 'p')]
+        /// Path to compiled policy when installing a new policy. If path is provided, version must be as well
+        #[arg(long, short = 'p', requires = "version", conflicts_with_all = ["id", "curr"])]
         path: Option<String>,
+        /// See the current policy in the VS
+        #[arg(long, short = 'c', conflicts_with_all = ["version", "path", "id"])]
+        curr: bool,
     },
 
-    /// List visas
+    /// Commands related to policies, provide no additional arguments to see list of IDs of all visas
     #[command()]
     Visas {
-        /// If id is supplied, list only visa with matching ID
-        #[arg(long)]
+        /// See more information on a specific visa
+        #[arg(long, short = 'i')]
         id: Option<u64>,
-        /// If revoke is true, ID must be supplied, and instead of returning the visa info, it is revoked
+        /// Revoke a policy with a given visa ID. If revoke is supplied, id must be as well
         // TODO decide if it should be visas --revoke --id ID or if revoke should also take a u64 and be visas --revoke ID
-        #[arg(long, short = 'r')]
+        #[arg(long, short = 'r', requires = "id")]
         revoke: bool,
     },
 
-    /// List actors
+    /// Commands related to actors, provide no additional arguments to see list of CNs of all actors
     #[command()]
     Actors {
-        /// If id is supplied, list only visa with matching ID
-        #[arg(long)]
-        id: Option<u64>,
-        /// If revoke is true, ID must be supplied, and instead of returning the actor info, the actor is removed (along with all associated visas)
+        /// See more information on a specific actor
+        #[arg(long, short = 'c', conflicts_with = "nodes")]
+        cn: Option<u64>,
+        /// Remove the actor with a given CN in the VS, along with any associated visas. If revoke is supplied, cn must be as well
         // TODO decide if it should be visas --revoke --id ID or if revoke should also take a u64 and be visas --revoke ID
-        #[arg(long, short = 'r')]
+        #[arg(long, short = 'r', requires = "cn", conflicts_with_all = ["nodes", "visas"])]
         revoke: bool,
-        /// If node is true, then it will only return the node actors
-        #[arg(long, short = 'n')]
+        /// See list of CNs of all actors that are nodes
+        #[arg(long, short = 'n', conflicts_with_all = ["cn", "revoke", "visas"])]
         nodes: bool,
-        /// If visas is true, ID must be supplied, and return the visa IDs related to the actor
-        /// Can be used in conjunction with nodes
-        #[arg(long, short = 'v')]
+        /// Provide visas related to the actor with a given CN. If visas is supplied, cn must be as well
+        #[arg(long, short = 'v', requires = "cn", conflicts_with_all = ["revoke", "nodes"])]
         visas: bool,
     },
 
-    /// List services
+    /// Commands related to services, provide no additional arguments to see list of IDs of all services
     #[command()]
     Services {
-        /// If id is supplied, list only service with matching ID
-        #[arg(long)]
+        /// See more information on a specific service
+        #[arg(long, short = 'i')]
         id: Option<u64>,
     },
 
-    // /// Install a policy from a compiled policy file
-    // #[command()]
-    // Install {
-    //     /// Version of the ZPL compiler used to compile the policy.
-    //     #[arg(short = 'c', long, value_name = "X.Y.Z")]
-    //     compiler_version: String,
-
-    //     #[arg(short, long, value_name = "POLICY_FILE")]
-    //     policy: PathBuf,
-    // },
-    /// Clear revoke state in visa service
+    /// Commands related to auth revokes, provide no additional arguments to see list of IDs of all auth revokes
     #[command()]
     AuthRevoke {
-        #[arg(long, short = 'c')]
-        clear: bool,
-
-        #[arg(long, short = 'a')]
-        add: bool,
-
-        #[arg(long, short = 'r')]
-        remove: bool,
-
-        #[arg(long)]
+        /// See more information on a specific auth revoke
+        #[arg(long, short = 'i', conflicts_with = "clear")]
         id: Option<u64>,
+        /// Clear list of auth-revokes in the VS
+        #[arg(long, short = 'c', conflicts_with_all = ["id", "add", "remove"])]
+        clear: bool,
+        /// Add auth revoke for a visa with a given ID. If add is supplied, id must be as well
+        #[arg(long, short = 'a', requires = "id", conflicts_with_all = ["clear", "remove"])]
+        add: bool,
+        /// Remove the auth revoke for a visa with a given ID. If remove is supplied, id must be as well
+        #[arg(long, short = 'r', requires = "id", conflicts_with_all = ["clear", "add"])]
+        remove: bool,
     },
 
     /// Enter GUI mode
