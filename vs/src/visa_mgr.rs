@@ -28,6 +28,35 @@ impl VisaMgr {
         VisaMgr { repo: db }
     }
 
+    pub async fn initial_visas_for_node(
+        &self,
+        asm: Arc<Assembly>,
+        node_addr: &IpAddr,
+        vss_addr: &SocketAddr,
+    ) -> Result<Vec<Visa>, VSError> {
+        let mut visas = Vec::new();
+
+        let cres = asm
+            .visa_mgr
+            .create_vs_to_node_vss_visa(asm.clone(), node_addr, vss_addr.port())
+            .await?;
+        visas.push(cres);
+
+        if let Ok(pendings) = asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
+            visas.extend(pendings); // ignore errors here
+        }
+
+        // Visa has been created and marked as PENDING to install on the requesting node.
+        // At some point there may be a background routine picking up the pending visas
+        // and trying to push them to VSS. Note that we have not set VSS yet in the DB so
+        // that should not be possible at the moment.
+
+        // TODO: Verify that we no longer need to craete a visa so the node can talk to
+        // the visa service itself -- I think that is now built in to the node code.
+
+        Ok(visas)
+    }
+
     /// Ask policy for a visa permitting this visa service to talk to the given node VSS addr.
     /// If a visa is returned it will have been marked as PENDING to install on the requesting node.
     pub async fn create_vs_to_node_vss_visa(
@@ -146,6 +175,17 @@ impl VisaMgr {
 
         info!("created visa {visa_id}");
         Ok(visa)
+    }
+
+    pub async fn get_pending_visas_for_node(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<Vec<Visa>, VSError> {
+        let visas = self
+            .repo
+            .get_visas_for_node_by_state(node_addr, db::NodeVisaState::PendingInstall)
+            .await?;
+        Ok(visas)
     }
 
     /// Register that visa `visa_id` has been installed on node at ZPR address `node_addr`.

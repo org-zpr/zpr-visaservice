@@ -3,6 +3,8 @@ use thiserror::Error;
 use libeval::actor;
 use libeval::eval::EvalError;
 
+use zpr::vsapi_types::VsapiTypeError;
+
 #[derive(Debug, Error)]
 pub enum VSError {
     #[error("i/o error: {0}")]
@@ -70,4 +72,7 @@ pub enum DBError {
 
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
+
+    #[error("vsapi error: {0}")]
+    VsapiError(#[from] VsapiTypeError),
 }

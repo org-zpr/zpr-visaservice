@@ -264,6 +264,46 @@ impl VisaRepo {
         debug!(target: REDIS, "updated nodevisa state node={node_addr} visa={visa_id} -> {new_state:?}");
         Ok(())
     }
+
+    pub async fn get_visas_for_node_by_state(
+        &self,
+        node_addr: &IpAddr,
+        state: NodeVisaState,
+    ) -> Result<Vec<Visa>, DBError> {
+        let mut vk_conn_outer = self.db.conn.clone();
+        let mut vk_conn_inner = self.db.conn.clone();
+
+        let zaddr = ZAddr::from(node_addr);
+        let mut visas = Vec::new();
+
+        let mut iter: redis::AsyncIter<String> = vk_conn_outer
+            .scan_match(format!("{KEY_NODEVISA}:{zaddr}:*"))
+            .await?;
+        while let Some(key_res) = iter.next_item().await {
+            let key = key_res?;
+            let state_str: String = vk_conn_inner.hget(&key, "state").await?;
+            let entry_state: NodeVisaState = serde_json::from_str(&state_str)?;
+            if entry_state == state {
+                // Extract visa ID from key
+                let parts: Vec<&str> = key.rsplitn(2, ':').collect();
+                if parts.len() != 2 {
+                    warn!(target: REDIS, "malformed nodevisa key: {}", key);
+                    continue;
+                }
+                let visa_id: u64 = parts[0].parse().map_err(|_| {
+                    DBError::InvalidData(format!("invalid visa ID in nodevisa key: {}", key))
+                })?;
+
+                // Load the visa blob
+                let blob_key = blob_key_for_visa(visa_id);
+                let visa_blob: Vec<u8> = vk_conn_inner.get(&blob_key).await?;
+                let visa = Visa::from_capnp_bytes(&visa_blob)?;
+                visas.push(visa);
+            }
+        }
+
+        Ok(visas)
+    }
 }
 
 // Get number of seconds until the given SystemTime or zero if in the past.

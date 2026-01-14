@@ -12,7 +12,7 @@ use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
 use libeval::actor::Actor;
-use zpr::vsapi_types::{PacketDesc, SockAddr};
+use zpr::vsapi_types::{PacketDesc, SockAddr, VisaOp};
 use zpr::vsapi_types_writers::WriteTo;
 
 use crate::assembly::Assembly;
@@ -592,6 +592,8 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         debug!(target: VSAPI, "register_vss from {:?}", self.node.get_cn());
         let saddr_rdr = params.get()?.get_addr()?;
 
+        let node_zpr_addr = self.node.get_zpr_addr().unwrap();
+
         let vss_sockaddr: SockAddr = match SockAddr::try_from(saddr_rdr) {
             Ok(addr) => addr,
             Err(e) => {
@@ -608,7 +610,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         };
 
         // The socket addr address must match node address I think.
-        if vss_sockaddr.addr != *self.node.get_zpr_addr().unwrap() {
+        if vss_sockaddr.addr != *node_zpr_addr {
             error!(target: VSAPI, "VSS socket address does not match node address for {:?}", self.node.get_cn());
             let res_builder = res.get().init_res();
             let mut err_builder = res_builder.init_error();
@@ -620,16 +622,13 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             return Ok(());
         }
 
+        let saddr: SocketAddr = vss_sockaddr.into();
         let amgr_asm = self.asm.clone();
 
         let initial_visas = match self
             .asm
-            .actor_mgr
-            .initialize_node_vss(
-                amgr_asm,
-                self.node.get_zpr_addr().unwrap(),
-                &vss_sockaddr.into(),
-            )
+            .visa_mgr
+            .initial_visas_for_node(amgr_asm, node_zpr_addr, &saddr)
             .await
         {
             Ok(visas) => visas,
@@ -645,23 +644,41 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                 return Ok(());
             }
         };
-
         // Return the visas to the node, mark visas installed?
         //
         // As we return we kick off the vss worker for this node which will send list of services.
         // but will not work until visas are installed... So start it with small delay.
 
-        let mut res_builder = res.get().init_res();
-        let mut ok_builder = res_builder.init_ok();
-
-        let mut list_builder: capnp::struct_list::Builder<vsapi::visa_op::Owned> =
-            ok_builder.init_as(initial_visas.len() as u32);
+        let res_builder = res.get().init_res();
+        let mut ok_builder = res_builder.initn_ok(initial_visas.len() as u32);
 
         for (i, visa) in initial_visas.iter().enumerate() {
-            let mut vop_builder = list_builder.reborrow().get(i as u32);
+            let mut vop_builder = ok_builder.reborrow().get(i as u32);
 
-            // convert visa to VisaOp...
+            let vop = VisaOp::Grant(visa.clone());
+            vop.write_to(&mut vop_builder);
         }
+
+        // Now assume that our reply will make and mark the visas as installed.
+        for visa in &initial_visas {
+            if let Err(e) = self
+                .asm
+                .visa_mgr
+                .visa_installed(visa.issuer_id, node_zpr_addr)
+                .await
+            {
+                warn!(target: VSAPI, "failed to mark visa {} as installed on {:?}: {}", visa.issuer_id, self.node.get_cn(), e);
+            }
+        }
+
+        // Finally, update DB with node vss
+        self.asm
+            .actor_mgr
+            .set_node_vss(&self.node.get_zpr_addr().unwrap(), &saddr)
+            .await
+            .unwrap_or_else(|e| {
+                error!(target: VSAPI, "failed to set VSS for node {:?}: {}", self.node.get_cn(), e);
+            });
 
         Ok(())
     }
