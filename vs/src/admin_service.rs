@@ -88,8 +88,8 @@ fn admin_app(state: SharedState) -> Router {
     Router::new()
         .route("/admin/policies", get(get_policies))
         .route("/admin/policies/{capture}", get(get_policy))
-        .route("/admin/policy", get(get_curr_policy))
-        .route("/admin/policy", post(install_policy))
+        .route("/admin/policies/curr", get(get_curr_policy))
+        .route("/admin/policies", post(install_policy))
         .route("/admin/visas", get(get_visas))
         .route("/admin/visas/{capture}", get(get_visa))
         .route("/admin/visas/{capture}", delete(revoke_visa))
@@ -171,7 +171,7 @@ async fn get_policy(EPath(id): EPath<String>) -> impl IntoResponse {
 }
 
 async fn get_curr_policy() -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/policy");
+    info!(target: HTADMIN, "GET /admin/policies/curr");
     let pb = PolicyBundle {
         config_id: 0,
         version: "v".to_string(),
@@ -182,10 +182,8 @@ async fn get_curr_policy() -> impl IntoResponse {
     (StatusCode::OK, Json(pb)).into_response()
 }
 
-async fn install_policy(EJson(body): EJson<PolicyBundle>) -> impl IntoResponse {
-    info!(target: HTADMIN, "POST /admin/policy");
-
-    println!("{body}");
+async fn install_policy(EJson(_body): EJson<PolicyBundle>) -> impl IntoResponse {
+    info!(target: HTADMIN, "POST /admin/policies");
 
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
@@ -287,7 +285,7 @@ async fn get_revokes() -> impl IntoResponse {
 }
 
 async fn get_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/visas/{}", id);
+    info!(target: HTADMIN, "GET /admin/authrevoke/{}", id);
     let ard: AuthRevokeDescriptor = AuthRevokeDescriptor {
         ty: "t".to_string(),
         cn: "c".to_string(),

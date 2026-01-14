@@ -41,23 +41,24 @@ fn main() {
     let ca_cert = load_cert(&args.ca_cert).unwrap();
 
     match args.command {
-        Some(SubCmd::Policies { id }) => match id {
+        Some(SubCmd::Policies {
+            id,
+            version,
+            path,
+            curr,
+        }) => match id {
             // GET /admin/policies/{ID}
             Some(id) => get_policy(&args.svc_url, ca_cert, id),
             // GET /admin/policies
-            None => get_policies(&args.svc_url, ca_cert),
-        }
-        .unwrap_or_else(|e| {
-            eprintln!("{} {}", "Error: ".red(), e);
-        }),
-        Some(SubCmd::Policy { version, path }) => match (version, path) {
-            // POST /admin/policy
-            (Some(version), Some(path)) => {
-                install_policy(&args.svc_url, ca_cert, version.as_str(), Path::new(&path))
-            }
-            // GET /admin/policy
-            (None, None) => get_curr_policy(&args.svc_url, ca_cert),
-            _ => Err("Both version and path must be set to install a policy".into()).into(),
+            None => match curr {
+                true => get_curr_policy(&args.svc_url, ca_cert),
+                false => match (version, path) {
+                    (Some(version), Some(path)) => {
+                        install_policy(&args.svc_url, ca_cert, version.as_str(), Path::new(&path))
+                    }
+                    _ => get_policies(&args.svc_url, ca_cert),
+                },
+            },
         }
         .unwrap_or_else(|e| {
             eprintln!("{} {}", "Error: ".red(), e);
@@ -76,18 +77,18 @@ fn main() {
             eprintln!("{} {}", "Error: ".red(), e);
         }),
         Some(SubCmd::Actors {
-            id,
+            cn,
             revoke,
             nodes,
             visas,
-        }) => match id {
-            Some(id) => match (revoke, visas) {
+        }) => match cn {
+            Some(cn) => match (revoke, visas) {
                 // DELETE /admin/actors/{CN}
-                (true, _) => revoke_actor(&args.svc_url, ca_cert, id),
+                (true, _) => revoke_actor(&args.svc_url, ca_cert, cn),
                 // GET /admin/actors/{CN}/visas
-                (_, true) => get_related_visas(&args.svc_url, ca_cert, id),
+                (_, true) => get_related_visas(&args.svc_url, ca_cert, cn),
                 // GET /admin/actors/{CN}
-                _ => get_actor(&args.svc_url, ca_cert, id),
+                _ => get_actor(&args.svc_url, ca_cert, cn),
             },
             // GET /admin/actors and GET /admin/actors?role=node
             None => get_actors(&args.svc_url, ca_cert, nodes),
@@ -217,7 +218,9 @@ fn get_curr_policy(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::
         .timeout(Duration::from_secs(10));
     let client = cb.build()?;
 
-    let resp = client.get(format!("{}/admin/policy", api_url)).send()?;
+    let resp = client
+        .get(format!("{}/admin/policies/curr", api_url))
+        .send()?;
     if !resp.status().is_success() {
         return Err(format!(
             "error (status {:?}:{}) : {}",
@@ -286,7 +289,7 @@ fn install_policy(
     };
 
     let resp = client
-        .post(format!("{}/admin/policy", api_url))
+        .post(format!("{}/admin/policies", api_url))
         .json(&bundle)
         .send()?;
 
@@ -380,7 +383,7 @@ fn get_actors(
     request_get_list_entry(cert, format!("{}/admin/actors{}", api_url, query))
 }
 
-fn get_actor(api_url: &str, cert: Certificate, id: u64) -> Result<(), Box<dyn std::error::Error>> {
+fn get_actor(api_url: &str, cert: Certificate, cn: u64) -> Result<(), Box<dyn std::error::Error>> {
     let cb = reqwest::blocking::ClientBuilder::new()
         .add_root_certificate(cert)
         .danger_accept_invalid_certs(true)
@@ -388,7 +391,7 @@ fn get_actor(api_url: &str, cert: Certificate, id: u64) -> Result<(), Box<dyn st
     let client = cb.build()?;
 
     let resp = client
-        .get(format!("{}/admin/actors/{}", api_url, id))
+        .get(format!("{}/admin/actors/{}", api_url, cn))
         .send()?;
     if !resp.status().is_success() {
         return Err(format!(
@@ -409,7 +412,7 @@ fn get_actor(api_url: &str, cert: Certificate, id: u64) -> Result<(), Box<dyn st
 fn revoke_actor(
     api_url: &str,
     cert: Certificate,
-    id: u64,
+    cn: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cb = reqwest::blocking::ClientBuilder::new()
         .add_root_certificate(cert)
@@ -418,7 +421,7 @@ fn revoke_actor(
     let client = cb.build()?;
 
     let resp = client
-        .delete(format!("{}/admin/actors/{}", api_url, id))
+        .delete(format!("{}/admin/actors/{}", api_url, cn))
         .send()?;
     if !resp.status().is_success() {
         return Err(format!(
@@ -439,9 +442,9 @@ fn revoke_actor(
 fn get_related_visas(
     api_url: &str,
     cert: Certificate,
-    id: u64,
+    cn: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    request_get_list_entry(cert, format!("{}/admin/actors/{}/visas", api_url, id))
+    request_get_list_entry(cert, format!("{}/admin/actors/{}/visas", api_url, cn))
 }
 
 fn get_services(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
