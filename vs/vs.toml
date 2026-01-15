@@ -1,8 +1,7 @@
 [core]
-#vs_addr = "fd5a:5051::1"
-#vsapi_port = 5002
-#admin_port = 8182
-#admin_cert = "admin-tls-cert.pem"
-#admin_key = "admin-tls-key.pem"
-#vk_uti = "redis://[::1]:6379"
-
+# vs_addr = "::1"
+# vsapi_port = 5002
+# admin_port = 8182
+# admin_cert = "admin-tls-cert.pem"
+# admin_key = "admin-tls-key.pem"
+# vk_uti = "redis://[::1]:6379"
