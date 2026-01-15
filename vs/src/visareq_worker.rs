@@ -145,8 +145,7 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
     job.complete(vrr);
 }
 
-/// Run visa request. If a visa is created it will be marked as pending installation on
-/// the requesting node.
+/// Run visa request.
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
     let (source_actor, dest_actor) = get_actors(&asm, job).await?;
     let source_actor = match source_actor {
@@ -184,7 +183,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             // TODO: For now we pick the first hit.
             match asm
                 .visa_mgr
-                .create_visa(&job.requesting_node, &job.packet_desc, &hits[0], false)
+                .create_visa(&job.requesting_node, &job.packet_desc, &hits[0])
                 .await
             {
                 Ok(visa) => Ok(VisaDecision::Allow(visa)),

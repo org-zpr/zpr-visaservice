@@ -36,6 +36,8 @@ pub const DEFAULT_EXPIRATION_SECONDS: u64 = 4 * 60 * 60; // 4 hours in seconds
 /// This delay allows time for the node to install the visa before we try to use it.
 pub const VSS_START_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
+pub const VSS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields, default)]
 pub struct VSConfig {

@@ -45,20 +45,10 @@ impl VisaMgr {
         if let Ok(pendings) = asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
             visas.extend(pendings); // ignore errors here
         }
-
-        // Visa has been created and marked as PENDING to install on the requesting node.
-        // At some point there may be a background routine picking up the pending visas
-        // and trying to push them to VSS. Note that we have not set VSS yet in the DB so
-        // that should not be possible at the moment.
-
-        // TODO: Verify that we no longer need to craete a visa so the node can talk to
-        // the visa service itself -- I think that is now built in to the node code.
-
         Ok(visas)
     }
 
     /// Ask policy for a visa permitting this visa service to talk to the given node VSS addr.
-    /// If a visa is returned it will have been marked as PENDING to install on the requesting node.
     pub async fn create_vs_to_node_vss_visa(
         &self,
         asm: Arc<Assembly>,
@@ -89,14 +79,12 @@ impl VisaMgr {
     /// No checking to see if visa already exists.
     /// Fake keys.
     ///
-    /// If `mark_installed` is true, the visa will be marked as installed on the requesting node otherwise
-    /// it will be marked as pending install.
+    /// Note that visa state with respect tot he requesting node is set to PENDING_INSTALL.
     pub async fn create_visa(
         &self,
         requesting_node: &IpAddr,
         pdesc: &PacketDesc,
         hit: &Hit,
-        mark_installed: bool,
     ) -> Result<Visa, VSError> {
         // Expiration is millis since UNIX EPOCH
         let expiration = {
@@ -166,12 +154,9 @@ impl VisaMgr {
             session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
         };
 
-        let nstate = if mark_installed {
-            db::NodeVisaState::Installed
-        } else {
-            db::NodeVisaState::PendingInstall
-        };
-        self.repo.store_visa(requesting_node, &visa, nstate).await?;
+        self.repo
+            .store_visa(requesting_node, &visa, db::NodeVisaState::PendingInstall)
+            .await?;
 
         info!("created visa {visa_id}");
         Ok(visa)

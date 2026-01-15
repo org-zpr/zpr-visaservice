@@ -790,7 +790,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                     let mut visa_bldr = res_builder.init_allow();
                     visa.write_to(&mut visa_bldr);
 
-                    // At this point visa service assumes the visa is installed.
+                    // Set visa as installed in our state
                     if let Err(e) = self
                         .asm
                         .visa_mgr
