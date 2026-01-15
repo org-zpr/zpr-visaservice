@@ -14,7 +14,7 @@ provider = [[ "endpoint.zpr.adapter.cn", "bas.zpr.org" ]]
 
 [bootstrap]
 "bas.zpr.org" = "include/rsa-pub-key.pem"
-
+"node.zpr.org" = "include/node-public-key.pem"
 
 
 [protocols.http]
