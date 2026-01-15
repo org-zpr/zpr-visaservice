@@ -117,12 +117,7 @@ async fn main() -> std::process::ExitCode {
     let (vreq_tx, vreq_rx) =
         mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
 
-    let actor_mgr = match create_actor_mgr(
-        &db_handle,
-        cfg.core.vs_addr.unwrap_or(IpAddr::V6(config::VS_ZPR_ADDR)),
-    )
-    .await
-    {
+    let actor_mgr = match create_actor_mgr(&db_handle, cfg.get_vs_addr()).await {
         Ok(adb) => adb,
         Err(e) => {
             error!(target: MAIN, "failed to instantiate actor database: {}", e);
@@ -143,6 +138,7 @@ async fn main() -> std::process::ExitCode {
     let visa_repo = db::VisaRepo::new(&db_handle);
 
     let asm = Arc::new(Assembly {
+        config: cfg.clone(),
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
         policy_mgr: policy_mgr,
@@ -158,7 +154,7 @@ async fn main() -> std::process::ExitCode {
     js.spawn_local(vsapi_worker::launch(
         asm.clone(),
         SocketAddr::new(
-            cfg.core.vs_addr.unwrap_or(IpAddr::V6(config::VS_ZPR_ADDR)),
+            cfg.get_vs_addr(),
             cfg.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
         ),
     ));
@@ -171,7 +167,7 @@ async fn main() -> std::process::ExitCode {
             &cfg.core.admin_key,
             &cfg.core.admin_cert,
             SocketAddr::new(
-                cfg.core.vs_addr.unwrap_or(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+                cfg.get_vs_addr(),
                 cfg.core.admin_port.unwrap_or(config::ADMIN_HTTPS_PORT),
             ),
             &admin_asm,
@@ -208,7 +204,7 @@ async fn create_actor_mgr(dbh: &db::Handle, vs_addr: IpAddr) -> Result<ActorMgr,
     let vs_actor = {
         let mut vsa = Actor::new();
         vsa.add_attribute(Attribute::builder(key::ZPR_ADDR).value(vs_addr.to_string()))?;
-        vsa.add_attribute(Attribute::builder(key::CN).value("zpr.vs"))?;
+        vsa.add_attribute(Attribute::builder(key::CN).value(config::VS_CN))?;
         vsa.add_attribute(Attribute::builder(key::ROLE).value(ROLE_ADAPTER))?;
         vsa.add_attribute(
             Attribute::builder(key::SERVICES).value("/zpr/visaservice,/zpr/visaservice/admin"),

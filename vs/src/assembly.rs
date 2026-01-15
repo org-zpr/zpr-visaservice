@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::actor_mgr::ActorMgr;
+use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
 use crate::db;
 use crate::policy_mgr::PolicyMgr;
@@ -11,6 +12,7 @@ use crate::vss_mgr::VssMgr;
 
 #[allow(dead_code)]
 pub struct Assembly {
+    pub config: VSConfig,
     pub system_start_time: std::time::Instant,
     pub cc: ConnectionControl,
     pub policy_mgr: PolicyMgr,

@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use crate::error::VSError;
 
+pub const VS_CN: &str = "vs.zpr";
+
 pub const MAX_VISA_REQUEST_WORKERS: usize = 1024;
 pub const VISA_REQUEST_QUEUE_DEPTH: usize = 1024;
 
@@ -38,13 +40,13 @@ pub const VSS_START_DELAY: std::time::Duration = std::time::Duration::from_secs(
 
 pub const VSS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct VSConfig {
     pub core: CoreSection,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct CoreSection {
     /// The visa service bind address - this is a constant baked into entire ZPR system only override for testing.
@@ -94,6 +96,10 @@ impl VSConfig {
         let contents = std::fs::read_to_string(path)?;
         let cfg: VSConfig = toml::from_str(&contents)?;
         Ok(cfg)
+    }
+
+    pub fn get_vs_addr(&self) -> IpAddr {
+        self.core.vs_addr.unwrap_or(IpAddr::V6(VS_ZPR_ADDR))
     }
 }
 

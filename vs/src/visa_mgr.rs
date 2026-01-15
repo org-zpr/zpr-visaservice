@@ -36,15 +36,16 @@ impl VisaMgr {
     ) -> Result<Vec<Visa>, VSError> {
         let mut visas = Vec::new();
 
+        if let Ok(pendings) = asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
+            visas.extend(pendings); // ignore errors here
+        }
+
         let cres = asm
             .visa_mgr
             .create_vs_to_node_vss_visa(asm.clone(), node_addr, vss_addr.port())
             .await?;
         visas.push(cres);
 
-        if let Ok(pendings) = asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
-            visas.extend(pendings); // ignore errors here
-        }
         Ok(visas)
     }
 
@@ -59,7 +60,7 @@ impl VisaMgr {
 
         // TODO: PacketDesc should have new_xxx functions that take IpAddr (not just string)
         let pkt_data = PacketDesc::new_tcp(
-            &VS_ZPR_ADDR.to_string(),
+            &asm.config.get_vs_addr().to_string(),
             &node_addr.to_string(),
             0,
             vss_port,
