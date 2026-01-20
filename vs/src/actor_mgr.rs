@@ -119,15 +119,17 @@ impl ActorMgr {
             .collect())
     }
 
+    /// Get the list of connected authentication services.
     pub async fn get_auth_services_list(
         &self,
         asm: Arc<Assembly>,
     ) -> Result<Vec<ServiceDescriptor>, VSError> {
-        // From the DB we can get the (service_name, zpr_addr) for each connected service.
+        let mut services = Vec::new();
 
+        // From the DB we can get the (service_name, zpr_addr) for each connected service.
         let service_entries = self.actor_db.list_services().await?;
 
-        let mut services = Vec::new();
+        // Then we need to consult policy to get the service details.
         let pol = asm.policy_mgr.get_current();
 
         let mut svc_map = HashMap::new();
@@ -161,17 +163,22 @@ impl ActorMgr {
 
 // The auth service URI is of the form: <ZPR_AUTH_SCHEME>://<addr>:<port>/path
 //
-// Example: zpr-oauthrsa://[fd5a:5052:9090::88]:4000
+// Example: 'zpr-oauthrsa://[fd5a:5052:9090::88]:4000'
 //
-// The 'zpr-oauthrsa' scheme implies https and /preauthorize and /authorize endpoints.
+// The 'zpr-oauthrsa' scheme implies "https" and "/preauthorize" and "/authorize" endpoints.
 //
 // Currently "zpr-oauthrsa" is the only supported scheme and the service type of "auth"
 // implies this scheme.
 //
-// TODO: Eventually need to expand zplc and compiler to have richer set of auth service types.
+// TODO: Eventually we need to expand zplc and the compiler to have richer set of
+// auth service types.
+//
+// TODO: The ph is passing the ASA info to the adapters as a socket-addr and the
+// mechanics of zpr-oauthrsa are built in or something.  This all needs a clean up.
 //
 // Errors:
-// - The only support auth serice type requires a single scope, so you get an error if there are none or more than one.
+// - The only supported auth serice type requires a single scope, so you get an error
+//   if there are none or more than one.
 fn uri_for_service(
     skind: &ServiceType,
     addr: &IpAddr,

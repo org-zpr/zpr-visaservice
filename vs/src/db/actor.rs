@@ -31,7 +31,9 @@ pub struct ActorRepo {
     db: Handle,
 }
 
+/// Location of a service in the ZPRnet.
 pub struct ServiceEntry {
+    /// Name of service (sometimes called "id")
     pub name: String,
     pub zpr_addr: IpAddr,
 }
@@ -112,7 +114,8 @@ impl ActorRepo {
         }
     }
 
-    /// Get a list of all the connected services.
+    /// Get a list of all the connected services -- what they are called and where
+    /// they are connected.
     pub async fn list_services(&self) -> Result<Vec<ServiceEntry>, DBError> {
         let mut vk_conn_scanner = self.db.conn.clone();
         let mut vk_conn_getter = self.db.conn.clone();

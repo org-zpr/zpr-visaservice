@@ -649,7 +649,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             vop.write_to(&mut vop_builder);
         }
 
-        // Now assume that our reply will make and mark the visas as installed.
+        // Now assume that our reply will make it and mark the visas as installed.
         for visa in &initial_visas {
             if let Err(e) = self
                 .asm

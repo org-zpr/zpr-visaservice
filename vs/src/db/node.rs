@@ -31,6 +31,7 @@ pub struct Node {
     pub substrate_addr: SocketAddr,
 }
 
+// Wrap a SocketAddr for easy serialization.
 #[derive(Debug, Serialize, Deserialize)]
 struct SAWrapper {
     pub vss_addr: SocketAddr,

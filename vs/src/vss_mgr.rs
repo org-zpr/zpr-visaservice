@@ -364,8 +364,8 @@ async fn vss_worker_loop(
                     let ping_response_ok_or_error = ping_response_rdr.get();
                     match ping_response_ok_or_error.unwrap().get_res().unwrap().which().unwrap() {
                         v1::ok_or_error::Which::Ok(_) => info!(target: VSSMGR, "ping to VSS at {} succeeded", node_addr),
-                        v1::ok_or_error::Which::Error(err_obj) => {
-                            let err_obj = err_obj.unwrap();
+                        v1::ok_or_error::Which::Error(err_rdr) => {
+                            let err_obj = err_rdr.unwrap();
                             error!(target: VSSMGR, "VSS ping returns error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
                         }
                     }
