@@ -10,6 +10,7 @@ use crate::attribute::Attribute;
 use crate::joinpolicy::JPolicy;
 
 use zpr::policy::v1 as policy_capnp;
+use zpr::policy_types::{PolicyTypeError, Service};
 
 #[derive(Debug, Error)]
 pub enum PolicyError {
@@ -36,6 +37,9 @@ pub enum PolicyError {
 
     #[error("policy version error: {0}")]
     PolicyVersionError(String),
+
+    #[error("policy type error: {0}")]
+    PolicyTypeError(#[from] PolicyTypeError),
 }
 
 #[derive(Default)]
@@ -45,6 +49,7 @@ pub struct Policy {
     vinst: u64,
     bootstrap_keys: HashMap<String, PKey<Public>>,
     join_policies: Vec<JPolicy>,
+    services: HashMap<String, Service>,
     serialized: Bytes,
 }
 
@@ -68,13 +73,14 @@ impl Policy {
         let policy = policy_reader.get_root::<policy_capnp::policy::Reader>()?;
 
         let bootstrap_keys = Self::load_bootstrap_keys(&Policy::default(), &policy)?;
-
         let join_policies = Self::load_join_policies(&Policy::default(), &policy)?;
+        let services = Self::load_services(&Policy::default(), &policy)?;
 
         Ok(Policy {
             policy_rdr: Some(Arc::new(policy_reader)),
             bootstrap_keys,
             join_policies,
+            services,
             serialized,
             ..Default::default()
         })
@@ -159,6 +165,11 @@ impl Policy {
         None
     }
 
+    /// List all services defined in this policy.
+    pub fn list_services(&self) -> Vec<&Service> {
+        self.services.values().collect()
+    }
+
     fn load_bootstrap_keys(
         &self,
         policy: &policy_capnp::policy::Reader,
@@ -201,6 +212,29 @@ impl Policy {
             }
         }
         Ok(join_policies)
+    }
+
+    fn load_services(
+        &self,
+        policy: &policy_capnp::policy::Reader,
+    ) -> Result<HashMap<String, Service>, PolicyError> {
+        let mut services = HashMap::new();
+        if policy.has_join_policies() {
+            for jp_rdr in policy.get_join_policies()?.iter() {
+                if jp_rdr.has_provides() {
+                    for svc_rdr in jp_rdr.get_provides()?.iter() {
+                        let svc = Service::try_from(svc_rdr)?;
+                        if let Some(previous) = services.insert(svc.id.clone(), svc) {
+                            return Err(PolicyError::InvalidFormat(format!(
+                                "duplicate service id in policy: {}",
+                                previous.id
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(services)
     }
 }
 
