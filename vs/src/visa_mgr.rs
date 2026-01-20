@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use crate::assembly::Assembly;
-use crate::config::{self, VS_ZPR_ADDR};
+use crate::config;
 use crate::db;
 use crate::error::VSError;
 use crate::logging::targets::VMGR;

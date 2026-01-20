@@ -16,7 +16,7 @@ use tracing::{debug, error, warn};
 
 use ::zpr::vsapi::v1 as vsapi;
 use zpr::vsapi_types::Visa;
-use zpr::vsapi_types_writers::WriteTo;
+use zpr::write_to::WriteTo;
 
 use crate::db::{Handle, ZAddr, gen_timestamp};
 use crate::error::DBError;

@@ -9,24 +9,32 @@ use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
 use zpr::vsapi::v1;
-use zpr::vsapi_types::{ServiceDescriptor, Visa};
+use zpr::vsapi_types::{ApiResponseError, ServiceDescriptor, Visa};
+use zpr::write_to::WriteTo;
 
 use crate::assembly::Assembly;
 use crate::config;
-use crate::error::VSError;
+use crate::error::VSSError;
 use crate::logging::targets::VSSMGR;
 
 pub struct VssMgr {
-    workers: DashMap<IpAddr, VssWorker>,
+    // Each node has an entry here, handle is a thread monitoring the nodes VSS.
+    workers: DashMap<IpAddr, VssHandle>,
+
+    // Only used to spin up VSS handlers.
     jobs_tx: mpsc::Sender<Job>,
 }
 
-struct VssWorker {
+struct VssHandle {
+    // Used to cancle a VSS handler thread.
     cancel_tx: oneshot::Sender<()>,
+
+    // For sending requests to a VSS handler thread (all the API calls)
     cmd_tx: mpsc::Sender<VssCmd>,
 }
 
 enum Job {
+    // Params for starting a VssHandle thread.
     StartVssWorker {
         asm: Arc<Assembly>,
         vss_addr: SocketAddr,
@@ -36,13 +44,23 @@ enum Job {
     },
 }
 
-pub enum VssCmd {
-    PushVisa(Visa),
-    RevokeVisaById(u64),
-    RevokeAuthByZprAddr(IpAddr),
-    SetServices(u64, Vec<ServiceDescriptor>), // (version, services-descriptor-list)
+type VssPushResponse = Result<usize, VSSError>; // usize is number items pushed.
+type VssRevokeAuthResponse = Result<usize, VSSError>; // usize is number of items revoked.
+type VssSetServicesResponse = Result<(), VSSError>;
+
+// Each API call is expressed as a message using this enum.
+enum VssCmd {
+    PushVisas(Vec<Visa>, oneshot::Sender<VssPushResponse>),
+    RevokeVisasById(Vec<u64>, oneshot::Sender<VssPushResponse>),
+    RevokeAuthsByZprAddr(Vec<IpAddr>, oneshot::Sender<VssRevokeAuthResponse>),
+    SetServices(
+        u64,
+        Vec<ServiceDescriptor>,
+        oneshot::Sender<VssSetServicesResponse>,
+    ), // (version, services-descriptor-list, channel)
 }
 
+/// The Vss Manager manages VSS connections for each node.
 impl VssMgr {
     pub fn new() -> Self {
         let (jobs_tx, mut jobs_rx) = mpsc::channel(16);
@@ -66,13 +84,15 @@ impl VssMgr {
     }
 
     /// Start a task to manage the VSS connection to a node.  Waits for `delay` before starting.
+    /// Once this starts, the first thing it does is send the services list across.
+    /// It them will periodically ping the vss API.
     ///
     pub fn start_vss_worker(
         &self,
         asm: Arc<Assembly>,
         vss_addr: &SocketAddr,
         delay: std::time::Duration,
-    ) -> Result<(), VSError> {
+    ) -> Result<(), VSSError> {
         let node_ip = vss_addr.ip();
 
         // If a worker already exists for this IP, kill it before starting a new one.
@@ -93,25 +113,112 @@ impl VssMgr {
         };
         let send_result = self.jobs_tx.try_send(job);
         if let Err(e) = send_result {
-            return Err(VSError::QueueFull(format!(
+            return Err(VSSError::QueueFull(format!(
                 "failed to queue VSS worker start job for {}: {}",
                 vss_addr, e
             )));
         }
-        let worker = VssWorker { cancel_tx, cmd_tx };
+        let worker = VssHandle { cancel_tx, cmd_tx };
         self.workers.insert(node_ip, worker);
         Ok(())
     }
 
     /// Returns `true` if a worker was found and signalled to stop, `false` if no worker existed for the given IP.
-    pub async fn stop_vss_worker(&self, vss_ip: &IpAddr) -> bool {
-        if let Some((_, worker)) = self.workers.remove(vss_ip) {
+    pub async fn stop_vss_worker(&self, naddr: &IpAddr) -> bool {
+        if let Some((_, worker)) = self.workers.remove(naddr) {
             let _ = worker.cancel_tx.send(());
-            info!(target: VSSMGR, "sent cancel to VSS worker for IP {}", vss_ip);
+            info!(target: VSSMGR, "sent cancel to VSS worker for IP {}", naddr);
             true
         } else {
             false
         }
+    }
+
+    /// Makes the setServices VSS API call for the given node.
+    pub async fn set_services(
+        &self,
+        naddr: &IpAddr,
+        version: u64,
+        services: Vec<ServiceDescriptor>,
+    ) -> Result<(), VSSError> {
+        if let Some(handle) = self.workers.get(naddr) {
+            handle.set_services(version, services).await
+        } else {
+            Err(VSSError::NodeNotFound)
+        }
+    }
+
+    /// Makes the pushVisaOp VSS API call for the given node.
+    pub async fn push_visas(&self, naddr: &IpAddr, visas: Vec<Visa>) -> Result<usize, VSSError> {
+        if let Some(handle) = self.workers.get(naddr) {
+            handle.push_visas(visas).await
+        } else {
+            Err(VSSError::NodeNotFound)
+        }
+    }
+
+    /// Makes the pushVisaOp VSS API call for the given node.
+    pub async fn revoke_visas(&self, naddr: &IpAddr, ids: Vec<u64>) -> Result<usize, VSSError> {
+        if let Some(handle) = self.workers.get(naddr) {
+            handle.revoke_visas(ids).await
+        } else {
+            Err(VSSError::NodeNotFound)
+        }
+    }
+
+    /// Makes the revokeAuthentication VSS API call for the given node.
+    pub async fn revoke_auths(
+        &self,
+        naddr: &IpAddr,
+        addrs: Vec<IpAddr>,
+    ) -> Result<usize, VSSError> {
+        if let Some(handle) = self.workers.get(naddr) {
+            handle.revoke_auths(addrs).await
+        } else {
+            Err(VSSError::NodeNotFound)
+        }
+    }
+}
+
+/// Each VSS thread has a handle to it stored in the [VssMgr] `workers` map.
+impl VssHandle {
+    async fn send_command(&self, cmd: VssCmd) -> Result<(), VSSError> {
+        self.cmd_tx
+            .send(cmd)
+            .await
+            .map_err(|_| VSSError::ConnClosed)
+    }
+
+    pub async fn push_visas(&self, visas: Vec<Visa>) -> Result<usize, VSSError> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let cmd = VssCmd::PushVisas(visas, resp_tx);
+        self.send_command(cmd).await?;
+        resp_rx.await.map_err(|_| VSSError::ConnClosed)?
+    }
+
+    pub async fn revoke_visas(&self, ids: Vec<u64>) -> Result<usize, VSSError> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let cmd = VssCmd::RevokeVisasById(ids, resp_tx);
+        self.send_command(cmd).await?;
+        resp_rx.await.map_err(|_| VSSError::ConnClosed)?
+    }
+
+    pub async fn revoke_auths(&self, addrs: Vec<IpAddr>) -> Result<usize, VSSError> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let cmd = VssCmd::RevokeAuthsByZprAddr(addrs, resp_tx);
+        self.send_command(cmd).await?;
+        resp_rx.await.map_err(|_| VSSError::ConnClosed)?
+    }
+
+    pub async fn set_services(
+        &self,
+        version: u64,
+        services: Vec<ServiceDescriptor>,
+    ) -> Result<(), VSSError> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let cmd = VssCmd::SetServices(version, services, resp_tx);
+        self.send_command(cmd).await?;
+        resp_rx.await.map_err(|_| VSSError::ConnClosed)?
     }
 }
 
@@ -119,6 +226,10 @@ impl VssMgr {
 // rpc system must run in a tokio local task.
 //
 // See https://docs.rs/tokio/latest/tokio/task/struct.LocalSet.html#use-inside-tokiospawn
+//
+// There is only ever one "job" implementation -- the job that starts a VSS worker.
+//
+// This is called in a new thread.
 async fn run_vss_job(job: Job) {
     match job {
         Job::StartVssWorker {
@@ -135,8 +246,9 @@ async fn run_vss_job(job: Job) {
     }
 }
 
+// Run-loop for a thread that manages a VSS connection to a node.
 async fn vss_worker_loop(
-    _asm: Arc<Assembly>,
+    asm: Arc<Assembly>,
     node_addr: SocketAddr,
     mut cancel_rx: oneshot::Receiver<()>,
     mut cmd_rx: mpsc::Receiver<VssCmd>,
@@ -145,11 +257,14 @@ async fn vss_worker_loop(
     info!(target: VSSMGR, "connecting to VSS at {}", node_addr);
 
     // TODO: TLS
-    let sock = tokio::net::TcpStream::connect(node_addr).await;
-    if sock.is_err() {
-        // ...
-    }
-    let sock = sock.unwrap();
+    let sock = match tokio::net::TcpStream::connect(node_addr).await {
+        Ok(sock) => sock,
+        Err(e) => {
+            error!(target: VSSMGR, "failed to connect to VSS at {}: {}", node_addr, e);
+            return; // TODO: How to signal manager?
+        }
+    };
+
     let (reader, writer) = sock.into_split();
 
     let network = capnp_rpc::twoparty::VatNetwork::new(
@@ -164,18 +279,18 @@ async fn vss_worker_loop(
     let vss_service: v1::visa_support_service::Client =
         rpc_system.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server);
 
-    // TODO: Call set_services
-
     tokio::task::spawn_local(rpc_system);
 
     let req = vss_service.connect_request();
 
-    let vss_request_response = req.send().promise.await;
-    if vss_request_response.is_err() {
-        // ...
-    }
+    let handle_result_rdr = match req.send().promise.await {
+        Ok(req_resp) => req_resp,
+        Err(e) => {
+            error!(target: VSSMGR, "VSS connect request failed: {}", e);
+            return; // TODO: Signal manager?
+        }
+    };
 
-    let handle_result_rdr = vss_request_response.unwrap();
     let handle_result_ok_or_error = handle_result_rdr.get().unwrap().get_resp().unwrap();
 
     let vss_handle: v1::v_s_s_handle::Client = match handle_result_ok_or_error.which().unwrap() {
@@ -183,11 +298,25 @@ async fn vss_worker_loop(
         v1::result::Which::Error(err_obj) => {
             let err_obj = err_obj.unwrap();
             error!(target: VSSMGR, "VSS connect error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
-            return;
+            return; // TODO: Signal manager?
         }
     };
 
     info!(target: VSSMGR, "connected to VSS at {}", node_addr);
+
+    match asm.actor_mgr.get_auth_services_list(asm.clone()).await {
+        Ok(services) => {
+            debug!(target: VSSMGR, "sending initial auth services list to VSS at {}", node_addr);
+            if let Err(e) = do_set_services(&vss_handle, 1, services).await {
+                error!(target: VSSMGR, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
+            } else {
+                debug!(target: VSSMGR, "initial auth services list sent to VSS at {}", node_addr);
+            }
+        }
+        Err(e) => {
+            warn!(target: VSSMGR, "failed to get auth services list for VSS at {}: {}", node_addr, e);
+        }
+    }
 
     let mut ping_interval = tokio::time::interval(config::VSS_PING_INTERVAL);
 
@@ -200,14 +329,31 @@ async fn vss_worker_loop(
 
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
-                    VssCmd::PushVisa(_visa) => warn!(target: VSSMGR, "VSS worker PushVisa not implemented yet"),
-                    VssCmd::RevokeVisaById(_visa_id) => warn!(target: VSSMGR, "VSS worker RevokeVisaById not implemented yet"),
-                    VssCmd::RevokeAuthByZprAddr(_zpr_addr) => warn!(target: VSSMGR, "VSS worker RevokeAuthByZprAddr not implemented yet"),
-                    VssCmd::SetServices(_version, _services) => warn!(target: VSSMGR, "VSS worker SetServices not implemented yet"),
+                    VssCmd::PushVisas(_visas, resp_tx) => {
+                        if let Err(e) = resp_tx.send(Err(VSSError::InternalError("push-visas not implemented".to_string()))) {
+                            error!(target: VSSMGR, "failed to send response for push-visas command: {:?}", e);
+                        }
+                    }
+                    VssCmd::RevokeVisasById(_visa_id, resp_tx) => {
+                        if let Err(e) = resp_tx.send(Err(VSSError::InternalError("revoke-visas not implemented".to_string()))) {
+                            error!(target: VSSMGR, "failed to send response for revoke-visas command: {:?}", e);
+                        }
+                    }
+                    VssCmd::RevokeAuthsByZprAddr(_zpr_addr, resp_tx) => {
+                        if let Err(e) = resp_tx.send(Err(VSSError::InternalError("revoke-auths not implemented".to_string()))) {
+                            error!(target: VSSMGR, "failed to send response for revoke-auths command: {:?}", e);
+                        }
+                    }
+                    VssCmd::SetServices(_version, _services, resp_tx) => {
+                        if let Err(e) = resp_tx.send(do_set_services(&vss_handle, _version, _services).await) {
+                            error!(target: VSSMGR, "failed to send response for set-services command: {:?}", e);
+                        }
+                    }
                 }
             }
 
             _ = ping_interval.tick() => {
+                // TODO: We need some way to raise an alert to the manager when a ping fails.
                 let ping_req = vss_handle.ping_request();
                 let ping_response_or_err = ping_req.send().promise.await;
                 if ping_response_or_err.is_err() {
@@ -230,4 +376,39 @@ async fn vss_worker_loop(
     }
 
     // Call ping in a loop periodically.  If this fails raise an alarm.
+}
+
+async fn do_set_services(
+    vss_handle: &v1::v_s_s_handle::Client,
+    version: u64,
+    services: Vec<ServiceDescriptor>,
+) -> Result<(), VSSError> {
+    // The API calls for a "version" to be returned, but that is rather complicated
+    // to manage here. So for now we just send version=1 always and leave it up to the node
+    // to check the list and decide if anything has changed.
+    // TODO: update the VSS API to use a different scheme here.
+
+    let mut req = vss_handle.set_services_request();
+    let mut req_builder = req.get();
+    req_builder.set_version(version);
+
+    let mut svc_list_builder = req_builder.init_svcs(services.len() as u32);
+    for (i, svc) in services.iter().enumerate() {
+        let mut svc_builder = svc_list_builder.reborrow().get(i as u32);
+        svc.write_to(&mut svc_builder);
+    }
+
+    let set_response_rdr = req.send().promise.await?;
+
+    let set_response_ok_or_err = set_response_rdr.get()?;
+
+    match set_response_ok_or_err.get_res().unwrap().which().unwrap() {
+        v1::ok_or_error::Which::Ok(_) => (),
+        v1::ok_or_error::Which::Error(err_rdr) => {
+            let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
+            return Err(VSSError::from(api_err));
+        }
+    }
+
+    Ok(())
 }

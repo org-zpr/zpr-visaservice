@@ -31,6 +31,17 @@ pub struct ActorRepo {
     db: Handle,
 }
 
+pub struct ServiceEntry {
+    pub name: String,
+    pub zpr_addr: IpAddr,
+}
+
+impl ServiceEntry {
+    pub fn new(name: String, zpr_addr: IpAddr) -> Self {
+        ServiceEntry { name, zpr_addr }
+    }
+}
+
 impl ActorRepo {
     pub fn new(db_handle: &Handle) -> Self {
         ActorRepo {
@@ -99,6 +110,40 @@ impl ActorRepo {
                 Err(e)
             }
         }
+    }
+
+    /// Get a list of all the connected services.
+    pub async fn list_services(&self) -> Result<Vec<ServiceEntry>, DBError> {
+        let mut vk_conn_scanner = self.db.conn.clone();
+        let mut vk_conn_getter = self.db.conn.clone();
+        let mut service_entries = Vec::new();
+        let mut iter: redis::AsyncIter<String> = vk_conn_scanner
+            .scan_match(format!("{KEY_SERVICE}:*"))
+            .await?;
+        while let Some(svc_key_res) = iter.next_item().await {
+            let svc_key = svc_key_res?;
+            let munged_svc_name = KeyString::from_raw(
+                svc_key
+                    .trim_start_matches(&format!("{KEY_SERVICE}:"))
+                    .into(),
+            );
+            let addr_str: String = vk_conn_getter.hget(&svc_key, "zpr_addr").await?;
+            let addr: IpAddr = addr_str.parse().map_err(|e| {
+                DBError::InvalidData(format!(
+                    "invalid zpr_addr in service entry {}: {}",
+                    svc_key, e
+                ))
+            })?;
+            match String::try_from(munged_svc_name) {
+                Ok(svc_name) => service_entries.push(ServiceEntry::new(svc_name, addr)),
+                Err(_) => {
+                    return Err(DBError::InvalidData(format!(
+                        "invalid service name encoding for key {svc_key}"
+                    )));
+                }
+            }
+        }
+        Ok(service_entries)
     }
 
     /// Add an actor record which must only be called after initial authentication (there

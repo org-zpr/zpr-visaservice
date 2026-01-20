@@ -20,6 +20,9 @@ pub mod targets {
     /// Visa Manager
     pub const VMGR: &str = "visamgr";
 
+    /// Actor Manager
+    pub const AMGR: &str = "actormgr";
+
     /// VSS Manager
     pub const VSSMGR: &str = "vssmgr";
 

@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 
 use libeval::actor::Actor;
 use zpr::vsapi_types::{PacketDesc, SockAddr, VisaOp};
-use zpr::vsapi_types_writers::WriteTo;
+use zpr::write_to::WriteTo;
 
 use crate::assembly::Assembly;
 use crate::config;

@@ -2,10 +2,18 @@
 //!
 
 use libeval::actor::Actor;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use tracing::warn;
 
+use zpr::policy_types::{Scope, ServiceType};
+use zpr::vsapi_types::ServiceDescriptor;
+
+use crate::assembly::Assembly;
 use crate::db;
 use crate::error::{DBError, VSError};
+use crate::logging::targets::AMGR;
 
 pub struct ActorMgr {
     actor_db: db::ActorRepo,
@@ -109,5 +117,94 @@ impl ActorMgr {
             .await?
             .into_iter()
             .collect())
+    }
+
+    pub async fn get_auth_services_list(
+        &self,
+        asm: Arc<Assembly>,
+    ) -> Result<Vec<ServiceDescriptor>, VSError> {
+        // From the DB we can get the (service_name, zpr_addr) for each connected service.
+
+        let service_entries = self.actor_db.list_services().await?;
+
+        let mut services = Vec::new();
+        let pol = asm.policy_mgr.get_current();
+
+        let mut svc_map = HashMap::new();
+        for svc in pol.list_services() {
+            if matches!(svc.kind, ServiceType::Authentication) {
+                svc_map.insert(svc.id.clone(), svc);
+            }
+        }
+
+        for s_ent in &service_entries {
+            if let Some(svc) = svc_map.get(&s_ent.name) {
+                let sdesc = ServiceDescriptor {
+                    service_id: svc.id.clone(),
+                    service_uri: uri_for_service(
+                        &svc.kind,
+                        &s_ent.zpr_addr,
+                        svc.endpoints.as_slice(),
+                    )?,
+                    zpr_addr: s_ent.zpr_addr.clone(),
+                };
+                services.push(sdesc);
+            } else {
+                // We have a service registered in the state DB but is not in policy.
+                warn!(target: AMGR, "service in DB not found in policy: {}", s_ent.name);
+            }
+        }
+
+        Ok(services)
+    }
+}
+
+// The auth service URI is of the form: <ZPR_AUTH_SCHEME>://<addr>:<port>/path
+//
+// Example: zpr-oauthrsa://[fd5a:5052:9090::88]:4000
+//
+// The 'zpr-oauthrsa' scheme implies https and /preauthorize and /authorize endpoints.
+//
+// Currently "zpr-oauthrsa" is the only supported scheme and the service type of "auth"
+// implies this scheme.
+//
+// TODO: Eventually need to expand zplc and compiler to have richer set of auth service types.
+//
+// Errors:
+// - The only support auth serice type requires a single scope, so you get an error if there are none or more than one.
+fn uri_for_service(
+    skind: &ServiceType,
+    addr: &IpAddr,
+    endpoints: &[Scope],
+) -> Result<String, VSError> {
+    let scheme = match skind {
+        ServiceType::Authentication => "zpr-oauthrsa",
+        _ => {
+            return Err(VSError::InternalError(
+                format!("unsupported service type for auth service URI: {skind:?}").into(),
+            ));
+        }
+    };
+
+    if endpoints.len() != 1 {
+        return Err(VSError::InternalError(
+            format!(
+                "auth service must have exactly one scope endpoint, not {}",
+                endpoints.len()
+            )
+            .into(),
+        ));
+    }
+
+    if let Some(portnum) = endpoints[0].port.as_ref() {
+        let url = match addr {
+            IpAddr::V4(a) => format!("{scheme}://{a}:{portnum}"),
+            IpAddr::V6(a) => format!("{scheme}://[{a}]:{portnum}"),
+        };
+        Ok(url)
+    } else {
+        Err(VSError::InternalError(
+            "auth service scope must have a single port defined".into(),
+        ))
     }
 }

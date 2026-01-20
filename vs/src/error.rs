@@ -3,7 +3,7 @@ use thiserror::Error;
 use libeval::actor;
 use libeval::eval::EvalError;
 
-use zpr::vsapi_types::VsapiTypeError;
+use zpr::vsapi_types::{ApiResponseError, ErrorCode, VsapiTypeError};
 
 #[derive(Debug, Error)]
 pub enum VSError {
@@ -78,4 +78,34 @@ pub enum DBError {
 
     #[error("vsapi error: {0}")]
     VsapiError(#[from] VsapiTypeError),
+}
+
+#[derive(Debug, Error)]
+pub enum VSSError {
+    #[error("internal error: {0}")]
+    InternalError(String),
+
+    #[error("queue full: {0}")]
+    QueueFull(String),
+
+    #[error("vss connection closed")]
+    ConnClosed,
+
+    #[error("node not found")]
+    NodeNotFound,
+
+    #[error("Cap'n Proto error: {0}")]
+    Capnp(#[from] capnp::Error),
+
+    #[error("vsapi error: {0}")]
+    VsapiError(#[from] VsapiTypeError),
+
+    #[error("api response error: {0:?} ({1}, retry {2})")]
+    ApiResponseError(ErrorCode, String, u32),
+}
+
+impl From<ApiResponseError> for VSSError {
+    fn from(err: ApiResponseError) -> Self {
+        VSSError::ApiResponseError(err.code, err.message, err.retry_in)
+    }
 }
