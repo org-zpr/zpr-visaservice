@@ -200,6 +200,7 @@ impl Policy {
         Ok(bootstrap_keys)
     }
 
+    // Load (cache) the set of join policies found in the binary policy object.
     fn load_join_policies(
         &self,
         policy: &policy_capnp::policy::Reader,
@@ -214,6 +215,9 @@ impl Policy {
         Ok(join_policies)
     }
 
+    // Load (cache) the set of services found in the binary policy object. The services are
+    // stored in binary policy as part of the join policies but our join-policy loader doesn't
+    // fully load them since it doesn't need to.
     fn load_services(
         &self,
         policy: &policy_capnp::policy::Reader,
