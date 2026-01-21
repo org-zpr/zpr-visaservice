@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
@@ -166,6 +166,10 @@ impl VSHandleImpl {
         &self,
         args: vsapi::v_s_handle::VisaRequestParams,
     ) -> Result<VisaDecision, (vsapi::ErrorCode, String)> {
+        // TODO: pass in timeout.
+        let timeout = config::DEFAULT_VISA_REQ_TIMEOUT;
+        let start = Instant::now();
+
         let Some(requestor_ip) = self.node.get_zpr_addr() else {
             warn!(target: VSAPI, "visa_request called by node {:?} with no ZPR address assigned", self.node.get_cn());
             return Err((
@@ -226,21 +230,37 @@ impl VSHandleImpl {
 
         let (job, response_rx) = VisaRequestJob::new(requestor_ip.clone(), pdesc);
 
-        match self.asm.vreq_chan.send(job).await {
-            Ok(()) => (),
-            Err(e) => {
+        match tokio::time::timeout(timeout, self.asm.vreq_chan.send(job)).await {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => {
                 error!(target: VSAPI, "error enqueuing visa request: {}", e);
                 return Err((
                     vsapi::ErrorCode::Internal,
                     "internal error enqueuing visa request".to_string(),
                 ));
             }
+            Err(_) => {
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    format!("timeout enqueuing visa request"),
+                ));
+            }
+        };
+
+        // Now wait for a response with remaining timeout.
+        // This will fill in the api response.
+        let remaining = timeout
+            .checked_sub(start.elapsed())
+            .unwrap_or_else(|| Duration::from_secs(0));
+        if remaining.is_zero() {
+            return Err((
+                vsapi::ErrorCode::Internal,
+                format!("timeout waiting for visa request response"),
+            ));
         }
 
-        // Now wait for a response (TODO: timeout?)
-        // This will fill in the api response.
-        match response_rx.await {
-            Ok(vr_result) => match vr_result {
+        match tokio::time::timeout(remaining, response_rx).await {
+            Ok(Ok(vr_result)) => match vr_result {
                 Ok(vd) => return Ok(vd),
                 Err(e) => {
                     return Err((
@@ -249,10 +269,16 @@ impl VSHandleImpl {
                     ));
                 }
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 return Err((
                     vsapi::ErrorCode::Internal,
                     format!("internal error receiving visa request response: {}", e),
+                ));
+            }
+            Err(_) => {
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    format!("timeout waiting for visa request response"),
                 ));
             }
         }
