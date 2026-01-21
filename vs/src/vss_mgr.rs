@@ -1,6 +1,7 @@
 use dashmap::DashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -86,6 +87,9 @@ impl VssMgr {
     /// Once this starts, the first thing it does is send the services list across.
     /// It them will periodically ping the vss API.
     ///
+    /// Error is returned if a worker is already running for the node. If that happens caller
+    /// should use [VssMgr::get_handle] to obtain the existing handle and then call [VssHandle::stop].
+    /// Note that it takes time for handle to respond to stop and clear out state in this manager.
     pub async fn start_vss_worker(
         &self,
         asm: Arc<Assembly>,
@@ -94,10 +98,9 @@ impl VssMgr {
     ) -> Result<(), VSSError> {
         let node_ip = vss_addr.ip();
 
-        // If a worker already exists for this IP, kill it before starting a new one.
-        if let Some((_, old_worker)) = self.workers.remove(&node_ip) {
-            info!(target: VSSMGR, "stopping existing VSS worker for IP {}", node_ip);
-            let _ = old_worker.stop().await;
+        // Return error if we already have a worker for this node.
+        if self.workers.contains_key(&node_ip) {
+            return Err(VSSError::DuplicateWorker(*vss_addr));
         }
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<VssCmd>(16);
@@ -124,6 +127,14 @@ impl VssMgr {
     /// send VSS API messages.
     pub fn get_handle(&self, naddr: &IpAddr) -> Option<VssHandle> {
         self.workers.get(naddr).map(|h| h.clone())
+    }
+
+    /// Housekeeping function to remove (presumably stale/not-running) worker.
+    /// Called when the worker run loop exists.
+    ///
+    /// TODO: May need a way to alert the system when the VSS worker stops unexpectedly.
+    fn clear_handle(&self, naddr: &IpAddr) {
+        self.workers.remove(naddr);
     }
 }
 
@@ -200,8 +211,12 @@ async fn run_vss_job(job: Job) {
             cmd_rx,
         } => {
             debug!(target: VSSMGR, "starting VSS worker for node at {}", vss_addr);
+            let naddr = vss_addr.ip().to_owned();
             tokio::time::sleep(delay).await;
-            vss_worker_loop(asm, vss_addr, cmd_rx).await;
+            vss_worker_loop(asm.clone(), vss_addr, cmd_rx).await;
+            // When we exit the worker loop, we are done but the handle is still sitting in
+            // the manager. So we clean it out here:
+            asm.vss_mgr.clear_handle(&naddr);
         }
     }
 }

@@ -1,7 +1,7 @@
-use thiserror::Error;
-
 use libeval::actor;
 use libeval::eval::EvalError;
+use std::net::SocketAddr;
+use thiserror::Error;
 
 use zpr::vsapi_types::{ApiResponseError, ErrorCode, VsapiTypeError};
 
@@ -96,6 +96,9 @@ pub enum VSSError {
 
     #[error("api response error: {0:?} ({1}, retry {2})")]
     ApiResponseError(ErrorCode, String, u32),
+
+    #[error("duplicate vss worker for {0}")]
+    DuplicateWorker(SocketAddr),
 }
 
 impl From<ApiResponseError> for VSSError {

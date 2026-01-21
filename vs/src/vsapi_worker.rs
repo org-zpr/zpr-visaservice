@@ -639,6 +639,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                 return Ok(());
             }
         };
+
         let res_builder = res.get().init_res();
         let mut ok_builder = res_builder.initn_ok(initial_visas.len() as u32);
 
@@ -649,7 +650,15 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             vop.write_to(&mut vop_builder);
         }
 
-        // Now assume that our reply will make it and mark the visas as installed.
+        // Now assume that our reply will make it to the node and mark the visas as installed.
+        //
+        // The node must assume that if it gets an error trying to call register_vss that
+        // there may be visas it is missing.  Since we don't have a way for the node to
+        // ask for its "installed" visas, for now node should call register_vss again.
+        //
+        // TODO: Improve vsapi by adding a way for node to request its installed visas.
+        // https://github.com/org-zpr/zpr-visaservice/issues/108
+
         for visa in &initial_visas {
             if let Err(e) = self
                 .asm
