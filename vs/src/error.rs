@@ -25,6 +25,9 @@ pub enum VSError {
     #[error("internal error: {0}")]
     InternalError(String),
 
+    #[error("timed out: {0}")]
+    Timeout(String),
+
     #[error("evaluation error: {0}")]
     EvalErr(#[from] EvalError),
 

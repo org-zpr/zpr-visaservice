@@ -19,6 +19,7 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::future::FutureExt;
@@ -68,42 +69,67 @@ pub async fn launch_arena(
 }
 
 /// Helper function to submit a visa request job and wait for the decision.
-/// (TODO: Timeout)
+///
+/// ### Errors
+/// - [VSError::Timeout] if the request times out.
 pub async fn request_visa_wait_response(
     asm: Arc<Assembly>,
     requesting_node: &IpAddr,
     pkt_data: PacketDesc,
+    timeout: Duration,
 ) -> Result<VisaDecision, VSError> {
+    let start = Instant::now();
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
 
-    match asm.vreq_chan.send(job).await {
-        Ok(()) => (),
-        Err(e) => {
+    match tokio::time::timeout(timeout, asm.vreq_chan.send(job)).await {
+        Ok(Ok(())) => (),
+        Ok(Err(e)) => {
             error!(target: VISAREQ, "error enqueuing visa request: {}", e);
             return Err(VSError::InternalError(
                 "internal error enqueuing visa request".to_string(),
             ));
         }
-    }
-
-    // Now wait for a response (TODO: timeout?)
-    // This will fill in the api response.
-    match response_rx.await {
-        Ok(vr_result) => match vr_result {
-            Ok(vd) => return Ok(vd),
-            Err(e) => {
-                return Err(VSError::InternalError(format!(
-                    "internal error processing visa request: {}",
-                    e
-                )));
-            }
-        },
-        Err(e) => {
-            return Err(VSError::InternalError(format!(
-                "internal error receiving visa request response: {}",
-                e
+        Err(_) => {
+            error!(
+                target: VISAREQ,
+                "timeout enqueuing visa request after {:?}",
+                timeout
+            );
+            return Err(VSError::Timeout(format!(
+                "timeout enqueuing visa request after {:?}",
+                timeout
             )));
         }
+    };
+
+    // Now wait for a response with the remaining timeout.
+    // This will fill in the api response.
+    let remaining = timeout
+        .checked_sub(start.elapsed())
+        .unwrap_or_else(|| Duration::from_secs(0));
+    if remaining.is_zero() {
+        return Err(VSError::Timeout(format!(
+            "timeout waiting for visa request response after {:?}",
+            timeout
+        )));
+    }
+
+    match tokio::time::timeout(remaining, response_rx).await {
+        Ok(Ok(vr_result)) => match vr_result {
+            Ok(vd) => Ok(vd),
+            Err(e) => Err(VSError::InternalError(format!(
+                "internal error processing visa request: {}",
+                e
+            ))),
+        },
+        Ok(Err(e)) => Err(VSError::InternalError(format!(
+            "internal error receiving visa request response: {}",
+            e
+        ))),
+        Err(_) => Err(VSError::Timeout(format!(
+            "timeout waiting for visa request response after {:?}",
+            timeout
+        ))),
     }
 }
 

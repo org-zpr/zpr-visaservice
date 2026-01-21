@@ -67,7 +67,9 @@ impl VisaMgr {
         )
         .unwrap();
 
-        match request_visa_wait_response(asm, node_addr, pkt_data).await {
+        match request_visa_wait_response(asm, node_addr, pkt_data, config::DEFAULT_VISA_REQ_TIMEOUT)
+            .await
+        {
             Ok(VisaDecision::Allow(visa)) => Ok(visa),
             Ok(VisaDecision::Deny(dcode)) => Err(VSError::VisaDenied(dcode.to_string())),
             Err(e) => Err(e),

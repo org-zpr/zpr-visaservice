@@ -38,7 +38,11 @@ pub const DEFAULT_EXPIRATION_SECONDS: u64 = 4 * 60 * 60; // 4 hours in seconds
 /// This delay allows time for the node to install the visa before we try to use it.
 pub const VSS_START_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// VSS worker pings the node VSS API at this interval.
 pub const VSS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// In cases where we create visas ourselves or if no timeout is specified, use this default.
+pub const DEFAULT_VISA_REQ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields, default)]
