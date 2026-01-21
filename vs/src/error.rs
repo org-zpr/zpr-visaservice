@@ -88,9 +88,6 @@ pub enum VSSError {
     #[error("vss connection closed")]
     ConnClosed,
 
-    #[error("node not found")]
-    NodeNotFound,
-
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
 

@@ -672,10 +672,11 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
 
         // As we return we kick off the vss worker for this node which will send list of services.
         // but will not work until visas are installed... So start it with small delay.
-        if let Err(e) =
-            self.asm
-                .vss_mgr
-                .start_vss_worker(self.asm.clone(), &saddr, config::VSS_START_DELAY)
+        if let Err(e) = self
+            .asm
+            .vss_mgr
+            .start_vss_worker(self.asm.clone(), &saddr, config::VSS_START_DELAY)
+            .await
         {
             warn!(target: VSAPI, "failed to start VSS worker for node {:?}: {}", self.node.get_cn(), e);
             // TODO: how to recover here?

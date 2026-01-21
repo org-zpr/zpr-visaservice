@@ -163,8 +163,12 @@ impl ConnectionControl {
 
         if let Some(actor) = maybe_actor {
             if actor.is_node() {
-                if !asm.vss_mgr.stop_vss_worker(&zpr_addr).await {
-                    debug!(target: CC, "no VSS worker found for disconnecting node at addr {zpr_addr}, continuing");
+                if let Some(vss_hndl) = asm.vss_mgr.get_handle(&zpr_addr) {
+                    if let Err(e) = vss_hndl.stop().await {
+                        error!(target: CC, "failed to stop VSS worker for disconnected node at addr {zpr_addr}: {}", e);
+                    }
+                } else {
+                    debug!(target: CC, "no VSS worker found for disconnected node at addr {zpr_addr}");
                 }
                 let connected_adapters = match asm
                     .actor_mgr

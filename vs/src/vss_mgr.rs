@@ -25,11 +25,8 @@ pub struct VssMgr {
     jobs_tx: mpsc::Sender<Job>,
 }
 
-#[allow(dead_code)]
-struct VssHandle {
-    // Used to cancle a VSS handler thread.
-    cancel_tx: oneshot::Sender<()>,
-
+#[derive(Clone)]
+pub struct VssHandle {
     // For sending requests to a VSS handler thread (all the API calls)
     cmd_tx: mpsc::Sender<VssCmd>,
 }
@@ -40,7 +37,6 @@ enum Job {
         asm: Arc<Assembly>,
         vss_addr: SocketAddr,
         delay: std::time::Duration,
-        cancel_rx: oneshot::Receiver<()>,
         cmd_rx: mpsc::Receiver<VssCmd>,
     },
 }
@@ -52,6 +48,7 @@ type VssSetServicesResponse = Result<(), VSSError>;
 // Each API call is expressed as a message using this enum.
 #[allow(dead_code)]
 enum VssCmd {
+    Stop(),
     PushVisas(Vec<Visa>, oneshot::Sender<VssPushResponse>),
     RevokeVisasById(Vec<u64>, oneshot::Sender<VssPushResponse>),
     RevokeAuthsByZprAddr(Vec<IpAddr>, oneshot::Sender<VssRevokeAuthResponse>),
@@ -89,7 +86,7 @@ impl VssMgr {
     /// Once this starts, the first thing it does is send the services list across.
     /// It them will periodically ping the vss API.
     ///
-    pub fn start_vss_worker(
+    pub async fn start_vss_worker(
         &self,
         asm: Arc<Assembly>,
         vss_addr: &SocketAddr,
@@ -99,18 +96,16 @@ impl VssMgr {
 
         // If a worker already exists for this IP, kill it before starting a new one.
         if let Some((_, old_worker)) = self.workers.remove(&node_ip) {
-            let _ = old_worker.cancel_tx.send(());
             info!(target: VSSMGR, "stopping existing VSS worker for IP {}", node_ip);
+            let _ = old_worker.stop().await;
         }
 
-        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
         let (cmd_tx, cmd_rx) = mpsc::channel::<VssCmd>(16);
 
         let job = Job::StartVssWorker {
             asm,
             vss_addr: *vss_addr,
             delay,
-            cancel_rx,
             cmd_rx,
         };
         let send_result = self.jobs_tx.try_send(job);
@@ -120,65 +115,15 @@ impl VssMgr {
                 vss_addr, e
             )));
         }
-        let worker = VssHandle { cancel_tx, cmd_tx };
+        let worker = VssHandle { cmd_tx };
         self.workers.insert(node_ip, worker);
         Ok(())
     }
 
-    /// Returns `true` if a worker was found and signalled to stop, `false` if no worker existed for the given IP.
-    pub async fn stop_vss_worker(&self, naddr: &IpAddr) -> bool {
-        if let Some((_, worker)) = self.workers.remove(naddr) {
-            let _ = worker.cancel_tx.send(());
-            info!(target: VSSMGR, "sent cancel to VSS worker for IP {}", naddr);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Makes the setServices VSS API call for the given node.
-    pub async fn set_services(
-        &self,
-        naddr: &IpAddr,
-        version: u64,
-        services: Vec<ServiceDescriptor>,
-    ) -> Result<(), VSSError> {
-        if let Some(handle) = self.workers.get(naddr) {
-            handle.set_services(version, services).await
-        } else {
-            Err(VSSError::NodeNotFound)
-        }
-    }
-
-    /// Makes the pushVisaOp VSS API call for the given node.
-    pub async fn push_visas(&self, naddr: &IpAddr, visas: Vec<Visa>) -> Result<usize, VSSError> {
-        if let Some(handle) = self.workers.get(naddr) {
-            handle.push_visas(visas).await
-        } else {
-            Err(VSSError::NodeNotFound)
-        }
-    }
-
-    /// Makes the pushVisaOp VSS API call for the given node.
-    pub async fn revoke_visas(&self, naddr: &IpAddr, ids: Vec<u64>) -> Result<usize, VSSError> {
-        if let Some(handle) = self.workers.get(naddr) {
-            handle.revoke_visas(ids).await
-        } else {
-            Err(VSSError::NodeNotFound)
-        }
-    }
-
-    /// Makes the revokeAuthentication VSS API call for the given node.
-    pub async fn revoke_auths(
-        &self,
-        naddr: &IpAddr,
-        addrs: Vec<IpAddr>,
-    ) -> Result<usize, VSSError> {
-        if let Some(handle) = self.workers.get(naddr) {
-            handle.revoke_auths(addrs).await
-        } else {
-            Err(VSSError::NodeNotFound)
-        }
+    /// Obtain a handle to the VSS worker for the given node. Using the handle you can
+    /// send VSS API messages.
+    pub fn get_handle(&self, naddr: &IpAddr) -> Option<VssHandle> {
+        self.workers.get(naddr).map(|h| h.clone())
     }
 }
 
@@ -191,6 +136,14 @@ impl VssHandle {
             .map_err(|_| VSSError::ConnClosed)
     }
 
+    /// Stop the worker.
+    pub async fn stop(&self) -> Result<(), VSSError> {
+        let cmd = VssCmd::Stop();
+        self.send_command(cmd).await
+    }
+
+    /// Send visas to the node.
+    #[allow(dead_code)]
     pub async fn push_visas(&self, visas: Vec<Visa>) -> Result<usize, VSSError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let cmd = VssCmd::PushVisas(visas, resp_tx);
@@ -198,6 +151,8 @@ impl VssHandle {
         resp_rx.await.map_err(|_| VSSError::ConnClosed)?
     }
 
+    /// Revoke visas installed on the node by their IDs.
+    #[allow(dead_code)]
     pub async fn revoke_visas(&self, ids: Vec<u64>) -> Result<usize, VSSError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let cmd = VssCmd::RevokeVisasById(ids, resp_tx);
@@ -205,6 +160,8 @@ impl VssHandle {
         resp_rx.await.map_err(|_| VSSError::ConnClosed)?
     }
 
+    /// Revoke authorizations present on the node for the given zpr addresses.
+    #[allow(dead_code)]
     pub async fn revoke_auths(&self, addrs: Vec<IpAddr>) -> Result<usize, VSSError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let cmd = VssCmd::RevokeAuthsByZprAddr(addrs, resp_tx);
@@ -212,6 +169,8 @@ impl VssHandle {
         resp_rx.await.map_err(|_| VSSError::ConnClosed)?
     }
 
+    /// Tell the node about authentication services connected to the ZPRnet.
+    #[allow(dead_code)]
     pub async fn set_services(
         &self,
         version: u64,
@@ -238,12 +197,11 @@ async fn run_vss_job(job: Job) {
             asm,
             vss_addr,
             delay,
-            cancel_rx,
             cmd_rx,
         } => {
             debug!(target: VSSMGR, "starting VSS worker for node at {}", vss_addr);
             tokio::time::sleep(delay).await;
-            vss_worker_loop(asm, vss_addr, cancel_rx, cmd_rx).await;
+            vss_worker_loop(asm, vss_addr, cmd_rx).await;
         }
     }
 }
@@ -252,7 +210,6 @@ async fn run_vss_job(job: Job) {
 async fn vss_worker_loop(
     asm: Arc<Assembly>,
     node_addr: SocketAddr,
-    mut cancel_rx: oneshot::Receiver<()>,
     mut cmd_rx: mpsc::Receiver<VssCmd>,
 ) {
     // Open connect to VSS.
@@ -324,13 +281,12 @@ async fn vss_worker_loop(
 
     loop {
         tokio::select! {
-            _ = &mut cancel_rx => {
-                info!(target: VSSMGR, "VSS worker for {} received cancel", node_addr);
-                break;
-            }
-
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
+                    VssCmd::Stop() => {
+                        info!(target: VSSMGR, "stop called on VSS worker for {}", node_addr);
+                        break;
+                    }
                     VssCmd::PushVisas(_visas, resp_tx) => {
                         if let Err(e) = resp_tx.send(Err(VSSError::InternalError("push-visas not implemented".to_string()))) {
                             error!(target: VSSMGR, "failed to send response for push-visas command: {:?}", e);
