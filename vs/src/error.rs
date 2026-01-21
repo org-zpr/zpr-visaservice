@@ -45,9 +45,6 @@ pub enum VSError {
 
     #[error("database error: {0}")]
     DBError(#[from] DBError),
-
-    #[error("queue full: {0}")]
-    QueueFull(String),
 }
 
 #[derive(Debug, Error)]

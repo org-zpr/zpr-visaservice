@@ -25,6 +25,7 @@ pub struct VssMgr {
     jobs_tx: mpsc::Sender<Job>,
 }
 
+#[allow(dead_code)]
 struct VssHandle {
     // Used to cancle a VSS handler thread.
     cancel_tx: oneshot::Sender<()>,
@@ -49,6 +50,7 @@ type VssRevokeAuthResponse = Result<usize, VSSError>; // usize is number of item
 type VssSetServicesResponse = Result<(), VSSError>;
 
 // Each API call is expressed as a message using this enum.
+#[allow(dead_code)]
 enum VssCmd {
     PushVisas(Vec<Visa>, oneshot::Sender<VssPushResponse>),
     RevokeVisasById(Vec<u64>, oneshot::Sender<VssPushResponse>),
