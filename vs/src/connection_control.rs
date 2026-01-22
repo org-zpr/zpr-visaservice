@@ -20,7 +20,7 @@ use openssl::sign::Verifier;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_NODE, key};
@@ -163,6 +163,13 @@ impl ConnectionControl {
 
         if let Some(actor) = maybe_actor {
             if actor.is_node() {
+                if let Some(vss_hndl) = asm.vss_mgr.get_handle(&zpr_addr) {
+                    if let Err(e) = vss_hndl.stop().await {
+                        error!(target: CC, "failed to stop VSS worker for disconnected node at addr {zpr_addr}: {}", e);
+                    }
+                } else {
+                    debug!(target: CC, "no VSS worker found for disconnected node at addr {zpr_addr}");
+                }
                 let connected_adapters = match asm
                     .actor_mgr
                     .get_adapters_connected_to_node(&zpr_addr)

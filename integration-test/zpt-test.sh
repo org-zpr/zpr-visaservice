@@ -25,7 +25,7 @@ if "$ZPT_BIN" -i "$INPUT" --json | jq -e -s '
   any(.[];
     .kind=="EVAL"
     and .instruction==1
-    and .hit.match_idx==1
+    and .hit.match_idx==0
     and (.hit.signal // {} | .message=="red employee" and .service=="signalService")
   )
 '; then

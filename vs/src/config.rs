@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use crate::error::VSError;
 
+pub const VS_CN: &str = "vs.zpr";
+
 pub const MAX_VISA_REQUEST_WORKERS: usize = 1024;
 pub const VISA_REQUEST_QUEUE_DEPTH: usize = 1024;
 
@@ -32,13 +34,23 @@ pub const MAX_CLOCK_SKEW_SECS: u64 = 180;
 
 pub const DEFAULT_EXPIRATION_SECONDS: u64 = 4 * 60 * 60; // 4 hours in seconds
 
-#[derive(Deserialize, Debug)]
+/// How long to wait after getting the VSS addr from the node and opening a connection back to it.
+/// This delay allows time for the node to install the visa before we try to use it.
+pub const VSS_START_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// VSS worker pings the node VSS API at this interval.
+pub const VSS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// In cases where we create visas ourselves or if no timeout is specified, use this default.
+pub const DEFAULT_VISA_REQ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct VSConfig {
     pub core: CoreSection,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct CoreSection {
     /// The visa service bind address - this is a constant baked into entire ZPR system only override for testing.
@@ -88,6 +100,10 @@ impl VSConfig {
         let contents = std::fs::read_to_string(path)?;
         let cfg: VSConfig = toml::from_str(&contents)?;
         Ok(cfg)
+    }
+
+    pub fn get_vs_addr(&self) -> IpAddr {
+        self.core.vs_addr.unwrap_or(IpAddr::V6(VS_ZPR_ADDR))
     }
 }
 

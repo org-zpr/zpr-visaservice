@@ -1,7 +1,9 @@
-use thiserror::Error;
-
 use libeval::actor;
 use libeval::eval::EvalError;
+use std::net::SocketAddr;
+use thiserror::Error;
+
+use zpr::vsapi_types::{ApiResponseError, ErrorCode, VsapiTypeError};
 
 #[derive(Debug, Error)]
 pub enum VSError {
@@ -23,11 +25,17 @@ pub enum VSError {
     #[error("internal error: {0}")]
     InternalError(String),
 
+    #[error("timed out: {0}")]
+    Timeout(String),
+
     #[error("evaluation error: {0}")]
     EvalErr(#[from] EvalError),
 
     #[error("policy error: {0}")]
     PolicyError(#[from] libeval::policy::PolicyError),
+
+    #[error("visa denied: {0}")]
+    VisaDenied(String),
 
     #[error("UTF8 error: {0}")]
     Utf8(#[from] std::str::Utf8Error),
@@ -67,4 +75,37 @@ pub enum DBError {
 
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
+
+    #[error("vsapi error: {0}")]
+    VsapiError(#[from] VsapiTypeError),
+}
+
+#[derive(Debug, Error)]
+pub enum VSSError {
+    #[error("internal error: {0}")]
+    InternalError(String),
+
+    #[error("queue full: {0}")]
+    QueueFull(String),
+
+    #[error("vss connection closed")]
+    ConnClosed,
+
+    #[error("Cap'n Proto error: {0}")]
+    Capnp(#[from] capnp::Error),
+
+    #[error("vsapi error: {0}")]
+    VsapiError(#[from] VsapiTypeError),
+
+    #[error("api response error: {0:?} ({1}, retry {2})")]
+    ApiResponseError(ErrorCode, String, u32),
+
+    #[error("duplicate vss worker for {0}")]
+    DuplicateWorker(SocketAddr),
+}
+
+impl From<ApiResponseError> for VSSError {
+    fn from(err: ApiResponseError) -> Self {
+        VSSError::ApiResponseError(err.code, err.message, err.retry_in)
+    }
 }

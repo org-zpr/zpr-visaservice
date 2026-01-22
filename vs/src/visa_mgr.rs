@@ -1,12 +1,15 @@
 //! Manage the creating, storage and retrieval of visas for the visa service.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use crate::assembly::Assembly;
 use crate::config;
 use crate::db;
 use crate::error::VSError;
 use crate::logging::targets::VMGR;
+use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval::{Direction, Hit};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
@@ -25,11 +28,66 @@ impl VisaMgr {
         VisaMgr { repo: db }
     }
 
-    // Placeholder implementation, called concurrently.
-    // Using a const expiration (4 hrs).
-    // No checking to see if visa already exists.
-    // No storing of the visas.
-    // Fake keys.
+    pub async fn initial_visas_for_node(
+        &self,
+        asm: Arc<Assembly>,
+        node_addr: &IpAddr,
+        vss_addr: &SocketAddr,
+    ) -> Result<Vec<Visa>, VSError> {
+        let mut visas = Vec::new();
+
+        if let Ok(pendings) = asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
+            visas.extend(pendings); // ignore errors here
+        }
+
+        let cres = asm
+            .visa_mgr
+            .create_vs_to_node_vss_visa(asm.clone(), node_addr, vss_addr.port())
+            .await?;
+        visas.push(cres);
+
+        Ok(visas)
+    }
+
+    /// Ask policy for a visa permitting this visa service to talk to the given node VSS addr.
+    pub async fn create_vs_to_node_vss_visa(
+        &self,
+        asm: Arc<Assembly>,
+        node_addr: &IpAddr,
+        vss_port: u16,
+    ) -> Result<Visa, VSError> {
+        // TODO: We may have this visa on hand already, if so return it and do not re-generate.
+
+        // TODO: PacketDesc should have new_xxx functions that take IpAddr (not just string)
+        let pkt_data = PacketDesc::new_tcp(
+            &asm.config.get_vs_addr().to_string(),
+            &node_addr.to_string(),
+            0,
+            vss_port,
+        )
+        .unwrap();
+
+        match request_visa_wait_response(
+            &asm,
+            node_addr,
+            pkt_data,
+            config::DEFAULT_VISA_REQ_TIMEOUT,
+        )
+        .await
+        {
+            Ok(VisaDecision::Allow(visa)) => Ok(visa),
+            Ok(VisaDecision::Deny(dcode)) => Err(VSError::VisaDenied(dcode.to_string())),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Placeholder implementation, called concurrently.
+    /// Called after making use of libeval to check policy.
+    /// Using a const expiration (4 hrs).
+    /// No checking to see if visa already exists.
+    /// Fake keys.
+    ///
+    /// Note that visa state with respect tot he requesting node is set to PENDING_INSTALL.
     pub async fn create_visa(
         &self,
         requesting_node: &IpAddr,
@@ -104,10 +162,23 @@ impl VisaMgr {
             session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
         };
 
-        self.repo.store_visa(requesting_node, &visa).await?;
+        self.repo
+            .store_visa(requesting_node, &visa, db::NodeVisaState::PendingInstall)
+            .await?;
 
         info!("created visa {visa_id}");
         Ok(visa)
+    }
+
+    pub async fn get_pending_visas_for_node(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<Vec<Visa>, VSError> {
+        let visas = self
+            .repo
+            .get_visas_for_node_by_state(node_addr, db::NodeVisaState::PendingInstall)
+            .await?;
+        Ok(visas)
     }
 
     /// Register that visa `visa_id` has been installed on node at ZPR address `node_addr`.

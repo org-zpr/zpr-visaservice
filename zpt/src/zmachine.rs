@@ -334,7 +334,7 @@ impl ZMachine {
         outfmt: &mut Box<dyn OutputFormatter>,
     ) -> Result<(), MachineError> {
         if let Some(ctx) = state.get_ctx() {
-            match ctx.eval_request(src_actor, dst_actor, &pd) {
+            match ctx.eval_request(src_actor, dst_actor, pd) {
                 Ok(decision) => {
                     self.present_decision(state, &decision, pd, outfmt);
                 }

@@ -50,6 +50,14 @@ impl TryFrom<KeyString> for String {
     }
 }
 
+impl KeyString {
+    /// Create a KeyString from a raw (already encoded) string.
+    /// Caller must ensure that the string is properly encoded.
+    pub fn from_raw(s: String) -> Self {
+        KeyString(s)
+    }
+}
+
 impl From<IpAddr> for ZAddr {
     fn from(addr: IpAddr) -> Self {
         match addr {

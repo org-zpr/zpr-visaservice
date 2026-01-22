@@ -31,6 +31,12 @@ pub struct Node {
     pub substrate_addr: SocketAddr,
 }
 
+// Wrap a SocketAddr for easy serialization.
+#[derive(Debug, Serialize, Deserialize)]
+struct SAWrapper {
+    pub vss_addr: SocketAddr,
+}
+
 pub struct NodeRepo {
     db: Handle,
 }
@@ -40,7 +46,8 @@ impl NodeRepo {
         NodeRepo { db: db.clone() }
     }
 
-    /// Add the node state record.
+    /// Add/overwrite the node state record. This assumes this is a new node being added.
+    ///
     /// A node record is assoicated with an actor that is a node role.
     /// Nodes authenticate with the visa service directly.
     /// One node is also the visa service's dock.
@@ -54,6 +61,31 @@ impl NodeRepo {
             .set(
                 &node_key_for_node(&node.zpr_addr),
                 serde_json::to_string(&node)?,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Keep track of the VSS address for the node.
+    pub async fn set_node_vss(
+        &self,
+        node_zpr_addr: &IpAddr,
+        vss_addr: &SocketAddr,
+    ) -> Result<(), DBError> {
+        let mut vk_conn = self.db.conn.clone();
+        let does_exist: bool = vk_conn.exists(&node_key_for_node(node_zpr_addr)).await?;
+        if !does_exist {
+            return Err(DBError::NotFound(format!(
+                "node not found for address {}",
+                node_zpr_addr
+            )));
+        }
+        let _: () = vk_conn
+            .set(
+                &vss_key_for_node(node_zpr_addr),
+                serde_json::to_string(&SAWrapper {
+                    vss_addr: *vss_addr,
+                })?,
             )
             .await?;
         Ok(())
@@ -113,6 +145,7 @@ impl NodeRepo {
             .arg(&todo_vrevoke_key_for_node(node_addr))
             .arg(&todo_crevoke_key_for_node(node_addr))
             .arg(&node_key_for_node(node_addr))
+            .arg(&vss_key_for_node(node_addr))
             .query_async(&mut vk_conn)
             .await?;
 
@@ -178,6 +211,11 @@ impl Node {
 fn node_key_for_node(addr: &IpAddr) -> String {
     let zaddr = ZAddr::from(addr);
     format!("node:{zaddr}")
+}
+
+fn vss_key_for_node(addr: &IpAddr) -> String {
+    let zaddr = ZAddr::from(addr);
+    format!("node:{zaddr}:vss")
 }
 
 fn connections_key_for_node(addr: &IpAddr) -> String {

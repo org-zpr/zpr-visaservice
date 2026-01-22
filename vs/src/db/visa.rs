@@ -16,7 +16,7 @@ use tracing::{debug, error, warn};
 
 use ::zpr::vsapi::v1 as vsapi;
 use zpr::vsapi_types::Visa;
-use zpr::vsapi_types_writers::WriteTo;
+use zpr::write_to::WriteTo;
 
 use crate::db::{Handle, ZAddr, gen_timestamp};
 use crate::error::DBError;
@@ -125,12 +125,18 @@ impl VisaRepo {
         Ok(())
     }
 
-    /// Store a new visa in the database, also sets the visa as PENDING install on the indicated
-    /// requesting node.
+    /// Store a new visa in the database, also sets the visa state with respect to the requesting node as
+    /// `nstate`.
     ///
-    /// TODO: We may want to code path that does not include a requsting node.///
-    pub async fn store_visa(&self, requesting_node: &IpAddr, visa: &Visa) -> Result<(), DBError> {
-        match self.try_store_visa(requesting_node, visa).await {
+    /// TODO: We may want to code path that does not include a requesting node.
+    ///
+    pub async fn store_visa(
+        &self,
+        requesting_node: &IpAddr,
+        visa: &Visa,
+        nstate: NodeVisaState,
+    ) -> Result<(), DBError> {
+        match self.try_store_visa(requesting_node, visa, nstate).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 warn!(target: REDIS, "failed to store visa: {}, attempting cleanup", visa.issuer_id);
@@ -145,7 +151,17 @@ impl VisaRepo {
         }
     }
 
-    async fn try_store_visa(&self, requesting_node: &IpAddr, visa: &Visa) -> Result<(), DBError> {
+    /// Attempt to store a visa.
+    ///
+    /// Will set the state w/ respect to the requesting_node to the passed `nstate`. Normally
+    /// this should be [NodeVisaState::PendingInstall] but there are occasions where you may
+    /// want to set it as [NodeVisaState::Installed].
+    async fn try_store_visa(
+        &self,
+        requesting_node: &IpAddr,
+        visa: &Visa,
+        nstate: NodeVisaState,
+    ) -> Result<(), DBError> {
         // write capnpn version of visa into the store.
 
         let visa_id = visa.issuer_id;
@@ -207,10 +223,7 @@ impl VisaRepo {
             .hset_multiple(
                 &key_nodevisa,
                 &[
-                    (
-                        "state",
-                        serde_json::to_string(&NodeVisaState::PendingInstall)?,
-                    ),
+                    ("state", serde_json::to_string(&nstate)?),
                     ("utime", gen_timestamp()),
                 ],
             )
@@ -250,6 +263,46 @@ impl VisaRepo {
 
         debug!(target: REDIS, "updated nodevisa state node={node_addr} visa={visa_id} -> {new_state:?}");
         Ok(())
+    }
+
+    pub async fn get_visas_for_node_by_state(
+        &self,
+        node_addr: &IpAddr,
+        state: NodeVisaState,
+    ) -> Result<Vec<Visa>, DBError> {
+        let mut vk_conn_outer = self.db.conn.clone();
+        let mut vk_conn_inner = self.db.conn.clone();
+
+        let zaddr = ZAddr::from(node_addr);
+        let mut visas = Vec::new();
+
+        let mut iter: redis::AsyncIter<String> = vk_conn_outer
+            .scan_match(format!("{KEY_NODEVISA}:{zaddr}:*"))
+            .await?;
+        while let Some(key_res) = iter.next_item().await {
+            let key = key_res?;
+            let state_str: String = vk_conn_inner.hget(&key, "state").await?;
+            let entry_state: NodeVisaState = serde_json::from_str(&state_str)?;
+            if entry_state == state {
+                // Extract visa ID from key
+                let parts: Vec<&str> = key.rsplitn(2, ':').collect();
+                if parts.len() != 2 {
+                    warn!(target: REDIS, "malformed nodevisa key: {}", key);
+                    continue;
+                }
+                let visa_id: u64 = parts[0].parse().map_err(|_| {
+                    DBError::InvalidData(format!("invalid visa ID in nodevisa key: {}", key))
+                })?;
+
+                // Load the visa blob
+                let blob_key = blob_key_for_visa(visa_id);
+                let visa_blob: Vec<u8> = vk_conn_inner.get(&blob_key).await?;
+                let visa = Visa::from_capnp_bytes(&visa_blob)?;
+                visas.push(visa);
+            }
+        }
+
+        Ok(visas)
     }
 }
 

@@ -2,10 +2,18 @@
 //!
 
 use libeval::actor::Actor;
-use std::net::IpAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use tracing::warn;
 
+use zpr::policy_types::{Scope, ServiceType};
+use zpr::vsapi_types::ServiceDescriptor;
+
+use crate::assembly::Assembly;
 use crate::db;
 use crate::error::{DBError, VSError};
+use crate::logging::targets::AMGR;
 
 pub struct ActorMgr {
     actor_db: db::ActorRepo,
@@ -42,6 +50,12 @@ impl ActorMgr {
     /// Use this function here in addition to remove node state.
     pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
         self.node_db.remove_node(node_addr).await?;
+        Ok(())
+    }
+
+    /// Update vss socket for given node in the DB.
+    pub async fn set_node_vss(&self, node_addr: &IpAddr, vss: &SocketAddr) -> Result<(), VSError> {
+        self.node_db.set_node_vss(node_addr, vss).await?;
         Ok(())
     }
 
@@ -103,5 +117,101 @@ impl ActorMgr {
             .await?
             .into_iter()
             .collect())
+    }
+
+    /// Get the list of connected authentication services.
+    pub async fn get_auth_services_list(
+        &self,
+        asm: Arc<Assembly>,
+    ) -> Result<Vec<ServiceDescriptor>, VSError> {
+        let mut services = Vec::new();
+
+        // From the DB we can get the (service_name, zpr_addr) for each connected service.
+        let service_entries = self.actor_db.list_services().await?;
+
+        // Then we need to consult policy to get the service details.
+        let pol = asm.policy_mgr.get_current();
+
+        let mut svc_map = HashMap::new();
+        for svc in pol.list_services() {
+            if matches!(svc.kind, ServiceType::Authentication) {
+                svc_map.insert(svc.id.clone(), svc);
+            }
+        }
+
+        for s_ent in &service_entries {
+            if let Some(svc) = svc_map.get(&s_ent.name) {
+                let sdesc = ServiceDescriptor {
+                    service_id: svc.id.clone(),
+                    service_uri: uri_for_service(
+                        &svc.kind,
+                        &s_ent.zpr_addr,
+                        svc.endpoints.as_slice(),
+                    )?,
+                    zpr_addr: s_ent.zpr_addr.clone(),
+                };
+                services.push(sdesc);
+            } else {
+                // We have a service registered in the state DB but is not in policy.
+                warn!(target: AMGR, "service in DB not found in policy: {}", s_ent.name);
+            }
+        }
+
+        Ok(services)
+    }
+}
+
+// The auth service URI is of the form: <ZPR_AUTH_SCHEME>://<addr>:<port>/path
+//
+// Example: 'zpr-oauthrsa://[fd5a:5052:9090::88]:4000'
+//
+// The 'zpr-oauthrsa' scheme implies "https" and "/preauthorize" and "/authorize" endpoints.
+//
+// Currently "zpr-oauthrsa" is the only supported scheme and the service type of "auth"
+// implies this scheme.
+//
+// TODO: Eventually we need to expand zplc and the compiler to have richer set of
+// auth service types.
+//
+// TODO: The ph is passing the ASA info to the adapters as a socket-addr and the
+// mechanics of zpr-oauthrsa are built in or something.  This all needs a clean up.
+//
+// Errors:
+// - The only supported auth serice type requires a single scope, so you get an error
+//   if there are none or more than one.
+fn uri_for_service(
+    skind: &ServiceType,
+    addr: &IpAddr,
+    endpoints: &[Scope],
+) -> Result<String, VSError> {
+    let scheme = match skind {
+        ServiceType::Authentication => "zpr-oauthrsa",
+        _ => {
+            return Err(VSError::InternalError(
+                format!("unsupported service type for auth service URI: {skind:?}").into(),
+            ));
+        }
+    };
+
+    if endpoints.len() != 1 {
+        return Err(VSError::InternalError(
+            format!(
+                "auth service must have exactly one scope endpoint, not {}",
+                endpoints.len()
+            )
+            .into(),
+        ));
+    }
+
+    if let Some(portnum) = endpoints[0].port.as_ref() {
+        let url = match addr {
+            IpAddr::V4(a) => format!("{scheme}://{a}:{portnum}"),
+            IpAddr::V6(a) => format!("{scheme}://[{a}]:{portnum}"),
+        };
+        Ok(url)
+    } else {
+        Err(VSError::InternalError(
+            "auth service scope must have a single port defined".into(),
+        ))
     }
 }

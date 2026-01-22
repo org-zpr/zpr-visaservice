@@ -7,13 +7,13 @@ use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
 use libeval::actor::Actor;
-use zpr::vsapi_types::PacketDesc;
-use zpr::vsapi_types_writers::WriteTo;
+use zpr::vsapi_types::{PacketDesc, SockAddr, VisaOp};
+use zpr::write_to::WriteTo;
 
 use crate::assembly::Assembly;
 use crate::config;
@@ -165,7 +165,10 @@ impl VSHandleImpl {
     async fn do_visa_request(
         &self,
         args: vsapi::v_s_handle::VisaRequestParams,
+        timeout: Duration,
     ) -> Result<VisaDecision, (vsapi::ErrorCode, String)> {
+        let deadline = tokio::time::Instant::now() + timeout;
+
         let Some(requestor_ip) = self.node.get_zpr_addr() else {
             warn!(target: VSAPI, "visa_request called by node {:?} with no ZPR address assigned", self.node.get_cn());
             return Err((
@@ -226,21 +229,25 @@ impl VSHandleImpl {
 
         let (job, response_rx) = VisaRequestJob::new(requestor_ip.clone(), pdesc);
 
-        match self.asm.vreq_chan.send(job).await {
-            Ok(()) => (),
-            Err(e) => {
+        match tokio::time::timeout_at(deadline, self.asm.vreq_chan.send(job)).await {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => {
                 error!(target: VSAPI, "error enqueuing visa request: {}", e);
                 return Err((
                     vsapi::ErrorCode::Internal,
                     "internal error enqueuing visa request".to_string(),
                 ));
             }
-        }
+            Err(_) => {
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    format!("timeout enqueuing visa request"),
+                ));
+            }
+        };
 
-        // Now wait for a response (TODO: timeout?)
-        // This will fill in the api response.
-        match response_rx.await {
-            Ok(vr_result) => match vr_result {
+        match tokio::time::timeout_at(deadline, response_rx).await {
+            Ok(Ok(vr_result)) => match vr_result {
                 Ok(vd) => return Ok(vd),
                 Err(e) => {
                     return Err((
@@ -249,10 +256,16 @@ impl VSHandleImpl {
                     ));
                 }
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 return Err((
                     vsapi::ErrorCode::Internal,
                     format!("internal error receiving visa request response: {}", e),
+                ));
+            }
+            Err(_) => {
+                return Err((
+                    vsapi::ErrorCode::Internal,
+                    format!("timeout waiting for visa request response"),
                 ));
             }
         }
@@ -338,6 +351,9 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         };
 
         // We care about two params: zpr_addr and aaa_prefix.
+
+        // TODO: In next version of vsapi the AAA_PREFIX is going away and will instead be handed to the
+        // node by the visa service.
         let (node_zpr_addr, node_aaa_network) = match self.parse_my_connect_params(&parsed_params) {
             Ok((addr, cidr)) => (addr, cidr),
             Err(e) => {
@@ -527,10 +543,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // Ok, we have verified the credentials and checked with policy. Time to
         // update our state and return success.
 
-        // TODO: Is this AAA net valid? Is it in use by another node?
-        // Note that the AAA net is a prefix so it must not overlap any other AAA prefix
-        // in use.  When requesting visas, we allow requests from a nodes AAA net to an
-        // auth service.  We may want to track AAA prefix in redis for easy searching.
+        // TODO: aaa_prefix is going to be set by visa service.
         node_actor
             .add_attribute(Attribute::builder(key::AAA_NET).value(self.req_aaa_net.to_string()))
             .unwrap();
@@ -542,10 +555,6 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // first, then add_node will see the new version and should not allow the node to be added.
 
         // Note that the node may have services on it in addition to its node-ness.
-
-        // The node has a built in temporary(?) visa for communicating with the VS.
-        // The VS will create a "real" one and queue it to be sent to the node once
-        // it registers its VSS.
 
         // Since this is a new node and we do not yet support reconnects, make sure visa
         // table is clean for this node.
@@ -583,24 +592,127 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     /// The VS must generate a visa for VISA->VSS communications and hand it back to
     /// the node with this call.  Any pending visas for the node are handed back with this.
     ///
-    /// PENDING (TODO) - Recent change to vsapi allows visas to be sent back with this call.
     async fn register_vss(
         self: Rc<Self>,
-        _: vsapi::v_s_handle::RegisterVssParams,
-        _: vsapi::v_s_handle::RegisterVssResults,
+        params: vsapi::v_s_handle::RegisterVssParams,
+        mut res: vsapi::v_s_handle::RegisterVssResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "register_vss from {:?}", self.node.get_cn());
-        Err(capnp::Error::unimplemented(
-            "method v_s_handle::Server::register_vss not implemented".to_string(),
-        ))
+        let saddr_rdr = params.get()?.get_addr()?;
+
+        let node_zpr_addr = self.node.get_zpr_addr().unwrap();
+
+        let vss_sockaddr: SockAddr = match SockAddr::try_from(saddr_rdr) {
+            Ok(addr) => addr,
+            Err(e) => {
+                error!(target: VSAPI, "failed to convert addr arg to SockAddr: {}", e);
+                let res_builder = res.get().init_res();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::ParamError,
+                    "invalid sockaddr",
+                );
+                return Ok(());
+            }
+        };
+
+        // The socket addr address must match node address I think.
+        if vss_sockaddr.addr != *node_zpr_addr {
+            error!(target: VSAPI, "VSS socket address '{}' does not match node address '{}' for {:?}", vss_sockaddr.addr, node_zpr_addr, self.node.get_cn());
+            let res_builder = res.get().init_res();
+            let mut err_builder = res_builder.init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::ParamError,
+                "VSS socket address does not match node address",
+            );
+            return Ok(());
+        }
+
+        let saddr: SocketAddr = vss_sockaddr.into();
+        let amgr_asm = self.asm.clone();
+
+        let initial_visas = match self
+            .asm
+            .visa_mgr
+            .initial_visas_for_node(amgr_asm, node_zpr_addr, &saddr)
+            .await
+        {
+            Ok(visas) => visas,
+            Err(e) => {
+                error!(target: VSAPI, "failed to initialize node VSS for {:?}: {}", self.node.get_cn(), e);
+                let res_builder = res.get().init_res();
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "failed to initialize node VSS",
+                );
+                return Ok(());
+            }
+        };
+
+        let res_builder = res.get().init_res();
+        let mut ok_builder = res_builder.initn_ok(initial_visas.len() as u32);
+
+        for (i, visa) in initial_visas.iter().enumerate() {
+            let mut vop_builder = ok_builder.reborrow().get(i as u32);
+
+            let vop = VisaOp::Grant(visa.clone());
+            vop.write_to(&mut vop_builder);
+        }
+
+        // Now assume that our reply will make it to the node and mark the visas as installed.
+        //
+        // The node must assume that if it gets an error trying to call register_vss that
+        // there may be visas it is missing.  Since we don't have a way for the node to
+        // ask for its "installed" visas, for now node should call register_vss again.
+        //
+        // TODO: Improve vsapi by adding a way for node to request its installed visas.
+        // https://github.com/org-zpr/zpr-visaservice/issues/108
+
+        for visa in &initial_visas {
+            if let Err(e) = self
+                .asm
+                .visa_mgr
+                .visa_installed(visa.issuer_id, node_zpr_addr)
+                .await
+            {
+                warn!(target: VSAPI, "failed to mark visa {} as installed on {:?}: {}", visa.issuer_id, self.node.get_cn(), e);
+            }
+        }
+
+        // Finally, update DB with node vss
+        self.asm
+            .actor_mgr
+            .set_node_vss(&self.node.get_zpr_addr().unwrap(), &saddr)
+            .await
+            .unwrap_or_else(|e| {
+                error!(target: VSAPI, "failed to set VSS for node {:?}: {}", self.node.get_cn(), e);
+            });
+
+        // As we return we kick off the vss worker for this node which will send list of services.
+        // but will not work until visas are installed... So start it with small delay.
+        if let Err(e) =
+            self.asm
+                .vss_mgr
+                .start_vss_worker(self.asm.clone(), &saddr, config::VSS_START_DELAY)
+        {
+            warn!(target: VSAPI, "failed to start VSS worker for node {:?}: {}", self.node.get_cn(), e);
+            // TODO: how to recover here?
+        }
+
+        Ok(())
     }
 
     async fn authorize_connect(
         self: Rc<Self>,
-        _: vsapi::v_s_handle::AuthorizeConnectParams,
-        _: vsapi::v_s_handle::AuthorizeConnectResults,
+        _params: vsapi::v_s_handle::AuthorizeConnectParams,
+        mut _results: vsapi::v_s_handle::AuthorizeConnectResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "authorize_connect from {:?}", self.node.get_cn());
+
         Err(capnp::Error::unimplemented(
             "method v_s_handle::Server::authorize_connect not implemented".to_string(),
         ))
@@ -693,14 +805,17 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             .get_zpr_addr()
             .expect("programming error - node must have an address");
 
-        match self.do_visa_request(args).await {
+        match self
+            .do_visa_request(args, config::DEFAULT_VISA_REQ_TIMEOUT)
+            .await
+        {
             Ok(decision) => match decision {
                 VisaDecision::Allow(visa) => {
                     let res_builder = response.get().init_resp();
                     let mut visa_bldr = res_builder.init_allow();
                     visa.write_to(&mut visa_bldr);
 
-                    // At this point visa service assumes the visa is installed.
+                    // Set visa as installed in our state
                     if let Err(e) = self
                         .asm
                         .visa_mgr

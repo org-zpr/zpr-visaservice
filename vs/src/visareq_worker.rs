@@ -19,15 +19,18 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use futures::future::FutureExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::assembly::Assembly;
 use crate::error::VSError;
+use crate::logging::targets::VISAREQ;
+
 use libeval::actor::Actor;
 use libeval::eval::{EvalContext, EvalDecision};
 use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
@@ -65,6 +68,62 @@ pub async fn launch_arena(
         .await;
 }
 
+/// Helper function to submit a visa request job and wait for the decision.
+///
+/// ### Errors
+/// - [VSError::Timeout] if the request times out.
+pub async fn request_visa_wait_response(
+    asm: &Assembly,
+    requesting_node: &IpAddr,
+    pkt_data: PacketDesc,
+    timeout: Duration,
+) -> Result<VisaDecision, VSError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
+
+    match tokio::time::timeout_at(deadline, asm.vreq_chan.send(job)).await {
+        Ok(Ok(())) => (),
+        Ok(Err(e)) => {
+            error!(target: VISAREQ, "error enqueuing visa request: {}", e);
+            return Err(VSError::InternalError(
+                "internal error enqueuing visa request".to_string(),
+            ));
+        }
+        Err(_) => {
+            error!(
+                target: VISAREQ,
+                "timeout enqueuing visa request after {:?}",
+                timeout
+            );
+            return Err(VSError::Timeout(format!(
+                "timeout enqueuing visa request after {:?}",
+                timeout
+            )));
+        }
+    };
+
+    // Now wait for a response with the remaining timeout.
+    // This will fill in the api response.
+
+    match tokio::time::timeout_at(deadline, response_rx).await {
+        Ok(Ok(vr_result)) => match vr_result {
+            Ok(vd) => Ok(vd),
+            Err(e) => Err(VSError::InternalError(format!(
+                "internal error processing visa request: {}",
+                e
+            ))),
+        },
+        Ok(Err(e)) => Err(VSError::InternalError(format!(
+            "internal error receiving visa request response: {}",
+            e
+        ))),
+        Err(_) => Err(VSError::Timeout(format!(
+            "timeout waiting for visa request response after {:?}",
+            timeout
+        ))),
+    }
+}
+
 impl VisaRequestJob {
     pub fn new(
         requesting_node: IpAddr,
@@ -86,7 +145,7 @@ impl VisaRequestJob {
     pub fn complete(self, result: VisaRequestResult) {
         if let Err(_) = self.response_chan.send(result) {
             // Means the requester has dropped the receiver.
-            warn!(
+            warn!(target: VISAREQ,
                 "failed to enqueue visa request result for {:?}",
                 self.requesting_node
             );
@@ -103,6 +162,7 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
     job.complete(vrr);
 }
 
+/// Run visa request.
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
     let (source_actor, dest_actor) = get_actors(&asm, job).await?;
     let source_actor = match source_actor {
@@ -119,7 +179,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
     let decision = match ctx.eval_request(&source_actor, &dest_actor, &job.packet_desc) {
         Ok(decision) => decision,
         Err(e) => {
-            debug!(
+            debug!(target: VISAREQ,
                 "error evaluating visa request from {:?}: {}",
                 job.requesting_node, e
             );
@@ -130,7 +190,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
 
     match decision {
         EvalDecision::NoMatch(message) => {
-            info!(
+            info!(target: VISAREQ,
                 "visa request from {:?} denied (no match): {}",
                 job.requesting_node, message
             );
@@ -145,7 +205,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             {
                 Ok(visa) => Ok(VisaDecision::Allow(visa)),
                 Err(e) => {
-                    debug!(
+                    debug!(target: VISAREQ,
                         "error creating visa for request from {:?}: {}",
                         job.requesting_node, e
                     );
@@ -154,7 +214,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             }
         }
         EvalDecision::Deny(_hits) => {
-            info!(
+            info!(target: VISAREQ,
                 "visa request from {:?} denied by policy",
                 job.requesting_node
             );
@@ -182,7 +242,7 @@ async fn get_actors(
     {
         Ok(maybe_actor) => maybe_actor,
         Err(e) => {
-            debug!(
+            debug!(target: VISAREQ,
                 "error retrieving source actor for visa request from {:?}: {e}",
                 job.requesting_node
             );
@@ -199,7 +259,7 @@ async fn get_actors(
     {
         Ok(maybe_actor) => maybe_actor,
         Err(e) => {
-            debug!(
+            debug!(target: VISAREQ,
                 "error retrieving dest actor for visa request from {:?}: {e}",
                 job.requesting_node
             );
