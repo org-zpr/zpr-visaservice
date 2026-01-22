@@ -109,3 +109,108 @@ fn hash_for_policy(policy: &Policy) -> Result<String, DBError> {
     let phash = hex::encode(dig);
     Ok(phash)
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::db::db_fake::FakeDb;
+    use bytes::Bytes;
+    use std::time::Duration;
+    use zpr::policy::v1 as policy_capnp;
+
+    fn make_policy(created: &str, version: u64, metadata: Option<&str>) -> Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy_bldr = msg.init_root::<policy_capnp::policy::Builder>();
+            policy_bldr.set_created(created);
+            policy_bldr.set_version(version);
+            if let Some(md) = metadata {
+                policy_bldr.set_metadata(md);
+            } else {
+                policy_bldr.set_metadata("");
+            }
+        }
+        let mut bytes = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        Policy::new_from_policy_bytes(Bytes::copy_from_slice(&bytes)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_set_current_policy_initial_write() {
+        let db = Arc::new(FakeDb::new());
+        let repo = PolicyRepo::new(db.clone());
+        let policy = make_policy("2024-01-01T00:00:00Z", 1, Some("meta"));
+
+        let updated = repo.set_current_policy(&policy, false).await.unwrap();
+        assert!(updated);
+
+        let phash = db
+            .hget("policy:current", "phash")
+            .await
+            .unwrap()
+            .unwrap();
+        let blob_key = format!("{KEY_POLICIES}:{phash}:blob");
+        let stored = db.get_bin(&blob_key).await.unwrap();
+        assert_eq!(stored, policy.get_serialized().as_ref());
+    }
+
+    #[tokio::test]
+    async fn test_set_current_policy_no_change() {
+        let db = Arc::new(FakeDb::new());
+        let repo = PolicyRepo::new(db);
+        let policy = make_policy("2024-01-01T00:00:00Z", 2, Some("meta"));
+
+        let updated = repo.set_current_policy(&policy, false).await.unwrap();
+        assert!(updated);
+        let updated = repo.set_current_policy(&policy, false).await.unwrap();
+        assert!(!updated);
+    }
+
+    #[tokio::test]
+    async fn test_set_current_policy_force_overwrite() {
+        let db = Arc::new(FakeDb::new());
+        let repo = PolicyRepo::new(db);
+        let policy = make_policy("2024-01-01T00:00:00Z", 3, Some("meta"));
+
+        let updated = repo.set_current_policy(&policy, false).await.unwrap();
+        assert!(updated);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let updated = repo.set_current_policy(&policy, true).await.unwrap();
+        assert!(updated);
+    }
+
+    #[tokio::test]
+    async fn test_set_current_policy_missing_fields() {
+        let db = Arc::new(FakeDb::new());
+        let repo = PolicyRepo::new(db);
+        let policy = Policy::new_empty();
+
+        let err = repo.set_current_policy(&policy, false).await.unwrap_err();
+        match err {
+            DBError::MissingRequired(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_current_policy_rewrites_when_blob_missing() {
+        let db = Arc::new(FakeDb::new());
+        let repo = PolicyRepo::new(db.clone());
+        let policy = make_policy("2024-01-01T00:00:00Z", 4, Some("meta"));
+
+        let updated = repo.set_current_policy(&policy, false).await.unwrap();
+        assert!(updated);
+
+        let phash = db
+            .hget("policy:current", "phash")
+            .await
+            .unwrap()
+            .unwrap();
+        db.del(&format!("{KEY_POLICIES}:{phash}:blob"))
+            .await
+            .unwrap();
+
+        let updated = repo.set_current_policy(&policy, false).await.unwrap();
+        assert!(updated);
+    }
+}
