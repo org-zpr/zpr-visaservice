@@ -304,3 +304,113 @@ fn actor_services_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}:services")
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::db::db_fake::FakeDb;
+    use crate::db::DbConnection;
+    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
+    use std::time::Duration;
+
+    fn make_actor(role: &str, zpr_addr: &str, services: &[&str]) -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(role),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("actor-1"),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(zpr_addr),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SERVICES)
+                    .expires_in(Duration::from_secs(3600))
+                    .values(services.iter().copied()),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder("identity.foo")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("id-1"),
+            )
+            .unwrap();
+        actor.add_identity_key(usize::MAX, "identity.foo").unwrap();
+        actor
+    }
+
+    #[tokio::test]
+    async fn test_add_and_get_actor_roundtrip() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+        let actor = make_actor(ROLE_NODE, "fd5a:5052::1", &["svc:one", "svc%two"]);
+        let zpr_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
+
+        repo.add_actor(&actor).await.unwrap();
+        let loaded = repo.get_actor_by_zpr_addr(&zpr_addr).await.unwrap();
+
+        assert!(loaded.is_node());
+        assert_eq!(loaded.get_cn(), Some("actor-1"));
+        assert_eq!(loaded.get_zpr_addr(), Some(&zpr_addr));
+        assert!(loaded.provides("svc:one"));
+        assert!(loaded.provides("svc%two"));
+        assert_eq!(loaded.get_identity(), Some(vec!["id-1".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn test_list_services_decodes_names() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+        let actor = make_actor(ROLE_ADAPTER, "fd5a:5052::2", &["svc:one", "svc%two"]);
+        let zpr_addr: IpAddr = "fd5a:5052::2".parse().unwrap();
+
+        repo.add_actor(&actor).await.unwrap();
+        let mut services = repo.list_services().await.unwrap();
+        services.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let names: Vec<String> = services.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names, vec!["svc%two".to_string(), "svc:one".to_string()]);
+        for entry in services {
+            assert_eq!(entry.zpr_addr, zpr_addr);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rm_actor_cleans_up_keys() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db.clone());
+        let actor = make_actor(ROLE_NODE, "fd5a:5052::3", &["svc:one"]);
+        let zpr_addr: IpAddr = "fd5a:5052::3".parse().unwrap();
+
+        repo.add_actor(&actor).await.unwrap();
+        repo.rm_actor_by_zpr_addr(&zpr_addr).await.unwrap();
+
+        let base_key = actor_key_for(&zpr_addr);
+        let attrs_key = attrs_key_for(&zpr_addr);
+        let services_key = actor_services_key_for(&zpr_addr);
+        let svc_key = service_key_for("svc:one");
+
+        assert!(!db.exists(&base_key).await.unwrap());
+        assert!(!db.exists(&attrs_key).await.unwrap());
+        assert!(!db.exists(&services_key).await.unwrap());
+        assert!(!db.exists(&svc_key).await.unwrap());
+
+        let nodes = db.smembers(KEY_NODES).await.unwrap();
+        assert!(!nodes.contains(&zpr_addr.to_string()));
+    }
+}
