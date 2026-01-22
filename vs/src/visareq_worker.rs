@@ -19,7 +19,7 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::StreamExt;
 use futures::future::FutureExt;
@@ -73,15 +73,15 @@ pub async fn launch_arena(
 /// ### Errors
 /// - [VSError::Timeout] if the request times out.
 pub async fn request_visa_wait_response(
-    asm: Arc<Assembly>,
+    asm: &Assembly,
     requesting_node: &IpAddr,
     pkt_data: PacketDesc,
     timeout: Duration,
 ) -> Result<VisaDecision, VSError> {
-    let start = Instant::now();
+    let deadline = tokio::time::Instant::now() + timeout;
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
 
-    match tokio::time::timeout(timeout, asm.vreq_chan.send(job)).await {
+    match tokio::time::timeout_at(deadline, asm.vreq_chan.send(job)).await {
         Ok(Ok(())) => (),
         Ok(Err(e)) => {
             error!(target: VISAREQ, "error enqueuing visa request: {}", e);
@@ -104,17 +104,8 @@ pub async fn request_visa_wait_response(
 
     // Now wait for a response with the remaining timeout.
     // This will fill in the api response.
-    let remaining = timeout
-        .checked_sub(start.elapsed())
-        .unwrap_or_else(|| Duration::from_secs(0));
-    if remaining.is_zero() {
-        return Err(VSError::Timeout(format!(
-            "timeout waiting for visa request response after {:?}",
-            timeout
-        )));
-    }
 
-    match tokio::time::timeout(remaining, response_rx).await {
+    match tokio::time::timeout_at(deadline, response_rx).await {
         Ok(Ok(vr_result)) => match vr_result {
             Ok(vd) => Ok(vd),
             Err(e) => Err(VSError::InternalError(format!(

@@ -89,7 +89,7 @@ impl VssMgr {
     /// Error is returned if a worker is already running for the node. If that happens caller
     /// should use [VssMgr::get_handle] to obtain the existing handle and then call [VssHandle::stop].
     /// Note that it takes time for handle to respond to stop and clear out state in this manager.
-    pub async fn start_vss_worker(
+    pub fn start_vss_worker(
         &self,
         asm: Arc<Assembly>,
         vss_addr: &SocketAddr,

@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
@@ -165,10 +165,9 @@ impl VSHandleImpl {
     async fn do_visa_request(
         &self,
         args: vsapi::v_s_handle::VisaRequestParams,
+        timeout: Duration,
     ) -> Result<VisaDecision, (vsapi::ErrorCode, String)> {
-        // TODO: pass in timeout.
-        let timeout = config::DEFAULT_VISA_REQ_TIMEOUT;
-        let start = Instant::now();
+        let deadline = tokio::time::Instant::now() + timeout;
 
         let Some(requestor_ip) = self.node.get_zpr_addr() else {
             warn!(target: VSAPI, "visa_request called by node {:?} with no ZPR address assigned", self.node.get_cn());
@@ -230,7 +229,7 @@ impl VSHandleImpl {
 
         let (job, response_rx) = VisaRequestJob::new(requestor_ip.clone(), pdesc);
 
-        match tokio::time::timeout(timeout, self.asm.vreq_chan.send(job)).await {
+        match tokio::time::timeout_at(deadline, self.asm.vreq_chan.send(job)).await {
             Ok(Ok(())) => (),
             Ok(Err(e)) => {
                 error!(target: VSAPI, "error enqueuing visa request: {}", e);
@@ -247,19 +246,7 @@ impl VSHandleImpl {
             }
         };
 
-        // Now wait for a response with remaining timeout.
-        // This will fill in the api response.
-        let remaining = timeout
-            .checked_sub(start.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
-        if remaining.is_zero() {
-            return Err((
-                vsapi::ErrorCode::Internal,
-                format!("timeout waiting for visa request response"),
-            ));
-        }
-
-        match tokio::time::timeout(remaining, response_rx).await {
+        match tokio::time::timeout_at(deadline, response_rx).await {
             Ok(Ok(vr_result)) => match vr_result {
                 Ok(vd) => return Ok(vd),
                 Err(e) => {
@@ -707,11 +694,10 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
 
         // As we return we kick off the vss worker for this node which will send list of services.
         // but will not work until visas are installed... So start it with small delay.
-        if let Err(e) = self
-            .asm
-            .vss_mgr
-            .start_vss_worker(self.asm.clone(), &saddr, config::VSS_START_DELAY)
-            .await
+        if let Err(e) =
+            self.asm
+                .vss_mgr
+                .start_vss_worker(self.asm.clone(), &saddr, config::VSS_START_DELAY)
         {
             warn!(target: VSAPI, "failed to start VSS worker for node {:?}: {}", self.node.get_cn(), e);
             // TODO: how to recover here?
@@ -819,7 +805,10 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             .get_zpr_addr()
             .expect("programming error - node must have an address");
 
-        match self.do_visa_request(args).await {
+        match self
+            .do_visa_request(args, config::DEFAULT_VISA_REQ_TIMEOUT)
+            .await
+        {
             Ok(decision) => match decision {
                 VisaDecision::Allow(visa) => {
                     let res_builder = response.get().init_resp();
