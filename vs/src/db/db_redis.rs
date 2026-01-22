@@ -28,13 +28,19 @@ impl DbConnection for RedisDb {
         Ok(())
     }
 
+    async fn get(&self, key: &str) -> DbResult<Option<String>> {
+        let mut conn = self.mgr.clone();
+        let res: Option<String> = conn.get(key).await?;
+        Ok(res)
+    }
+
     async fn set_bin(&self, key: &str, value: &[u8]) -> DbResult<()> {
         let mut conn = self.mgr.clone();
         let _: () = conn.set(key, value).await?;
         Ok(())
     }
 
-    async fn set_ex(&self, key: &str, value: &[u8], seconds: u64) -> DbResult<()> {
+    async fn set_bin_ex(&self, key: &str, value: &[u8], seconds: u64) -> DbResult<()> {
         let mut conn = self.mgr.clone();
         let _: () = conn.set_ex(key, value, seconds).await?;
         Ok(())

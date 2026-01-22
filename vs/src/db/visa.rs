@@ -160,7 +160,7 @@ impl VisaRepo {
         // visa:<ID>:blob -> <capn proto bytes>
         //
         self.db
-            .set_ex(&blob_key_for_visa(visa_id), &words, expiration_seconds)
+            .set_bin_ex(&blob_key_for_visa(visa_id), &words, expiration_seconds)
             .await?;
 
         let key_visa = visa_key_for_visa(visa_id);

@@ -1,6 +1,7 @@
 //! General database functions.
 
 mod actor;
+mod db_fake;
 mod db_redis;
 mod node;
 mod policy;
@@ -27,8 +28,9 @@ pub type DbResult<T> = redis::RedisResult<T>;
 pub trait DbConnection: Send + Sync {
     async fn exists(&self, key: &str) -> DbResult<bool>;
     async fn set(&self, key: &str, value: &str) -> DbResult<()>;
+    async fn get(&self, key: &str) -> DbResult<Option<String>>;
     async fn set_bin(&self, key: &str, value: &[u8]) -> DbResult<()>;
-    async fn set_ex(&self, key: &str, value: &[u8], seconds: u64) -> DbResult<()>;
+    async fn set_bin_ex(&self, key: &str, value: &[u8], seconds: u64) -> DbResult<()>;
     async fn get_bin(&self, key: &str) -> DbResult<Vec<u8>>;
     async fn del(&self, key: &str) -> DbResult<()>;
     async fn smembers(&self, key: &str) -> DbResult<HashSet<String>>;
