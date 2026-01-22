@@ -31,6 +31,7 @@ use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
+use crate::db::DbConnection;
 use crate::error::VSError;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
@@ -110,14 +111,14 @@ async fn main() -> std::process::ExitCode {
     let res: String = vk_conn.ping().await.expect("failed to ping ValKey server");
     info!(target: MAIN, "connected to ValKey at {vk_uri}, ping response: {}", res);
 
-    let db_handle = db::Handle::new(vk_conn);
+    let db_handle = Arc::new(db::RedisDb::new(vk_conn));
 
     let mut js = JoinSet::new();
 
     let (vreq_tx, vreq_rx) =
         mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
 
-    let actor_mgr = match create_actor_mgr(&db_handle, cfg.get_vs_addr()).await {
+    let actor_mgr = match create_actor_mgr(db_handle.clone(), &cfg.get_vs_addr()).await {
         Ok(adb) => adb,
         Err(e) => {
             error!(target: MAIN, "failed to instantiate actor database: {}", e);
@@ -126,7 +127,8 @@ async fn main() -> std::process::ExitCode {
     };
 
     let policy_mgr_res =
-        PolicyMgr::new_with_initial_policy(initial_policy, db::PolicyRepo::new(&db_handle)).await;
+        PolicyMgr::new_with_initial_policy(initial_policy, db::PolicyRepo::new(db_handle.clone()))
+            .await;
     let policy_mgr = match policy_mgr_res {
         Ok(pm) => pm,
         Err(e) => {
@@ -135,7 +137,7 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    let visa_repo = db::VisaRepo::new(&db_handle);
+    let visa_repo = db::VisaRepo::new(db_handle.clone());
 
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
@@ -195,8 +197,11 @@ async fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-async fn create_actor_mgr(dbh: &db::Handle, vs_addr: IpAddr) -> Result<ActorMgr, VSError> {
-    let adb = db::ActorRepo::new(dbh);
+async fn create_actor_mgr(
+    dbh: Arc<dyn DbConnection>,
+    vs_addr: &IpAddr,
+) -> Result<ActorMgr, VSError> {
+    let adb = db::ActorRepo::new(dbh.clone());
     let ndb = db::NodeRepo::new(dbh);
     let mgr = ActorMgr::new(adb, ndb);
     // We are the visa service. As we say so it shall be.

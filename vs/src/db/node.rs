@@ -12,13 +12,13 @@
 
 use libeval::actor::Actor;
 use libeval::attribute::key;
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::debug;
 
-use crate::db::{Handle, ZAddr};
+use crate::db::{DbConnection, DbOp, ZAddr};
 use crate::error::DBError;
 use crate::logging::targets::REDIS;
 
@@ -38,12 +38,12 @@ struct SAWrapper {
 }
 
 pub struct NodeRepo {
-    db: Handle,
+    db: Arc<dyn DbConnection>,
 }
 
 impl NodeRepo {
-    pub fn new(db: &Handle) -> Self {
-        NodeRepo { db: db.clone() }
+    pub fn new(db: Arc<dyn DbConnection>) -> Self {
+        NodeRepo { db }
     }
 
     /// Add/overwrite the node state record. This assumes this is a new node being added.
@@ -52,15 +52,13 @@ impl NodeRepo {
     /// Nodes authenticate with the visa service directly.
     /// One node is also the visa service's dock.
     pub async fn add_node(&self, node: &Node) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-
         //
         // node:<ZADDR> -> string, json formatted Node struct.
         //
-        let _: () = vk_conn
+        self.db
             .set(
                 &node_key_for_node(&node.zpr_addr),
-                serde_json::to_string(&node)?,
+                &serde_json::to_string(&node)?,
             )
             .await?;
         Ok(())
@@ -72,18 +70,17 @@ impl NodeRepo {
         node_zpr_addr: &IpAddr,
         vss_addr: &SocketAddr,
     ) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let does_exist: bool = vk_conn.exists(&node_key_for_node(node_zpr_addr)).await?;
+        let does_exist: bool = self.db.exists(&node_key_for_node(node_zpr_addr)).await?;
         if !does_exist {
             return Err(DBError::NotFound(format!(
                 "node not found for address {}",
                 node_zpr_addr
             )));
         }
-        let _: () = vk_conn
+        self.db
             .set(
                 &vss_key_for_node(node_zpr_addr),
-                serde_json::to_string(&SAWrapper {
+                &serde_json::to_string(&SAWrapper {
                     vss_addr: *vss_addr,
                 })?,
             )
@@ -97,15 +94,13 @@ impl NodeRepo {
         node_addr: &IpAddr,
         adapter_addr: &IpAddr,
     ) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-
         //
         // node:<ZADDR>:connections -> SET [ <zpr_address as string> ]
         //
-        let _: () = vk_conn
+        self.db
             .sadd(
-                connections_key_for_node(node_addr),
-                adapter_addr.to_string(),
+                &connections_key_for_node(node_addr),
+                &adapter_addr.to_string(),
             )
             .await?;
         Ok(())
@@ -113,9 +108,9 @@ impl NodeRepo {
 
     /// Get the list of adapter addresses connected to the given node.
     pub async fn get_connected_adapters(&self, node_addr: &IpAddr) -> Result<Vec<IpAddr>, DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let adapter_zaddr_strings: Vec<String> = vk_conn
-            .smembers(connections_key_for_node(node_addr))
+        let adapter_zaddr_strings = self
+            .db
+            .smembers(&connections_key_for_node(node_addr))
             .await?;
         // convert to IpAddr - bad parse causes error
         let mut adapter_addrs = Vec::new();
@@ -135,20 +130,15 @@ impl NodeRepo {
 
     /// Removes all the ancillary node tables.
     pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-
-        let _: () = redis::pipe()
-            .atomic()
-            .cmd("DEL")
-            .arg(&connections_key_for_node(node_addr))
-            .arg(&todo_vinstall_key_for_node(node_addr))
-            .arg(&todo_vrevoke_key_for_node(node_addr))
-            .arg(&todo_crevoke_key_for_node(node_addr))
-            .arg(&node_key_for_node(node_addr))
-            .arg(&vss_key_for_node(node_addr))
-            .query_async(&mut vk_conn)
-            .await?;
-
+        let ops = vec![
+            DbOp::Del(connections_key_for_node(node_addr)),
+            DbOp::Del(todo_vinstall_key_for_node(node_addr)),
+            DbOp::Del(todo_vrevoke_key_for_node(node_addr)),
+            DbOp::Del(todo_crevoke_key_for_node(node_addr)),
+            DbOp::Del(node_key_for_node(node_addr)),
+            DbOp::Del(vss_key_for_node(node_addr)),
+        ];
+        self.db.atomic_pipeline(&ops).await?;
         debug!(target: REDIS, "removed node state for node at addr {}", node_addr);
         Ok(())
     }

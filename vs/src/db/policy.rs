@@ -9,11 +9,11 @@
 
 use libeval::policy::Policy;
 use openssl::hash::{Hasher, MessageDigest};
-use redis::AsyncCommands;
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::db;
-use crate::db::Handle;
+use crate::db::{DbConnection, DbOp};
 use crate::error::DBError;
 use crate::logging::targets::REDIS;
 
@@ -21,12 +21,12 @@ const KEY_POLICIES: &str = "policies";
 const KEY_POLICY: &str = "policy";
 
 pub struct PolicyRepo {
-    db: Handle,
+    db: Arc<dyn DbConnection>,
 }
 
 impl PolicyRepo {
-    pub fn new(db: &Handle) -> Self {
-        PolicyRepo { db: db.clone() }
+    pub fn new(db: Arc<dyn DbConnection>) -> Self {
+        PolicyRepo { db }
     }
 
     /// Set the current policy information into the database.
@@ -39,13 +39,13 @@ impl PolicyRepo {
         policy: &Policy,
         force_overwrite: bool,
     ) -> Result<bool, DBError> {
-        let mut vk_conn = self.db.conn.clone();
         let phash = hash_for_policy(policy)?;
-        let maybe_curhash: Option<String> = vk_conn.hget("policy:current", "phash").await?;
+        let maybe_curhash: Option<String> = self.db.hget("policy:current", "phash").await?;
         let curhash = maybe_curhash.unwrap_or_default();
         let exists: bool = (curhash == phash)
-            && vk_conn
-                .exists(format!("{KEY_POLICIES}:{phash}:blob"))
+            && self
+                .db
+                .exists(&format!("{KEY_POLICIES}:{phash}:blob"))
                 .await?;
         let mut updated = false;
         if !exists || force_overwrite {
@@ -55,8 +55,8 @@ impl PolicyRepo {
             //
             // policies:<PHASH>:blob -> <capn proto bytes>
             //
-            let _: () = vk_conn
-                .set(format!("{KEY_POLICIES}:{phash}:blob"), pbuf.as_ref())
+            self.db
+                .set_bin(&format!("{KEY_POLICIES}:{phash}:blob"), pbuf.as_ref())
                 .await?;
 
             let key_current = format!("{KEY_POLICY}:current");
@@ -66,12 +66,19 @@ impl PolicyRepo {
             //          |- phash -> the string <PHASH> value
             //          |- ctime -> string
             //
-            let _: () = redis::pipe()
-                .atomic()
-                .hset(&key_current, "phash", &phash)
-                .hset(&key_current, "ctime", db::gen_timestamp())
-                .query_async(&mut vk_conn)
-                .await?;
+            let ops = vec![
+                DbOp::HSet {
+                    hash_key: key_current.clone(),
+                    field: "phash".to_string(),
+                    value: phash.clone(),
+                },
+                DbOp::HSet {
+                    hash_key: key_current.clone(),
+                    field: "ctime".to_string(),
+                    value: db::gen_timestamp(),
+                },
+            ];
+            self.db.atomic_pipeline(&ops).await?;
 
             updated = true;
         } else {
