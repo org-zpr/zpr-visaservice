@@ -215,3 +215,233 @@ fn uri_for_service(
         ))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::db::{ActorRepo, FakeDb, NodeRepo};
+    use libeval::attribute::{key, Attribute, ROLE_ADAPTER, ROLE_NODE};
+    use std::net::{IpAddr, SocketAddr};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn make_node_actor(zpr_addr: &str, cn: &str, substrate: &str) -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_NODE),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(cn),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(zpr_addr),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SUBSTRATE_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(substrate),
+            )
+            .unwrap();
+        actor
+    }
+
+    fn make_adapter_actor(zpr_addr: &str, cn: &str) -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_ADAPTER),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(cn),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(zpr_addr),
+            )
+            .unwrap();
+        actor
+    }
+
+    fn make_mgr() -> ActorMgr {
+        let db = Arc::new(FakeDb::new());
+        let actor_repo = ActorRepo::new(db.clone());
+        let node_repo = NodeRepo::new(db);
+        ActorMgr::new(actor_repo, node_repo)
+    }
+
+    #[tokio::test]
+    async fn test_add_node_and_set_vss() {
+        let mgr = make_mgr();
+        let actor = make_node_actor(
+            "fd5a:5052::1",
+            "node-1",
+            "[fd5a:5052::100]:1234",
+        );
+        let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
+
+        mgr.add_node(&actor).await.unwrap();
+        let loaded = mgr.get_actor_by_zpr_addr(&node_addr).await.unwrap();
+        assert!(matches!(loaded, Some(a) if a.is_node()));
+
+        let vss_addr: SocketAddr = "[fd5a:5052::200]:4000".parse().unwrap();
+        mgr.set_node_vss(&node_addr, &vss_addr).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_add_node_rejects_non_node() {
+        let mgr = make_mgr();
+        let actor = make_adapter_actor("fd5a:5052::2", "adapter-1");
+
+        let err = mgr.add_node(&actor).await.unwrap_err();
+        match err {
+            VSError::InternalError(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_actor_by_zpr_addr_none() {
+        let mgr = make_mgr();
+        let addr: IpAddr = "fd5a:5052::3".parse().unwrap();
+
+        let result = mgr.get_actor_by_zpr_addr(&addr).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_add_adapter_via_node_tracks_connections() {
+        let mgr = make_mgr();
+        let node_actor = make_node_actor(
+            "fd5a:5052::4",
+            "node-2",
+            "[fd5a:5052::101]:1234",
+        );
+        let adapter_actor = make_adapter_actor("fd5a:5052::5", "adapter-2");
+        let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
+        let adapter_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
+
+        mgr.add_node(&node_actor).await.unwrap();
+        mgr.add_adapter_via_node(&adapter_actor, &node_addr)
+            .await
+            .unwrap();
+
+        let adapters = mgr.get_adapters_connected_to_node(&node_addr).await.unwrap();
+        assert!(adapters.contains(&adapter_addr));
+
+        let loaded = mgr.get_actor_by_zpr_addr(&adapter_addr).await.unwrap();
+        assert!(matches!(loaded, Some(a) if !a.is_node()));
+    }
+
+    #[tokio::test]
+    async fn test_remove_actor_by_zpr_addr() {
+        let mgr = make_mgr();
+        let node_actor = make_node_actor(
+            "fd5a:5052::6",
+            "node-3",
+            "[fd5a:5052::102]:1234",
+        );
+        let adapter_actor = make_adapter_actor("fd5a:5052::7", "adapter-3");
+        let node_addr: IpAddr = "fd5a:5052::6".parse().unwrap();
+        let adapter_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
+
+        mgr.add_node(&node_actor).await.unwrap();
+        mgr.add_adapter_via_node(&adapter_actor, &node_addr)
+            .await
+            .unwrap();
+
+        mgr.remove_actor_by_zpr_addr(&adapter_addr)
+            .await
+            .unwrap();
+        let loaded = mgr.get_actor_by_zpr_addr(&adapter_addr).await.unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_node_vss_missing_node() {
+        let mgr = make_mgr();
+        let node_addr: IpAddr = "fd5a:5052::8".parse().unwrap();
+        let vss_addr: SocketAddr = "[fd5a:5052::201]:4000".parse().unwrap();
+
+        let err = mgr.set_node_vss(&node_addr, &vss_addr).await.unwrap_err();
+        match err {
+            VSError::DBError(DBError::NotFound(_)) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_uri_for_service_ipv6_auth() {
+        let addr: IpAddr = "fd5a:5052::9".parse().unwrap();
+        let endpoints = [Scope {
+            protocol: 0,
+            flag: None,
+            port: Some(4000),
+            port_range: None,
+        }];
+
+        let uri = uri_for_service(&ServiceType::Authentication, &addr, &endpoints).unwrap();
+        assert_eq!(uri, "zpr-oauthrsa://[fd5a:5052::9]:4000");
+    }
+
+    #[test]
+    fn test_uri_for_service_errors() {
+        let addr: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let endpoints = [Scope {
+            protocol: 0,
+            flag: None,
+            port: Some(4000),
+            port_range: None,
+        }];
+
+        let err = uri_for_service(&ServiceType::Regular, &addr, &endpoints).unwrap_err();
+        match err {
+            VSError::InternalError(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+
+        let err = uri_for_service(&ServiceType::Authentication, &addr, &[]).unwrap_err();
+        match err {
+            VSError::InternalError(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+
+        let endpoints_missing_port = [Scope {
+            protocol: 0,
+            flag: None,
+            port: None,
+            port_range: None,
+        }];
+        let err = uri_for_service(
+            &ServiceType::Authentication,
+            &addr,
+            &endpoints_missing_port,
+        )
+        .unwrap_err();
+        match err {
+            VSError::InternalError(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+}

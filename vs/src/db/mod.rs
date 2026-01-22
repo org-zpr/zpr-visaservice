@@ -13,6 +13,9 @@ pub use node::{Node, NodeRepo};
 pub use policy::PolicyRepo;
 pub use visa::{NodeVisaState, VisaRepo};
 
+#[cfg(test)]
+pub use db_fake::FakeDb;
+
 use chrono::Utc;
 use percent_encoding::CONTROLS;
 use percent_encoding::{AsciiSet, percent_decode_str, utf8_percent_encode};
@@ -28,7 +31,10 @@ pub type DbResult<T> = redis::RedisResult<T>;
 pub trait DbConnection: Send + Sync {
     async fn exists(&self, key: &str) -> DbResult<bool>;
     async fn set(&self, key: &str, value: &str) -> DbResult<()>;
+
+    #[allow(dead_code)]
     async fn get(&self, key: &str) -> DbResult<Option<String>>;
+
     async fn set_bin(&self, key: &str, value: &[u8]) -> DbResult<()>;
     async fn set_bin_ex(&self, key: &str, value: &[u8], seconds: u64) -> DbResult<()>;
     async fn get_bin(&self, key: &str) -> DbResult<Vec<u8>>;

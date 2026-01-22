@@ -8,6 +8,7 @@ use tokio::time::Instant;
 
 use crate::db::{DbConnection, DbOp, DbResult};
 
+#[allow(dead_code)]
 pub struct FakeDb {
     store: DashMap<String, Entry>,
 
@@ -15,11 +16,13 @@ pub struct FakeDb {
     lock: RwLock<()>,
 }
 
+#[allow(dead_code)]
 struct Entry {
     value: FakeDbValue,
     exp: Instant,
 }
 
+#[allow(dead_code)]
 enum FakeDbValue {
     Str(String),
     Bin(Vec<u8>),
@@ -28,6 +31,7 @@ enum FakeDbValue {
 }
 
 impl FakeDb {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         FakeDb {
             store: DashMap::new(),
@@ -37,6 +41,7 @@ impl FakeDb {
 }
 
 impl Entry {
+    #[allow(dead_code)]
     fn new(value: FakeDbValue) -> Self {
         Entry {
             value,
@@ -44,6 +49,7 @@ impl Entry {
         }
     }
 
+    #[allow(dead_code)]
     fn new_ex(value: FakeDbValue, seconds: u64) -> Self {
         Entry {
             value,
