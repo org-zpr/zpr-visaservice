@@ -234,6 +234,8 @@ impl VisaRepo {
         Ok(())
     }
 
+    /// Expired visas will have been removed from redis, so if we find any empty
+    /// keys they are just skipped.
     pub async fn get_visas_for_node_by_state(
         &self,
         node_addr: &IpAddr,
@@ -263,9 +265,18 @@ impl VisaRepo {
 
                 // Load the visa blob
                 let blob_key = blob_key_for_visa(visa_id);
-                let visa_blob: Vec<u8> = self.db.get_bin(&blob_key).await?;
-                let visa = Visa::from_capnp_bytes(&visa_blob)?;
-                visas.push(visa);
+                match self.db.get_bin(&blob_key).await {
+                    Ok(visa_blob) => {
+                        let visa = Visa::from_capnp_bytes(&visa_blob)?;
+                        visas.push(visa);
+                    }
+                    Err(err) if err.kind() == redis::ErrorKind::TypeError => {
+                        // Missing/expired visa blob. Skip it but keep other visas.
+                        warn!(target: REDIS, "visa blob missing for key {}", blob_key);
+                        continue;
+                    }
+                    Err(err) => return Err(err.into()),
+                }
             }
         }
 
@@ -291,4 +302,173 @@ fn visa_key_for_visa(visa_id: u64) -> String {
 fn node_visa_key_for_visa(node_addr: &IpAddr, visa_id: u64) -> String {
     let zaddr = ZAddr::from(node_addr);
     format!("{KEY_NODEVISA}:{zaddr}:{visa_id}")
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::db::DbConnection;
+    use crate::db::db_fake::FakeDb;
+    use std::time::SystemTime;
+    use zpr::vsapi_types::{DockPep, EndpointT, KeySet, TcpUdpPep};
+
+    fn make_visa(visa_id: u64, expires_in: Duration) -> Visa {
+        Visa::new(
+            visa_id,
+            0,
+            SystemTime::now() + expires_in,
+            "fd5a:5052::10".parse().unwrap(),
+            "fd5a:5052::20".parse().unwrap(),
+            DockPep::TCP(TcpUdpPep::new(1234, 443, EndpointT::Server)),
+            KeySet::new(b"ingress", b"egress"),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_store_and_get_visas_by_state() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db.clone());
+        let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
+        let visa = make_visa(42, Duration::from_secs(60));
+
+        repo.store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        assert!(db.exists(&blob_key_for_visa(42)).await.unwrap());
+        assert!(db.exists(&visa_key_for_visa(42)).await.unwrap());
+        assert!(
+            db.exists(&node_visa_key_for_visa(&node_addr, 42))
+                .await
+                .unwrap()
+        );
+
+        let pending = repo
+            .get_visas_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].issuer_id, 42);
+
+        repo.update_node_visa_state(&node_addr, 42, NodeVisaState::Installed)
+            .await
+            .unwrap();
+        let pending = repo
+            .get_visas_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        assert!(pending.is_empty());
+
+        let installed = repo
+            .get_visas_for_node_by_state(&node_addr, NodeVisaState::Installed)
+            .await
+            .unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].issuer_id, 42);
+    }
+
+    #[tokio::test]
+    async fn test_update_node_visa_state_missing() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+        let node_addr: IpAddr = "fd5a:5052::2".parse().unwrap();
+
+        let err = repo
+            .update_node_visa_state(&node_addr, 99, NodeVisaState::Installed)
+            .await
+            .unwrap_err();
+        match err {
+            DBError::NotFound(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_clear_node_state_only_removes_nodevisa() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db.clone());
+        let node_addr: IpAddr = "fd5a:5052::3".parse().unwrap();
+        let visa = make_visa(7, Duration::from_secs(60));
+
+        repo.store_visa(&node_addr, &visa, NodeVisaState::Installed)
+            .await
+            .unwrap();
+
+        repo.clear_node_state(&node_addr).await.unwrap();
+
+        assert!(
+            !db.exists(&node_visa_key_for_visa(&node_addr, 7))
+                .await
+                .unwrap()
+        );
+        assert!(db.exists(&blob_key_for_visa(7)).await.unwrap());
+        assert!(db.exists(&visa_key_for_visa(7)).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_store_visa_rejects_expired() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+        let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
+        let mut visa = make_visa(8, Duration::from_secs(1));
+        visa.expires = SystemTime::now() - Duration::from_secs(1);
+
+        let err = repo
+            .store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+            .await
+            .unwrap_err();
+        match err {
+            DBError::InvalidData(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_update_node_visa_state_after_expiry() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+        let node_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
+        let visa = make_visa(9, Duration::from_secs(5));
+
+        repo.store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        tokio::time::advance(Duration::from_secs(6)).await;
+
+        let err = repo
+            .update_node_visa_state(&node_addr, 9, NodeVisaState::Installed)
+            .await
+            .unwrap_err();
+        match err {
+            DBError::NotFound(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_visas_skips_missing_blobs() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db.clone());
+        let node_addr: IpAddr = "fd5a:5052::6".parse().unwrap();
+        let visa_a = make_visa(10, Duration::from_secs(60));
+        let visa_b = make_visa(11, Duration::from_secs(60));
+
+        repo.store_visa(&node_addr, &visa_a, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        repo.store_visa(&node_addr, &visa_b, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        db.del(&blob_key_for_visa(10)).await.unwrap();
+
+        let visas = repo
+            .get_visas_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        assert_eq!(visas.len(), 1);
+        assert_eq!(visas[0].issuer_id, 11);
+    }
 }
