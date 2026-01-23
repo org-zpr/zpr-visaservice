@@ -231,8 +231,8 @@ fn todo_crevoke_key_for_node(addr: &IpAddr) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::db::db_fake::FakeDb;
     use crate::db::DbConnection;
+    use crate::db::db_fake::FakeDb;
     use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE};
     use std::time::Duration;
 
@@ -434,9 +434,7 @@ mod test {
         let vss_addr: SocketAddr = "[fd5a:5052::200]:8080".parse().unwrap();
 
         repo.add_node(&node).await.unwrap();
-        repo.set_node_vss(&node.zpr_addr, &vss_addr)
-            .await
-            .unwrap();
+        repo.set_node_vss(&node.zpr_addr, &vss_addr).await.unwrap();
 
         let stored_node = db
             .get(&node_key_for_node(&node.zpr_addr))
@@ -464,10 +462,7 @@ mod test {
         let vss_addr: SocketAddr = "[fd5a:5052::200]:8080".parse().unwrap();
         let node_addr: IpAddr = "fd5a:5052::2".parse().unwrap();
 
-        let err = repo
-            .set_node_vss(&node_addr, &vss_addr)
-            .await
-            .unwrap_err();
+        let err = repo.set_node_vss(&node_addr, &vss_addr).await.unwrap_err();
         match err {
             DBError::NotFound(_) => {}
             other => panic!("unexpected error: {:?}", other),
@@ -502,9 +497,7 @@ mod test {
         let vss_addr: SocketAddr = "[fd5a:5052::200]:8080".parse().unwrap();
 
         repo.add_node(&node).await.unwrap();
-        repo.set_node_vss(&node.zpr_addr, &vss_addr)
-            .await
-            .unwrap();
+        repo.set_node_vss(&node.zpr_addr, &vss_addr).await.unwrap();
         repo.add_connected_adater(&node.zpr_addr, &"fd5a:5052::20".parse().unwrap())
             .await
             .unwrap();

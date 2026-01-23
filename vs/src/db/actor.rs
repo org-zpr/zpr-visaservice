@@ -308,8 +308,8 @@ fn actor_services_key_for(zpr_addr: &IpAddr) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::db::db_fake::FakeDb;
     use crate::db::DbConnection;
+    use crate::db::db_fake::FakeDb;
     use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
     use std::time::Duration;
 

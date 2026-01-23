@@ -144,11 +144,7 @@ mod test {
         let updated = repo.set_current_policy(&policy, false).await.unwrap();
         assert!(updated);
 
-        let phash = db
-            .hget("policy:current", "phash")
-            .await
-            .unwrap()
-            .unwrap();
+        let phash = db.hget("policy:current", "phash").await.unwrap().unwrap();
         let blob_key = format!("{KEY_POLICIES}:{phash}:blob");
         let stored = db.get_bin(&blob_key).await.unwrap();
         assert_eq!(stored, policy.get_serialized().as_ref());
@@ -201,11 +197,7 @@ mod test {
         let updated = repo.set_current_policy(&policy, false).await.unwrap();
         assert!(updated);
 
-        let phash = db
-            .hget("policy:current", "phash")
-            .await
-            .unwrap()
-            .unwrap();
+        let phash = db.hget("policy:current", "phash").await.unwrap().unwrap();
         db.del(&format!("{KEY_POLICIES}:{phash}:blob"))
             .await
             .unwrap();

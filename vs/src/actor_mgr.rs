@@ -220,7 +220,7 @@ fn uri_for_service(
 mod test {
     use super::*;
     use crate::db::{ActorRepo, FakeDb, NodeRepo};
-    use libeval::attribute::{key, Attribute, ROLE_ADAPTER, ROLE_NODE};
+    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
     use std::net::{IpAddr, SocketAddr};
     use std::sync::Arc;
     use std::time::Duration;
@@ -294,11 +294,7 @@ mod test {
     #[tokio::test]
     async fn test_add_node_and_set_vss() {
         let mgr = make_mgr();
-        let actor = make_node_actor(
-            "fd5a:5052::1",
-            "node-1",
-            "[fd5a:5052::100]:1234",
-        );
+        let actor = make_node_actor("fd5a:5052::1", "node-1", "[fd5a:5052::100]:1234");
         let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
 
         mgr.add_node(&actor).await.unwrap();
@@ -333,11 +329,7 @@ mod test {
     #[tokio::test]
     async fn test_add_adapter_via_node_tracks_connections() {
         let mgr = make_mgr();
-        let node_actor = make_node_actor(
-            "fd5a:5052::4",
-            "node-2",
-            "[fd5a:5052::101]:1234",
-        );
+        let node_actor = make_node_actor("fd5a:5052::4", "node-2", "[fd5a:5052::101]:1234");
         let adapter_actor = make_adapter_actor("fd5a:5052::5", "adapter-2");
         let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
@@ -347,7 +339,10 @@ mod test {
             .await
             .unwrap();
 
-        let adapters = mgr.get_adapters_connected_to_node(&node_addr).await.unwrap();
+        let adapters = mgr
+            .get_adapters_connected_to_node(&node_addr)
+            .await
+            .unwrap();
         assert!(adapters.contains(&adapter_addr));
 
         let loaded = mgr.get_actor_by_zpr_addr(&adapter_addr).await.unwrap();
@@ -357,11 +352,7 @@ mod test {
     #[tokio::test]
     async fn test_remove_actor_by_zpr_addr() {
         let mgr = make_mgr();
-        let node_actor = make_node_actor(
-            "fd5a:5052::6",
-            "node-3",
-            "[fd5a:5052::102]:1234",
-        );
+        let node_actor = make_node_actor("fd5a:5052::6", "node-3", "[fd5a:5052::102]:1234");
         let adapter_actor = make_adapter_actor("fd5a:5052::7", "adapter-3");
         let node_addr: IpAddr = "fd5a:5052::6".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
@@ -371,9 +362,7 @@ mod test {
             .await
             .unwrap();
 
-        mgr.remove_actor_by_zpr_addr(&adapter_addr)
-            .await
-            .unwrap();
+        mgr.remove_actor_by_zpr_addr(&adapter_addr).await.unwrap();
         let loaded = mgr.get_actor_by_zpr_addr(&adapter_addr).await.unwrap();
         assert!(loaded.is_none());
     }
@@ -433,12 +422,8 @@ mod test {
             port: None,
             port_range: None,
         }];
-        let err = uri_for_service(
-            &ServiceType::Authentication,
-            &addr,
-            &endpoints_missing_port,
-        )
-        .unwrap_err();
+        let err = uri_for_service(&ServiceType::Authentication, &addr, &endpoints_missing_port)
+            .unwrap_err();
         match err {
             VSError::InternalError(_) => {}
             other => panic!("unexpected error: {:?}", other),
