@@ -303,11 +303,23 @@ impl ActorRepo {
         for set_key in set_keys {
             let addr_strs: HashSet<String> = self.db.smembers(&set_key).await?;
             for addr_str in addr_strs {
-                let a_key = attrs_key_for_zaddr(&ZAddr(addr_str));
+                // The sets hold IP addresses as strings (not munged addresses)
+                let addr: IpAddr = match addr_str.parse() {
+                    Ok(addr) => addr,
+                    Err(err) => {
+                        warn!(target: REDIS, "invalid zpr address in set {}: {} ({})", set_key, addr_str, err);
+                        continue;
+                    }
+                };
+                let a_key = attrs_key_for(&addr);
 
-                // Pull the CN attribute out of the actor hash
-                if let Some(cn_val) = self.db.hget(&a_key, key::CN).await? {
-                    cns.push(cn_val);
+                // Pull the CN attribute out of the actor hash (which is JSON Attribute)
+                if let Some(cn_attr_json) = self.db.hget(&a_key, key::CN).await? {
+                    let cn_attr: Attribute = serde_json::from_str(&cn_attr_json)?;
+                    match cn_attr.get_single_value() {
+                        Ok(cn_val) => cns.push(cn_val.to_string()),
+                        Err(_) => cns.push(cn_attr.get_value_as_string()),
+                    }
                 } else {
                     warn!(target: REDIS, "missing CN attribute for actor at key = {a_key}");
                 }
@@ -324,10 +336,6 @@ fn actor_key_for(zpr_addr: &IpAddr) -> String {
 
 fn attrs_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
-    format!("{KEY_ACTOR}:{zaddr}:attrs")
-}
-
-fn attrs_key_for_zaddr(zaddr: &ZAddr) -> String {
     format!("{KEY_ACTOR}:{zaddr}:attrs")
 }
 
@@ -363,6 +371,47 @@ mod test {
                 Attribute::builder(key::CN)
                     .expires_in(Duration::from_secs(3600))
                     .value("actor-1"),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(zpr_addr),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SERVICES)
+                    .expires_in(Duration::from_secs(3600))
+                    .values(services.iter().copied()),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder("identity.foo")
+                    .expires_in(Duration::from_secs(3600))
+                    .value("id-1"),
+            )
+            .unwrap();
+        actor.add_identity_key(usize::MAX, "identity.foo").unwrap();
+        actor
+    }
+
+    fn make_actor_with_cn(role: &str, zpr_addr: &str, services: &[&str], cn: &str) -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(role),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(cn),
             )
             .unwrap();
         actor
@@ -448,5 +497,31 @@ mod test {
 
         let nodes = db.smembers(KEY_NODES).await.unwrap();
         assert!(!nodes.contains(&zpr_addr.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_actor_cns_with_role_filter() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+
+        let node_actor = make_actor_with_cn(ROLE_NODE, "fd5a:5052::10", &["svc:one"], "node-cn");
+        let adapter_actor =
+            make_actor_with_cn(ROLE_ADAPTER, "fd5a:5052::20", &["svc:two"], "adapter-cn");
+
+        repo.add_actor(&node_actor).await.unwrap();
+        repo.add_actor(&adapter_actor).await.unwrap();
+
+        let mut all_cns = repo.list_actor_cns(None).await.unwrap();
+        all_cns.sort();
+        assert_eq!(
+            all_cns,
+            vec!["adapter-cn".to_string(), "node-cn".to_string()]
+        );
+
+        let node_cns = repo.list_actor_cns(Some(Role::Node)).await.unwrap();
+        assert_eq!(node_cns, vec!["node-cn".to_string()]);
+
+        let adapter_cns = repo.list_actor_cns(Some(Role::Adapter)).await.unwrap();
+        assert_eq!(adapter_cns, vec!["adapter-cn".to_string()]);
     }
 }

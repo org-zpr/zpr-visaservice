@@ -494,4 +494,30 @@ mod test {
         assert_eq!(visas.len(), 1);
         assert_eq!(visas[0].issuer_id, 11);
     }
+
+    #[tokio::test]
+    async fn test_list_visa_ids_after_store() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+        let node_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
+
+        let visa_a = make_visa(1, Duration::from_secs(60));
+        let visa_b = make_visa(5, Duration::from_secs(60));
+        let visa_c = make_visa(42, Duration::from_secs(60));
+
+        repo.store_visa(&node_addr, &visa_a, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        repo.store_visa(&node_addr, &visa_b, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        repo.store_visa(&node_addr, &visa_c, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        let mut ids = repo.list_visa_ids().await.unwrap();
+        ids.sort_unstable();
+
+        assert_eq!(ids, vec![1, 5, 42]);
+    }
 }
