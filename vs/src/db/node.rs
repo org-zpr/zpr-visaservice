@@ -12,13 +12,13 @@
 
 use libeval::actor::Actor;
 use libeval::attribute::key;
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::debug;
 
-use crate::db::{Handle, ZAddr};
+use crate::db::{DbConnection, DbOp, ZAddr};
 use crate::error::DBError;
 use crate::logging::targets::REDIS;
 
@@ -38,12 +38,12 @@ struct SAWrapper {
 }
 
 pub struct NodeRepo {
-    db: Handle,
+    db: Arc<dyn DbConnection>,
 }
 
 impl NodeRepo {
-    pub fn new(db: &Handle) -> Self {
-        NodeRepo { db: db.clone() }
+    pub fn new(db: Arc<dyn DbConnection>) -> Self {
+        NodeRepo { db }
     }
 
     /// Add/overwrite the node state record. This assumes this is a new node being added.
@@ -52,15 +52,13 @@ impl NodeRepo {
     /// Nodes authenticate with the visa service directly.
     /// One node is also the visa service's dock.
     pub async fn add_node(&self, node: &Node) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-
         //
         // node:<ZADDR> -> string, json formatted Node struct.
         //
-        let _: () = vk_conn
+        self.db
             .set(
                 &node_key_for_node(&node.zpr_addr),
-                serde_json::to_string(&node)?,
+                &serde_json::to_string(&node)?,
             )
             .await?;
         Ok(())
@@ -72,18 +70,17 @@ impl NodeRepo {
         node_zpr_addr: &IpAddr,
         vss_addr: &SocketAddr,
     ) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let does_exist: bool = vk_conn.exists(&node_key_for_node(node_zpr_addr)).await?;
+        let does_exist: bool = self.db.exists(&node_key_for_node(node_zpr_addr)).await?;
         if !does_exist {
             return Err(DBError::NotFound(format!(
                 "node not found for address {}",
                 node_zpr_addr
             )));
         }
-        let _: () = vk_conn
+        self.db
             .set(
                 &vss_key_for_node(node_zpr_addr),
-                serde_json::to_string(&SAWrapper {
+                &serde_json::to_string(&SAWrapper {
                     vss_addr: *vss_addr,
                 })?,
             )
@@ -97,15 +94,13 @@ impl NodeRepo {
         node_addr: &IpAddr,
         adapter_addr: &IpAddr,
     ) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-
         //
         // node:<ZADDR>:connections -> SET [ <zpr_address as string> ]
         //
-        let _: () = vk_conn
+        self.db
             .sadd(
-                connections_key_for_node(node_addr),
-                adapter_addr.to_string(),
+                &connections_key_for_node(node_addr),
+                &adapter_addr.to_string(),
             )
             .await?;
         Ok(())
@@ -113,9 +108,9 @@ impl NodeRepo {
 
     /// Get the list of adapter addresses connected to the given node.
     pub async fn get_connected_adapters(&self, node_addr: &IpAddr) -> Result<Vec<IpAddr>, DBError> {
-        let mut vk_conn = self.db.conn.clone();
-        let adapter_zaddr_strings: Vec<String> = vk_conn
-            .smembers(connections_key_for_node(node_addr))
+        let adapter_zaddr_strings = self
+            .db
+            .smembers(&connections_key_for_node(node_addr))
             .await?;
         // convert to IpAddr - bad parse causes error
         let mut adapter_addrs = Vec::new();
@@ -135,20 +130,15 @@ impl NodeRepo {
 
     /// Removes all the ancillary node tables.
     pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), DBError> {
-        let mut vk_conn = self.db.conn.clone();
-
-        let _: () = redis::pipe()
-            .atomic()
-            .cmd("DEL")
-            .arg(&connections_key_for_node(node_addr))
-            .arg(&todo_vinstall_key_for_node(node_addr))
-            .arg(&todo_vrevoke_key_for_node(node_addr))
-            .arg(&todo_crevoke_key_for_node(node_addr))
-            .arg(&node_key_for_node(node_addr))
-            .arg(&vss_key_for_node(node_addr))
-            .query_async(&mut vk_conn)
-            .await?;
-
+        let ops = vec![
+            DbOp::Del(connections_key_for_node(node_addr)),
+            DbOp::Del(todo_vinstall_key_for_node(node_addr)),
+            DbOp::Del(todo_vrevoke_key_for_node(node_addr)),
+            DbOp::Del(todo_crevoke_key_for_node(node_addr)),
+            DbOp::Del(node_key_for_node(node_addr)),
+            DbOp::Del(vss_key_for_node(node_addr)),
+        ];
+        self.db.atomic_pipeline(&ops).await?;
         debug!(target: REDIS, "removed node state for node at addr {}", node_addr);
         Ok(())
     }
@@ -236,4 +226,295 @@ fn todo_vrevoke_key_for_node(addr: &IpAddr) -> String {
 fn todo_crevoke_key_for_node(addr: &IpAddr) -> String {
     let zaddr = ZAddr::from(addr);
     format!("node:{zaddr}:todo:crevoke")
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::db::DbConnection;
+    use crate::db::db_fake::FakeDb;
+    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE};
+    use std::time::Duration;
+
+    fn make_node() -> Node {
+        Node {
+            ctime: SystemTime::UNIX_EPOCH,
+            zpr_addr: "fd5a:5052::1".parse().unwrap(),
+            cn: "node-1".to_string(),
+            substrate_addr: "[fd5a:5052::100]:1234".parse().unwrap(),
+        }
+    }
+
+    fn make_node_actor_base() -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_NODE),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("node-1"),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("fd5a:5052::1"),
+            )
+            .unwrap();
+        actor
+    }
+
+    fn make_node_actor() -> Actor {
+        let mut actor = make_node_actor_base();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SUBSTRATE_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("[fd5a:5052::100]:1234"),
+            )
+            .unwrap();
+        actor
+    }
+
+    #[test]
+    fn test_new_from_node_actor_success() {
+        let actor = make_node_actor();
+        let node = Node::new_from_node_actor(&actor).unwrap();
+        assert_eq!(node.cn, "node-1");
+        assert_eq!(node.zpr_addr, "fd5a:5052::1".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            node.substrate_addr,
+            "[fd5a:5052::100]:1234".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_new_from_node_actor_non_node_role() {
+        let mut actor = make_node_actor();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_ADAPTER),
+            )
+            .unwrap();
+        let err = Node::new_from_node_actor(&actor).unwrap_err();
+        match err {
+            DBError::InvalidData(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_from_node_actor_missing_cn() {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_NODE),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("fd5a:5052::1"),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SUBSTRATE_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("[fd5a:5052::100]:1234"),
+            )
+            .unwrap();
+
+        let err = Node::new_from_node_actor(&actor).unwrap_err();
+        match err {
+            DBError::MissingRequired(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_from_node_actor_missing_zpr_addr() {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_NODE),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("node-1"),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SUBSTRATE_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("[fd5a:5052::100]:1234"),
+            )
+            .unwrap();
+
+        let err = Node::new_from_node_actor(&actor).unwrap_err();
+        match err {
+            DBError::MissingRequired(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_from_node_actor_missing_substrate_addr() {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_NODE),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("node-1"),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("fd5a:5052::1"),
+            )
+            .unwrap();
+
+        let err = Node::new_from_node_actor(&actor).unwrap_err();
+        match err {
+            DBError::MissingRequired(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_from_node_actor_invalid_substrate_addr() {
+        let mut actor = make_node_actor_base();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SUBSTRATE_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("not-a-socket-addr"),
+            )
+            .unwrap();
+
+        let err = Node::new_from_node_actor(&actor).unwrap_err();
+        match err {
+            DBError::InvalidData(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_node_repo_add_and_set_vss() {
+        let db = Arc::new(FakeDb::new());
+        let repo = NodeRepo::new(db.clone());
+        let node = make_node();
+        let vss_addr: SocketAddr = "[fd5a:5052::200]:8080".parse().unwrap();
+
+        repo.add_node(&node).await.unwrap();
+        repo.set_node_vss(&node.zpr_addr, &vss_addr).await.unwrap();
+
+        let stored_node = db
+            .get(&node_key_for_node(&node.zpr_addr))
+            .await
+            .unwrap()
+            .unwrap();
+        let parsed_node: Node = serde_json::from_str(&stored_node).unwrap();
+        assert_eq!(parsed_node.cn, node.cn);
+        assert_eq!(parsed_node.zpr_addr, node.zpr_addr);
+        assert_eq!(parsed_node.substrate_addr, node.substrate_addr);
+
+        let stored_vss = db
+            .get(&vss_key_for_node(&node.zpr_addr))
+            .await
+            .unwrap()
+            .unwrap();
+        let parsed_vss: SAWrapper = serde_json::from_str(&stored_vss).unwrap();
+        assert_eq!(parsed_vss.vss_addr, vss_addr);
+    }
+
+    #[tokio::test]
+    async fn test_node_repo_set_vss_missing_node() {
+        let db = Arc::new(FakeDb::new());
+        let repo = NodeRepo::new(db);
+        let vss_addr: SocketAddr = "[fd5a:5052::200]:8080".parse().unwrap();
+        let node_addr: IpAddr = "fd5a:5052::2".parse().unwrap();
+
+        let err = repo.set_node_vss(&node_addr, &vss_addr).await.unwrap_err();
+        match err {
+            DBError::NotFound(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_node_repo_connected_adapters_roundtrip() {
+        let db = Arc::new(FakeDb::new());
+        let repo = NodeRepo::new(db);
+        let node_addr: IpAddr = "fd5a:5052::3".parse().unwrap();
+        let adapter_a: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let adapter_b: IpAddr = "fd5a:5052::11".parse().unwrap();
+
+        repo.add_connected_adater(&node_addr, &adapter_a)
+            .await
+            .unwrap();
+        repo.add_connected_adater(&node_addr, &adapter_b)
+            .await
+            .unwrap();
+
+        let mut adapters = repo.get_connected_adapters(&node_addr).await.unwrap();
+        adapters.sort();
+        assert_eq!(adapters, vec![adapter_a, adapter_b]);
+    }
+
+    #[tokio::test]
+    async fn test_node_repo_remove_node_clears_keys() {
+        let db = Arc::new(FakeDb::new());
+        let repo = NodeRepo::new(db.clone());
+        let node = make_node();
+        let vss_addr: SocketAddr = "[fd5a:5052::200]:8080".parse().unwrap();
+
+        repo.add_node(&node).await.unwrap();
+        repo.set_node_vss(&node.zpr_addr, &vss_addr).await.unwrap();
+        repo.add_connected_adater(&node.zpr_addr, &"fd5a:5052::20".parse().unwrap())
+            .await
+            .unwrap();
+
+        repo.remove_node(&node.zpr_addr).await.unwrap();
+
+        let keys = vec![
+            node_key_for_node(&node.zpr_addr),
+            vss_key_for_node(&node.zpr_addr),
+            connections_key_for_node(&node.zpr_addr),
+            todo_vinstall_key_for_node(&node.zpr_addr),
+            todo_vrevoke_key_for_node(&node.zpr_addr),
+            todo_crevoke_key_for_node(&node.zpr_addr),
+        ];
+        for key in keys {
+            let exists = db.exists(&key).await.unwrap();
+            assert!(!exists, "expected key to be deleted: {}", key);
+        }
+    }
 }

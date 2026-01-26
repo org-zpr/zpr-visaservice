@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use crate::actor_mgr::ActorMgr;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
-use crate::db;
+use crate::db::DbConnection;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 use crate::vss_mgr::VssMgr;
@@ -17,7 +17,7 @@ pub struct Assembly {
     pub cc: ConnectionControl,
     pub policy_mgr: PolicyMgr,
     pub actor_mgr: Arc<ActorMgr>,
-    pub state_db: db::Handle, // TODO: May not actually need this if db_handle is in all the required "managers".
+    pub state_db: Arc<dyn DbConnection>, // TODO: May not actually need this if db_handle is in all the required "managers".
     pub vreq_chan: mpsc::Sender<crate::visareq_worker::VisaRequestJob>,
     pub visa_mgr: VisaMgr,
     pub vss_mgr: VssMgr,

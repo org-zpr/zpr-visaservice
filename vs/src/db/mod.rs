@@ -1,26 +1,70 @@
 //! General database functions.
 
 mod actor;
+mod db_fake;
+mod db_redis;
 mod node;
 mod policy;
 mod visa;
 
 pub use actor::ActorRepo;
+pub use db_redis::RedisDb;
 pub use node::{Node, NodeRepo};
 pub use policy::PolicyRepo;
 pub use visa::{NodeVisaState, VisaRepo};
 
+#[cfg(test)]
+pub use db_fake::FakeDb;
+
 use chrono::Utc;
 use percent_encoding::CONTROLS;
 use percent_encoding::{AsciiSet, percent_decode_str, utf8_percent_encode};
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 // Encode '%' and ':' for KeyString type strings.
 const KEY_ESCAPES: &AsciiSet = &CONTROLS.add(b'%').add(b':');
 
-#[derive(Clone)]
-pub struct Handle {
-    conn: redis::aio::ConnectionManager,
+pub type DbResult<T> = redis::RedisResult<T>;
+
+#[async_trait::async_trait]
+pub trait DbConnection: Send + Sync {
+    async fn exists(&self, key: &str) -> DbResult<bool>;
+    async fn set(&self, key: &str, value: &str) -> DbResult<()>;
+
+    #[allow(dead_code)]
+    async fn get(&self, key: &str) -> DbResult<Option<String>>;
+
+    async fn set_bin(&self, key: &str, value: &[u8]) -> DbResult<()>;
+    async fn set_bin_ex(&self, key: &str, value: &[u8], seconds: u64) -> DbResult<()>;
+    async fn get_bin(&self, key: &str) -> DbResult<Vec<u8>>;
+    async fn del(&self, key: &str) -> DbResult<()>;
+    async fn smembers(&self, key: &str) -> DbResult<HashSet<String>>;
+    async fn hget(&self, key: &str, field: &str) -> DbResult<Option<String>>;
+    async fn hgetall(&self, key: String) -> DbResult<HashMap<String, String>>;
+    async fn hset(&self, key: &str, field: &str, value: &str) -> DbResult<()>;
+    async fn hset_nx(&self, key: &str, field: &str, value: &str) -> DbResult<()>;
+    async fn hset_multiple(&self, key: &str, field_values: &[(&str, &str)]) -> DbResult<()>;
+    async fn sadd(&self, key: &str, member: &str) -> DbResult<()>;
+    async fn incr(&self, key: &str, by: u64) -> DbResult<u64>;
+    async fn expire(&self, key: &str, seconds: i64) -> DbResult<()>;
+
+    async fn atomic_pipeline(&self, ops: &[DbOp]) -> DbResult<()>;
+
+    async fn scan_match_all(&self, pattern: String) -> DbResult<Vec<String>>;
+}
+
+pub enum DbOp {
+    Del(String),
+    SRem {
+        set_key: String,
+        member: String,
+    },
+    HSet {
+        hash_key: String,
+        field: String,
+        value: String,
+    },
 }
 
 /// In the redis, we sometimes need to use a ZPR address as part of a key.
@@ -132,11 +176,4 @@ impl KeyString {
 pub fn gen_timestamp() -> String {
     let now = Utc::now();
     now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-impl Handle {
-    /// Create a new database handle from a redis connection manager.
-    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
-        Handle { conn }
-    }
 }
