@@ -13,6 +13,7 @@
 
 use libeval::actor::Actor;
 use libeval::attribute::Attribute;
+use libeval::attribute::key;
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -26,6 +27,11 @@ const KEY_ACTOR: &str = "actor";
 const KEY_SERVICE: &str = "service";
 const KEY_NODES: &str = "nodes";
 const KEY_ADAPTERS: &str = "adapters";
+
+pub enum Role {
+    Node,
+    Adapter,
+}
 
 pub struct ActorRepo {
     db: Arc<dyn DbConnection>,
@@ -283,6 +289,32 @@ impl ActorRepo {
         }
         Ok(actor)
     }
+
+    /// This uses our "nodes" and "adapters" sets to list the CN values of all connected actors.
+    pub async fn list_actor_cns(&self, by_roles: Option<Role>) -> Result<Vec<String>, DBError> {
+        let mut cns = Vec::new();
+
+        let set_keys = match by_roles {
+            Some(Role::Node) => vec![KEY_NODES.to_string()],
+            Some(Role::Adapter) => vec![KEY_ADAPTERS.to_string()],
+            None => vec![KEY_NODES.to_string(), KEY_ADAPTERS.to_string()],
+        };
+
+        for set_key in set_keys {
+            let addr_strs: HashSet<String> = self.db.smembers(&set_key).await?;
+            for addr_str in addr_strs {
+                let a_key = attrs_key_for_zaddr(&ZAddr(addr_str));
+
+                // Pull the CN attribute out of the actor hash
+                if let Some(cn_val) = self.db.hget(&a_key, key::CN).await? {
+                    cns.push(cn_val);
+                } else {
+                    warn!(target: REDIS, "missing CN attribute for actor at key = {a_key}");
+                }
+            }
+        }
+        Ok(cns)
+    }
 }
 
 fn actor_key_for(zpr_addr: &IpAddr) -> String {
@@ -292,6 +324,10 @@ fn actor_key_for(zpr_addr: &IpAddr) -> String {
 
 fn attrs_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
+    format!("{KEY_ACTOR}:{zaddr}:attrs")
+}
+
+fn attrs_key_for_zaddr(zaddr: &ZAddr) -> String {
     format!("{KEY_ACTOR}:{zaddr}:attrs")
 }
 

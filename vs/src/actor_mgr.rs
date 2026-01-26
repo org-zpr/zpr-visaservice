@@ -159,6 +159,12 @@ impl ActorMgr {
 
         Ok(services)
     }
+
+    /// Get the list of connectioned actor CN values, optionally filtered by role.
+    pub async fn list_actor_cns(&self, by_role: Option<db::Role>) -> Result<Vec<String>, VSError> {
+        let cns = self.actor_db.list_actor_cns(by_role).await?;
+        Ok(cns)
+    }
 }
 
 // The auth service URI is of the form: <ZPR_AUTH_SCHEME>://<addr>:<port>/path

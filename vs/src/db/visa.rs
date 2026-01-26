@@ -282,6 +282,29 @@ impl VisaRepo {
 
         Ok(visas)
     }
+
+    /// Copy all the visa IDs into a vec.
+    pub async fn list_visa_ids(&self) -> Result<Vec<u64>, DBError> {
+        let visa_keys = self.db.scan_match_all(format!("{KEY_VISA}:[0-9]*")).await?;
+        let mut visa_ids = Vec::new();
+        for key in &visa_keys {
+            let parts: Vec<&str> = key.rsplitn(2, ':').collect();
+            if parts.len() != 2 {
+                warn!(target: REDIS, "malformed visa key: {}", key);
+                continue;
+            }
+            let visa_id: u64 = match parts[0].parse() {
+                Err(_) => {
+                    // TODO: Should we just crash here?
+                    warn!(target: REDIS, "invalid visa ID in visa key: {}, skipping entry", key);
+                    continue;
+                }
+                Ok(id) => id,
+            };
+            visa_ids.push(visa_id);
+        }
+        Ok(visa_ids)
+    }
 }
 
 // Get number of seconds until the given SystemTime or zero if in the past.

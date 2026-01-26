@@ -2,15 +2,15 @@
 
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use axum::{
     Json,
     Router,
     //routing::post,
-    extract::{Json as EJson, Path as EPath, Query, Request},
+    extract::{Json as EJson, Path as EPath, Query, Request, State},
     //extract::Form,
     http::StatusCode,
     response::IntoResponse,
@@ -23,7 +23,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio_native_tls::{
     TlsAcceptor,
@@ -31,13 +31,22 @@ use tokio_native_tls::{
 };
 
 use crate::assembly::Assembly;
+use crate::db::Role;
 use crate::logging::targets::HTADMIN;
+
 use admin_api_types::admin_api_types::{
     ActorDescriptor, AuthRevokeDescriptor, ListEntry, NodeRecordBrief, PolicyBundle, Revokes,
     ServiceDescriptor, VisaDescriptor,
 };
 
-type SharedState = Arc<RwLock<AdminState>>;
+// Must use tokio RwLock here becuase we need state to be Send.
+type SharedState = Arc<tokio::sync::RwLock<AdminState>>;
+
+// TODO: Move this to admin_api_types crate.
+#[derive(Serialize, Debug)]
+struct CnEntry {
+    cn: String,
+}
 
 #[allow(dead_code)]
 struct AdminState {
@@ -45,8 +54,14 @@ struct AdminState {
 }
 
 #[derive(Deserialize, Debug)]
-struct Node {
-    role: Option<String>,
+struct RoleFilter {
+    role: Option<ActorRole>,
+}
+
+#[derive(Deserialize, Debug)]
+enum ActorRole {
+    Node,
+    Adapter,
 }
 
 /// Blocking start of the admin server.
@@ -58,7 +73,7 @@ pub async fn start_admin_server(
     asm: &Arc<Assembly>,
 ) {
     info!(target: HTADMIN, "admin service starting");
-    let shared_state = Arc::new(RwLock::new(AdminState::new(asm.clone())));
+    let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
     serve(
         native_tls_acceptor(key_file, cert_file),
         listen,
@@ -90,10 +105,10 @@ fn admin_app(state: SharedState) -> Router {
         .route("/admin/policies/{capture}", get(get_policy))
         .route("/admin/policies/curr", get(get_curr_policy))
         .route("/admin/policies", post(install_policy))
-        .route("/admin/visas", get(get_visas))
+        .route("/admin/visas", get(get_visas).with_state(state.clone()))
         .route("/admin/visas/{capture}", get(get_visa))
         .route("/admin/visas/{capture}", delete(revoke_visa))
-        .route("/admin/actors", get(get_actors))
+        .route("/admin/actors", get(get_actors).with_state(state.clone()))
         .route("/admin/actors/{capture}", get(get_actor))
         .route("/admin/actors/{capture}/visas", get(get_related_visas))
         .route("/admin/actors/{capture}", delete(revoke_actor))
@@ -189,9 +204,27 @@ async fn install_policy(EJson(_body): EJson<PolicyBundle>) -> impl IntoResponse 
     (StatusCode::OK, Json(le)).into_response()
 }
 
-async fn get_visas() -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/visas");
-    two_elem_list()
+/// Returns a list of visa IDs in ListEntry structs or empty list.
+#[axum::debug_handler]
+//async fn get_visas(State(state): State<SharedState>) -> impl IntoResponse {
+async fn get_visas(State(state): State<SharedState>) -> (StatusCode, Json<Vec<ListEntry>>) {
+    debug!(target: HTADMIN, "GET /admin/visas");
+    let rstate = state.read().await;
+
+    // TODO: The API does not include details on how to do pagination.
+    match rstate.asm.visa_mgr.list_all_visa_ids().await {
+        Err(e) => {
+            error!(target: HTADMIN, "error listing visa IDs: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Vec::<ListEntry>::new()),
+            );
+        }
+        Ok(visa_ids) => {
+            let le_list: Vec<ListEntry> = visa_ids.into_iter().map(|id| ListEntry { id }).collect();
+            return (StatusCode::OK, Json(le_list));
+        }
+    }
 }
 
 async fn get_visa(EPath(id): EPath<String>) -> impl IntoResponse {
@@ -222,13 +255,31 @@ async fn revoke_visa(EPath(id): EPath<String>) -> impl IntoResponse {
     (StatusCode::OK, Json(r)).into_response()
 }
 
-async fn get_actors(Query(q): Query<Node>) -> impl IntoResponse {
-    match q.role {
-        Some(_) => info!(target: HTADMIN, "GET /admin/actors?role=node"),
-        None => info!(target: HTADMIN, "GET /admin/actors"),
+/// Returns a list of connected CN values in CnEntry structs or empty list.
+async fn get_actors(
+    State(state): State<SharedState>,
+    Query(q): Query<RoleFilter>,
+) -> (StatusCode, Json<Vec<CnEntry>>) {
+    let db_filter = match q.role {
+        Some(ActorRole::Node) => Some(Role::Node),
+        Some(ActorRole::Adapter) => Some(Role::Adapter),
+        None => None,
     };
 
-    two_elem_list()
+    let rstate = state.read().await;
+    match rstate.asm.actor_mgr.list_actor_cns(db_filter).await {
+        Err(e) => {
+            error!(target: HTADMIN, "error listing connected actors: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Vec::<CnEntry>::new()),
+            )
+        }
+        Ok(cns) => {
+            let cn_list: Vec<CnEntry> = cns.into_iter().map(|cn| CnEntry { cn }).collect();
+            (StatusCode::OK, Json(cn_list))
+        }
+    }
 }
 
 async fn get_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
