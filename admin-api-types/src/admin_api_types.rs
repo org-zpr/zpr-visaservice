@@ -389,3 +389,9 @@ pub fn reason_for(sc: StatusCode) -> String {
         None => "unknown".to_string(),
     }
 }
+
+/// Simple struct with a "cn" field.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CnEntry {
+    pub cn: String,
+}
