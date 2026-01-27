@@ -23,7 +23,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio_native_tls::{
     TlsAcceptor,
@@ -35,18 +35,12 @@ use crate::db::Role;
 use crate::logging::targets::HTADMIN;
 
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, AuthRevokeDescriptor, ListEntry, NodeRecordBrief, PolicyBundle, Revokes,
-    ServiceDescriptor, VisaDescriptor,
+    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NodeRecordBrief, PolicyBundle,
+    Revokes, ServiceDescriptor, VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.
 type SharedState = Arc<tokio::sync::RwLock<AdminState>>;
-
-// TODO: Move this to admin_api_types crate.
-#[derive(Serialize, Debug)]
-struct CnEntry {
-    cn: String,
-}
 
 #[allow(dead_code)]
 struct AdminState {
@@ -59,6 +53,7 @@ struct RoleFilter {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
 enum ActorRole {
     Node,
     Adapter,
@@ -370,12 +365,74 @@ mod tests {
 
     use axum::body::Body;
     use http_body_util::BodyExt;
+    use libeval::actor::Actor;
+    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
     use libeval::eval::{Direction, Hit};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
 
     use crate::assembly::tests::new_assembly_for_tests;
+    use std::time::Duration;
+
+    fn make_node_actor(zpr_addr: &str, cn: &str, substrate: &str) -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_NODE),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(cn),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(zpr_addr),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SUBSTRATE_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(substrate),
+            )
+            .unwrap();
+        actor
+    }
+
+    fn make_adapter_actor(zpr_addr: &str, cn: &str) -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_ADAPTER),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(cn),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(zpr_addr),
+            )
+            .unwrap();
+        actor
+    }
 
     #[tokio::test]
     async fn test_get_visas_no_visas() {
@@ -438,5 +495,234 @@ mod tests {
         let visas: Vec<ListEntry> = serde_json::from_slice(&body).unwrap();
         assert_eq!(visas.len(), 1);
         assert_eq!(visas[0].id, created_id);
+    }
+
+    #[tokio::test]
+    async fn test_get_visas_three_visas() {
+        let asm = Arc::new(new_assembly_for_tests().await);
+
+        let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
+        let hit = Hit::new_no_signal(0, Direction::Forward);
+
+        // Add three visas with distinct packet descriptors.
+        let pdesc0 =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let pdesc1 =
+            PacketDesc::new_tcp("fd5a:5052:3000::3", "fd5a:5052:3000::4", 12346, 443).unwrap();
+        let pdesc2 =
+            PacketDesc::new_tcp("fd5a:5052:3000::5", "fd5a:5052:3000::6", 12347, 22).unwrap();
+
+        let v0 = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc0, &hit)
+            .await
+            .unwrap();
+        let v1 = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc1, &hit)
+            .await
+            .unwrap();
+        let v2 = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc2, &hit)
+            .await
+            .unwrap();
+
+        let mut created_ids = vec![v0.issuer_id, v1.issuer_id, v2.issuer_id];
+        created_ids.sort_unstable();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/visas")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+
+        let visas: Vec<ListEntry> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(visas.len(), 3);
+
+        let mut returned_ids: Vec<u64> = visas.into_iter().map(|v| v.id).collect();
+        returned_ids.sort_unstable();
+        assert_eq!(returned_ids, created_ids);
+    }
+
+    #[tokio::test]
+    async fn test_get_actors_no_actors() {
+        let asm = Arc::new(new_assembly_for_tests().await);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/actors")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+
+        let actors: Vec<CnEntry> = serde_json::from_slice(&body).unwrap();
+        assert!(actors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_actors_one_actor() {
+        let asm = Arc::new(new_assembly_for_tests().await);
+        let actor = make_node_actor("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
+        asm.actor_mgr.add_node(&actor).await.unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/actors")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+
+        let actors: Vec<CnEntry> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(actors.len(), 1);
+        assert_eq!(actors[0].cn, "node-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_actors_multiple_actors() {
+        let asm = Arc::new(new_assembly_for_tests().await);
+        let actor0 = make_node_actor("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
+        let actor1 = make_node_actor("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
+        let actor2 = make_node_actor("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
+
+        asm.actor_mgr.add_node(&actor0).await.unwrap();
+        asm.actor_mgr.add_node(&actor1).await.unwrap();
+        asm.actor_mgr.add_node(&actor2).await.unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/actors")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+
+        let mut actors: Vec<CnEntry> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(actors.len(), 3);
+        actors.sort_by(|a, b| a.cn.cmp(&b.cn));
+        let actor_cns: Vec<String> = actors.into_iter().map(|a| a.cn).collect();
+        assert_eq!(
+            actor_cns,
+            vec![
+                "node-1".to_string(),
+                "node-2".to_string(),
+                "node-3".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_actors_role_filter() {
+        let asm = Arc::new(new_assembly_for_tests().await);
+        let node_actor = make_node_actor("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
+        let adapter_actor = make_adapter_actor("fd5a:5052::21", "adapter-1");
+
+        asm.actor_mgr.add_node(&node_actor).await.unwrap();
+        asm.actor_mgr
+            .add_adapter_via_node(&adapter_actor, node_actor.get_zpr_addr().unwrap())
+            .await
+            .unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+
+        let response_nodes = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/actors?role=node")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response_nodes.status(), StatusCode::OK);
+
+        let body_nodes = response_nodes
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let actors_nodes: Vec<CnEntry> = serde_json::from_slice(&body_nodes).unwrap();
+        assert_eq!(actors_nodes.len(), 1);
+        assert_eq!(actors_nodes[0].cn, "node-1");
+
+        let response_adapters = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/actors?role=adapter")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response_adapters.status(), StatusCode::OK);
+
+        let body_adapters = response_adapters
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let actors_adapters: Vec<CnEntry> = serde_json::from_slice(&body_adapters).unwrap();
+        assert_eq!(actors_adapters.len(), 1);
+        assert_eq!(actors_adapters[0].cn, "adapter-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_actors_invalid_role_filter() {
+        let asm = Arc::new(new_assembly_for_tests().await);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/actors?role=invalid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
