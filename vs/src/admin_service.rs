@@ -362,3 +362,81 @@ async fn add_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use libeval::eval::{Direction, Hit};
+    use std::net::IpAddr;
+    use tower::ServiceExt;
+    use zpr::vsapi_types::PacketDesc;
+
+    use crate::assembly::tests::new_assembly_for_tests;
+
+    #[tokio::test]
+    async fn test_get_visas_no_visas() {
+        let asm = Arc::new(new_assembly_for_tests().await);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/visas")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+
+        let visas: Vec<ListEntry> = serde_json::from_slice(&body).unwrap();
+        assert!(visas.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_visas_one_visa() {
+        let asm = Arc::new(new_assembly_for_tests().await);
+
+        let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
+        let pdesc =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let hit = Hit::new_no_signal(0, Direction::Forward);
+
+        // Add a visa.
+        let v = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc, &hit)
+            .await
+            .unwrap();
+
+        let created_id = v.issuer_id;
+        assert!(created_id > 0);
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/visas")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+
+        let visas: Vec<ListEntry> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(visas.len(), 1);
+        assert_eq!(visas[0].id, created_id);
+    }
+}

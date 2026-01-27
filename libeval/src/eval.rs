@@ -84,15 +84,17 @@ pub struct Hit {
 }
 
 impl Hit {
-    fn new_no_signal(index: usize, direction: Direction) -> Self {
+    /// Create Hit without a signal.
+    pub fn new_no_signal(index: usize, direction: Direction) -> Self {
         Hit {
             match_idx: index,
             direction,
             signal: None,
         }
     }
+    /// Create Hit with a signal.
     #[allow(dead_code)]
-    fn new_with_signal(index: usize, direction: Direction, signal: Signal) -> Self {
+    pub fn new_with_signal(index: usize, direction: Direction, signal: Signal) -> Self {
         Hit {
             match_idx: index,
             direction,
