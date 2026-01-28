@@ -21,6 +21,7 @@ pub mod targets {
     pub const VMGR: &str = "visamgr";
 
     /// Actor Manager
+    #[allow(dead_code)]
     pub const AMGR: &str = "actormgr";
 
     /// VSS Manager

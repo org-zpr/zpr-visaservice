@@ -5,7 +5,6 @@ use libeval::actor::Actor;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use tracing::warn;
 
 use zpr::policy_types::{Scope, ServiceType};
 use zpr::vsapi_types::ServiceDescriptor;
@@ -13,7 +12,6 @@ use zpr::vsapi_types::ServiceDescriptor;
 use crate::assembly::Assembly;
 use crate::db;
 use crate::error::{DBError, VSError};
-use crate::logging::targets::AMGR;
 
 pub struct ActorMgr {
     actor_db: db::ActorRepo,
@@ -133,27 +131,24 @@ impl ActorMgr {
         let pol = asm.policy_mgr.get_current();
 
         let mut svc_map = HashMap::new();
-        for svc in pol.list_services() {
-            if matches!(svc.kind, ServiceType::Authentication) {
-                svc_map.insert(svc.id.clone(), svc);
-            }
+        for svc in pol.list_services_by_kind(ServiceType::Authentication) {
+            svc_map.insert(svc.id.clone(), svc);
         }
 
-        for s_ent in &service_entries {
-            if let Some(svc) = svc_map.get(&s_ent.name) {
-                let sdesc = ServiceDescriptor {
-                    service_id: svc.id.clone(),
-                    service_uri: uri_for_service(
-                        &svc.kind,
-                        &s_ent.zpr_addr,
-                        svc.endpoints.as_slice(),
-                    )?,
-                    zpr_addr: s_ent.zpr_addr.clone(),
-                };
-                services.push(sdesc);
-            } else {
-                // We have a service registered in the state DB but is not in policy.
-                warn!(target: AMGR, "service in DB not found in policy: {}", s_ent.name);
+        if !svc_map.is_empty() {
+            for s_ent in &service_entries {
+                if let Some(svc) = svc_map.get(&s_ent.name) {
+                    let sdesc = ServiceDescriptor {
+                        service_id: svc.id.clone(),
+                        service_uri: uri_for_service(
+                            &svc.kind,
+                            &s_ent.zpr_addr,
+                            svc.endpoints.as_slice(),
+                        )?,
+                        zpr_addr: s_ent.zpr_addr.clone(),
+                    };
+                    services.push(sdesc);
+                }
             }
         }
 
