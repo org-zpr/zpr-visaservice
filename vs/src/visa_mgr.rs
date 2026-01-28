@@ -224,6 +224,12 @@ impl VisaMgr {
         info!(target: VMGR, "TODO: remove visas for actors now removed");
         Ok(())
     }
+
+    /// Get all the visa IDs (non-expired).
+    pub async fn list_all_visa_ids(&self) -> Result<Vec<u64>, VSError> {
+        let visa_ids = self.repo.list_visa_ids().await?;
+        Ok(visa_ids)
+    }
 }
 
 fn ep_from_dir(dir: &Direction) -> EndpointT {

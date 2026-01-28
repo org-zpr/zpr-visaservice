@@ -282,6 +282,29 @@ impl VisaRepo {
 
         Ok(visas)
     }
+
+    /// Copy all the visa IDs into a vec.
+    pub async fn list_visa_ids(&self) -> Result<Vec<u64>, DBError> {
+        let visa_keys = self.db.scan_match_all(format!("{KEY_VISA}:[0-9]*")).await?;
+        let mut visa_ids = Vec::new();
+        for key in &visa_keys {
+            let parts: Vec<&str> = key.rsplitn(2, ':').collect();
+            if parts.len() != 2 {
+                warn!(target: REDIS, "malformed visa key: {}", key);
+                continue;
+            }
+            let visa_id: u64 = match parts[0].parse() {
+                Err(_) => {
+                    // TODO: Should we just crash here?
+                    warn!(target: REDIS, "invalid visa ID in visa key: {}, skipping entry", key);
+                    continue;
+                }
+                Ok(id) => id,
+            };
+            visa_ids.push(visa_id);
+        }
+        Ok(visa_ids)
+    }
 }
 
 // Get number of seconds until the given SystemTime or zero if in the past.
@@ -470,5 +493,31 @@ mod test {
             .unwrap();
         assert_eq!(visas.len(), 1);
         assert_eq!(visas[0].issuer_id, 11);
+    }
+
+    #[tokio::test]
+    async fn test_list_visa_ids_after_store() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+        let node_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
+
+        let visa_a = make_visa(1, Duration::from_secs(60));
+        let visa_b = make_visa(5, Duration::from_secs(60));
+        let visa_c = make_visa(42, Duration::from_secs(60));
+
+        repo.store_visa(&node_addr, &visa_a, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        repo.store_visa(&node_addr, &visa_b, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        repo.store_visa(&node_addr, &visa_c, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        let mut ids = repo.list_visa_ids().await.unwrap();
+        ids.sort_unstable();
+
+        assert_eq!(ids, vec![1, 5, 42]);
     }
 }

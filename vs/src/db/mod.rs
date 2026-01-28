@@ -7,7 +7,7 @@ mod node;
 mod policy;
 mod visa;
 
-pub use actor::ActorRepo;
+pub use actor::{ActorRepo, Role};
 pub use db_redis::RedisDb;
 pub use node::{Node, NodeRepo};
 pub use policy::PolicyRepo;
