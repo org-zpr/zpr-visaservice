@@ -258,6 +258,20 @@ mod tests {
     }
 
     #[test]
+    fn test_services_iter_handles_multi() {
+        let mut actor = Actor::new();
+        let attr = Attribute::builder(key::SERVICES)
+            .expires_in(Duration::from_secs(3600))
+            .values(&["auth", "database", "logging"]);
+        let result = actor.add_attribute(attr);
+
+        assert!(result.is_ok());
+
+        let services: Vec<&str> = actor.services_iter().collect();
+        assert_eq!(services, vec!["auth", "database", "logging"]);
+    }
+
+    #[test]
     fn test_add_attribute_services_empty() {
         let mut actor = Actor::new();
         let attr = Attribute::builder(key::SERVICES)
