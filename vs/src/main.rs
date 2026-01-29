@@ -212,7 +212,8 @@ async fn create_actor_mgr(
         vsa.add_attribute(Attribute::builder(key::CN).value(config::VS_CN))?;
         vsa.add_attribute(Attribute::builder(key::ROLE).value(ROLE_ADAPTER))?;
         vsa.add_attribute(
-            Attribute::builder(key::SERVICES).value("/zpr/visaservice,/zpr/visaservice/admin"),
+            Attribute::builder(key::SERVICES)
+                .values(vec!["/zpr/visaservice", "/zpr/visaservice/admin"]),
         )?;
         vsa.add_identity_key(0, key::CN)?;
         vsa

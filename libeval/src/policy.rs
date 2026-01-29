@@ -10,7 +10,7 @@ use crate::attribute::Attribute;
 use crate::joinpolicy::JPolicy;
 
 use zpr::policy::v1 as policy_capnp;
-use zpr::policy_types::{PolicyTypeError, Service};
+use zpr::policy_types::{PolicyTypeError, Service, ServiceType};
 
 #[derive(Debug, Error)]
 pub enum PolicyError {
@@ -168,6 +168,14 @@ impl Policy {
     /// List all services defined in this policy.
     pub fn list_services(&self) -> Vec<&Service> {
         self.services.values().collect()
+    }
+
+    /// List all services defined in this policy that have the indicated `kind`.
+    pub fn list_services_by_kind(&self, kind: ServiceType) -> Vec<&Service> {
+        self.services
+            .values()
+            .filter(|svc| svc.kind == kind)
+            .collect()
     }
 
     fn load_bootstrap_keys(
