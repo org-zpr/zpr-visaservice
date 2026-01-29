@@ -13,7 +13,7 @@ openssl = "0.10.74"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.16"
 tracing = "0.1.41"
-zpr = { git = "https://github.com/org-zpr/zpr-common.git", tag = "v0.2.0", features = ["vsapi", "policy"]}
+zpr = { git = "https://github.com/org-zpr/zpr-common.git", tag = "v0.5.1", features = ["vsapi", "policy"]}
 
 [dev-dependencies]
 tracing-subscriber = "0.3.20"

@@ -2928,13 +2928,12 @@ checksum = "2fc5a66a20078bf1251bde995aa2fdcc4b800c70b5d92dd2c62abc5c60f679f8"
 
 [[package]]
 name = "zpr"
-version = "0.4.0"
-source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.1.0#7edfe8212acc1d661db01a7f8bb60302f441695e"
+version = "0.5.1"
+source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.5.1#33b6a02b04558bdc0026cacce8663c7961c0b514"
 dependencies = [
  "capnp",
  "capnpc",
  "open-enum",
- "strum",
  "thiserror 1.0.69",
  "url",
  "vsapi",
