@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use tokio::sync::mpsc;
 
@@ -6,6 +6,7 @@ use crate::actor_mgr::ActorMgr;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
 use crate::db::DbConnection;
+use crate::net_mgr::NetMgr;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 use crate::vss_mgr::VssMgr;
@@ -21,6 +22,7 @@ pub struct Assembly {
     pub vreq_chan: mpsc::Sender<crate::visareq_worker::VisaRequestJob>,
     pub visa_mgr: VisaMgr,
     pub vss_mgr: VssMgr,
+    pub net_mgr: Arc<RwLock<NetMgr>>,
 }
 
 impl Assembly {
@@ -92,6 +94,9 @@ pub mod tests {
             vreq_chan: vreq_tx,
             visa_mgr: VisaMgr::new(visa_repo),
             vss_mgr: VssMgr::new(),
+            net_mgr: Arc::new(RwLock::new(
+                NetMgr::new().await.expect("failed to create NetMgr"),
+            )),
         }
     }
 }

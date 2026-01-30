@@ -2371,6 +2371,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "base64",
  "bytes",
  "capnp",
  "capnp-rpc",
@@ -2965,8 +2966,8 @@ checksum = "dfcd145825aace48cff44a8844de64bf75feec3080e0aa5cdbde72961ae51a65"
 
 [[package]]
 name = "zpr"
-version = "0.5.1"
-source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.5.1#33b6a02b04558bdc0026cacce8663c7961c0b514"
+version = "0.6.0"
+source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.6.0#d5eb7cfc362e3f70a035758b6fa92b4735cbe988"
 dependencies = [
  "capnp",
  "capnpc",

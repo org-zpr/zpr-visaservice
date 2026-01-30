@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{error, info};
@@ -13,12 +13,14 @@ use libeval::pio;
 mod actor_mgr;
 mod admin_service;
 mod assembly;
+mod auth;
 mod config;
 mod connection_control;
 mod cparam;
 mod db;
 mod error;
 mod logging;
+mod net_mgr;
 mod policy_mgr;
 mod signal_worker;
 mod visa_mgr;
@@ -35,6 +37,7 @@ use crate::db::DbConnection;
 use crate::error::VSError;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
+use crate::net_mgr::NetMgr;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 use crate::vss_mgr::VssMgr;
@@ -149,6 +152,9 @@ async fn main() -> std::process::ExitCode {
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(visa_repo),
         vss_mgr: VssMgr::new(),
+        net_mgr: Arc::new(RwLock::new(
+            NetMgr::new().await.expect("failed to create NetMgr"),
+        )),
     });
 
     js.spawn_local(signal_worker::launch(asm.clone()));
