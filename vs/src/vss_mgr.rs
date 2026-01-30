@@ -1,10 +1,14 @@
 use dashmap::DashMap;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::LocalSet;
+use tokio_rustls::TlsConnector;
 use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
@@ -238,7 +242,12 @@ async fn vss_worker_loop(
         }
     };
 
-    let (reader, writer) = sock.into_split();
+    let connector = tls_connect();
+    let tls = connector
+        .connect(node_addr.ip().into(), sock)
+        .await
+        .unwrap();
+    let (reader, writer) = tokio::io::split(tls);
 
     let network = capnp_rpc::twoparty::VatNetwork::new(
         tokio::io::BufReader::new(reader).compat(),
@@ -348,6 +357,54 @@ async fn vss_worker_loop(
     }
 
     // Call ping in a loop periodically.  If this fails raise an alarm.
+}
+
+#[derive(Debug)]
+struct NoVerification;
+
+// Implement the dangerous trait ServerCertVerifier to always approve the connection
+impl ServerCertVerifier for NoVerification {
+    fn verify_server_cert(
+        &self,
+        _: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
+        _: &[u8],
+        _: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _: &[u8],
+        _: &CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _: &[u8],
+        _: &CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![]
+    }
+}
+
+fn tls_connect() -> TlsConnector {
+    let cfg = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerification))
+        .with_no_client_auth();
+
+    TlsConnector::from(Arc::new(cfg))
 }
 
 async fn do_set_services(
