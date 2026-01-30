@@ -17,7 +17,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use std::usize;
 use tracing::{debug, error, info, warn};
 
@@ -178,6 +178,7 @@ impl ConnectionControl {
         Ok(adapter_actor)
     }
 
+    /// Preform authentication of the adapter credentials, then run through policy.
     async fn authenticate_adapter_rsa(
         &self,
         asm: Arc<Assembly>,
@@ -294,13 +295,7 @@ impl ConnectionControl {
         if let Some(addr) = authd_actor.get_zpr_addr() {
             info!(target: CC, "authorized adapter cn {} with ZPR addr {}", adapter_cn, addr);
         } else {
-            match asm
-                .net_mgr
-                .write()
-                .unwrap()
-                .get_next_zpr_addr(Role::Adapter)
-                .await
-            {
+            match asm.net_mgr.get_next_zpr_addr(Role::Adapter).await {
                 Ok(addr) => {
                     authd_actor.add_attribute(
                         Attribute::builder(key::ZPR_ADDR)
@@ -374,15 +369,24 @@ impl ConnectionControl {
                             error!(target: CC, "failed to remove disconnected adapter with addr {adapter_addr} from actor db: {}", e);
                         }
                     };
+                    if let Err(s) = asm.net_mgr.release_zpr_addr(adapter_addr).await {
+                        error!(target: CC, "failed to release ZPR addr {adapter_addr} for orphaned adapter: {}", s);
+                    }
                 }
                 asm.actor_mgr.remove_node(&zpr_addr).await?;
                 asm.visa_mgr.remove_visas_for_node(&zpr_addr).await?;
             }
         }
 
-        asm.visa_mgr
+        if let Err(e) = asm
+            .visa_mgr
             .remove_visas_for_actors(&removed_zpr_addrs)
-            .await?;
+            .await
+        {
+            error!(target: CC, "failed to remove visas for disconnected actor at addr {zpr_addr}: {}", e);
+        }
+
+        asm.net_mgr.release_zpr_addr(zpr_addr).await?;
 
         Ok(())
     }

@@ -2389,6 +2389,7 @@ dependencies = [
  "libeval",
  "openssl",
  "percent-encoding",
+ "rand",
  "redis",
  "regex",
  "serde",

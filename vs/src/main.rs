@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{error, info};
@@ -152,9 +152,7 @@ async fn main() -> std::process::ExitCode {
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(visa_repo),
         vss_mgr: VssMgr::new(),
-        net_mgr: Arc::new(RwLock::new(
-            NetMgr::new().await.expect("failed to create NetMgr"),
-        )),
+        net_mgr: Arc::new(NetMgr::new_v6().await.expect("failed to create NetMgr")),
     });
 
     js.spawn_local(signal_worker::launch(asm.clone()));

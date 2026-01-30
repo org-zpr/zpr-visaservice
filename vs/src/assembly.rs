@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
@@ -22,7 +22,7 @@ pub struct Assembly {
     pub vreq_chan: mpsc::Sender<crate::visareq_worker::VisaRequestJob>,
     pub visa_mgr: VisaMgr,
     pub vss_mgr: VssMgr,
-    pub net_mgr: Arc<RwLock<NetMgr>>,
+    pub net_mgr: Arc<NetMgr>,
 }
 
 impl Assembly {
@@ -94,9 +94,7 @@ pub mod tests {
             vreq_chan: vreq_tx,
             visa_mgr: VisaMgr::new(visa_repo),
             vss_mgr: VssMgr::new(),
-            net_mgr: Arc::new(RwLock::new(
-                NetMgr::new().await.expect("failed to create NetMgr"),
-            )),
+            net_mgr: Arc::new(NetMgr::new_v6().await.expect("failed to create NetMgr")),
         }
     }
 }

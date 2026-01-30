@@ -758,7 +758,8 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "authorize_connect from {:?}", self.node.get_cn());
 
-        // Extract the args and call in to connection_control.
+        // TODO: Parse the ConnectionRequest call into connection ctonrol.
+        // TODO: Who updates actor db and services?
 
         Err(capnp::Error::unimplemented(
             "method v_s_handle::Server::authorize_connect not implemented".to_string(),
