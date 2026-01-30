@@ -75,7 +75,7 @@ pub async fn launch(asm: Arc<Assembly>, listen: SocketAddr) {
     };
 }
 
-// Currently this function creates a certificate, and the clients will not require verification of the
+// This function creates a certificate, and the clients will not require verification of the
 // cert. In the future, we may actually want to share a cert between the VSAPI and VSS in VS/VSConn in Libnode2
 fn tls_acceptor(listen: SocketAddr) -> Result<TlsAcceptor, Box<dyn std::error::Error>> {
     let self_signed_cert = rcgen::generate_simple_self_signed(vec![listen.to_string()])?;

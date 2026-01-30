@@ -362,7 +362,8 @@ async fn vss_worker_loop(
 #[derive(Debug)]
 struct NoVerification;
 
-// Implement the dangerous trait ServerCertVerifier to always approve the connection
+// Implement the dangerous trait ServerCertVerifier NoVerification which will
+// just always approve the connection
 impl ServerCertVerifier for NoVerification {
     fn verify_server_cert(
         &self,
@@ -415,6 +416,8 @@ impl ServerCertVerifier for NoVerification {
     }
 }
 
+// Create a dangerous connector - the verifier will always approve
+// TODO decide if we want to use an actual certificate
 fn tls_connect() -> TlsConnector {
     let cfg = rustls::ClientConfig::builder()
         .dangerous()
