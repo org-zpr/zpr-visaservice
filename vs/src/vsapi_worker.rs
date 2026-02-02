@@ -3,11 +3,14 @@ use libeval::attribute::{Attribute, key};
 
 use ipnet::IpNet;
 use openssl::rand::rand_bytes;
+use rustls::ServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio_rustls::TlsAcceptor;
 use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
@@ -28,17 +31,19 @@ pub async fn launch_capnp(
     listen: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(target: VSAPI, "VSAPI service listening on {} (capnp)", listen);
+    let acceptor = tls_acceptor(listen)?;
     let listener = tokio::net::TcpListener::bind(listen).await?;
+
     loop {
         // TODO: Figure out how to get tokio TLS in here.
 
         let (sock, addr) = listener.accept().await?;
-
-        info!(target: VSAPI, "connection from {}", addr);
-
+        info!(target: VSAPI, "TCP connection from {}", addr);
         sock.set_nodelay(true)?;
 
-        let (reader, writer) = sock.into_split();
+        let tls = acceptor.accept(sock).await?;
+        info!(target: VSAPI, "TLS connection");
+        let (reader, writer) = tokio::io::split(tls);
 
         let network = capnp_rpc::twoparty::VatNetwork::new(
             tokio::io::BufReader::new(reader).compat(),
@@ -68,6 +73,25 @@ pub async fn launch(asm: Arc<Assembly>, listen: SocketAddr) {
         Ok(()) => (),
         Err(e) => error!(target: VSAPI, "VSAPI capnp error: {}", e),
     };
+}
+
+// This function creates a certificate, and the clients will not require verification of the
+// cert. In the future, we may actually want to share a cert between the VSAPI and VSS in VS/VSConn in Libnode2
+fn tls_acceptor(listen: SocketAddr) -> Result<TlsAcceptor, Box<dyn std::error::Error>> {
+    let self_signed_cert = rcgen::generate_simple_self_signed(vec![listen.to_string()])?;
+    // Create self signed certificate that does not require client authentication
+    let cert_der = self_signed_cert.cert.der();
+    let key_der = self_signed_cert.key_pair.serialize_der();
+
+    // Convert the cert into a format the
+    let chain = vec![CertificateDer::from(cert_der.clone())];
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+
+    let cfg = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(chain, key)?;
+
+    Ok(TlsAcceptor::from(Arc::new(cfg)))
 }
 
 #[allow(dead_code)]
