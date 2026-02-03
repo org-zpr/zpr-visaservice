@@ -62,6 +62,7 @@ pub async fn launch(asm: Arc<Assembly>, mut event_rx: mpsc::Receiver<VsEvent>) {
     info!(target: EVNTMGR, "event manager shutting down");
 }
 
+// Maybe will call into topology routines from here eventually.
 async fn handle_actor_joins(asm: Arc<Assembly>, actor_addr: IpAddr) -> Result<(), VSError> {
     info!(target: EVNTMGR, "actor joined: {}", actor_addr);
     let has_auth_services = asm
@@ -81,6 +82,11 @@ async fn handle_actor_joins(asm: Arc<Assembly>, actor_addr: IpAddr) -> Result<()
     Ok(())
 }
 
+// TODO: Not sure I love this idea of having these wide ranging functions in the 'event_mgr'.
+// Things could get quite messy.
+//
+// The goal is somewhere to centralize high level logic that imapacts all sorts of areas in the
+// visa service.
 async fn handle_actor_leaves(
     asm: Arc<Assembly>,
     actor_addr: IpAddr,
