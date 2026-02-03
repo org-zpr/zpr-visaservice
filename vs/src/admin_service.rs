@@ -436,7 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_visas_no_visas() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -459,7 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_visas_one_visa() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -499,7 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_visas_three_visas() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
@@ -557,7 +557,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_no_actors() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -580,7 +580,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_one_actor() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let actor = make_node_actor("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
         asm.actor_mgr.add_node(&actor).await.unwrap();
 
@@ -607,7 +607,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_multiple_actors() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let actor0 = make_node_actor("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
         let actor1 = make_node_actor("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
         let actor2 = make_node_actor("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
@@ -648,7 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_role_filter() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let node_actor = make_node_actor("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
         let adapter_actor = make_adapter_actor("fd5a:5052::21", "adapter-1");
 
@@ -709,7 +709,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_invalid_role_filter() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
 

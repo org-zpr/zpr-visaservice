@@ -286,3 +286,81 @@ async fn get_actors(
 
     Ok((source_actor, dest_actor))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::assembly::tests::new_assembly_for_tests;
+    use libeval::attribute::{key, Attribute, ROLE_NODE};
+    use std::time::Duration;
+
+    fn make_node_actor(zpr_addr: &str, cn: &str, substrate: &str) -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ROLE)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(ROLE_NODE),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(cn),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::ZPR_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(zpr_addr),
+            )
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SUBSTRATE_ADDR)
+                    .expires_in(Duration::from_secs(3600))
+                    .value(substrate),
+            )
+            .unwrap();
+        actor
+    }
+
+    #[tokio::test]
+    async fn request_visa_wait_response_denies_when_policy_has_no_match() {
+        let (vreq_tx, vreq_rx) = mpsc::channel(8);
+        let asm = Arc::new(new_assembly_for_tests(Some(vreq_tx)).await);
+
+        let source_actor =
+            make_node_actor("fd5a:5052:3000::1", "source-node", "10.0.0.1:10001");
+        let dest_actor = make_node_actor("fd5a:5052:3000::2", "dest-node", "10.0.0.2:10002");
+        asm.actor_mgr.add_node(&source_actor).await.unwrap();
+        asm.actor_mgr.add_node(&dest_actor).await.unwrap();
+
+        let arena = tokio::spawn(launch_arena(asm.clone(), vreq_rx, 1));
+
+        let requestor_ip: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        let pkt_data = PacketDesc::new_tcp(
+            "fd5a:5052:3000::1",
+            "fd5a:5052:3000::2",
+            12345,
+            80,
+        )
+        .unwrap();
+
+        let result = request_visa_wait_response(
+            &asm,
+            &requestor_ip,
+            pkt_data,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(result, VisaDecision::Deny(DenyCode::NoMatch)));
+
+        arena.abort();
+    }
+}

@@ -42,12 +42,12 @@ pub mod tests {
 
     use crate::actor_mgr::ActorMgr;
     use crate::connection_control::ConnectionControl;
-    use crate::policy_mgr::PolicyMgr;
-    use crate::visa_mgr::VisaMgr;
-    use crate::vss_mgr::VssMgr;
-
     use crate::db::FakeDb;
     use crate::db::{ActorRepo, NodeRepo, PolicyRepo, VisaRepo};
+    use crate::policy_mgr::PolicyMgr;
+    use crate::visa_mgr::VisaMgr;
+    use crate::visareq_worker::VisaRequestJob;
+    use crate::vss_mgr::VssMgr;
 
     use bytes::Bytes;
     use libeval::policy::Policy;
@@ -70,8 +70,15 @@ pub mod tests {
         Policy::new_from_policy_bytes(Bytes::copy_from_slice(&bytes)).unwrap()
     }
 
-    pub async fn new_assembly_for_tests() -> Assembly {
-        let (vreq_tx, _vreq_rx) = mpsc::channel(100);
+    pub async fn new_assembly_for_tests(
+        vreq_tx_chan: Option<mpsc::Sender<VisaRequestJob>>,
+    ) -> Assembly {
+        let vreq_tx = if let Some(tx) = vreq_tx_chan {
+            tx
+        } else {
+            let (tx, _rx) = mpsc::channel(100);
+            tx
+        };
 
         let db_handle = Arc::new(FakeDb::new());
 
