@@ -26,6 +26,8 @@ mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
 mod vss_mgr;
+#[cfg(test)]
+mod test_helpers;
 
 use crate::actor_mgr::ActorMgr;
 use crate::admin_service::start_admin_server;
