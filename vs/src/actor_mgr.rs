@@ -2,7 +2,7 @@
 //!
 
 use libeval::actor::Actor;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -159,6 +159,40 @@ impl ActorMgr {
     pub async fn list_actor_cns(&self, by_role: Option<db::Role>) -> Result<Vec<String>, VSError> {
         let cns = self.actor_db.list_actor_cns(by_role).await?;
         Ok(cns)
+    }
+
+    pub async fn list_node_addrs(&self) -> Result<Vec<IpAddr>, VSError> {
+        let addrs = self.node_db.list_node_addrs().await?;
+        Ok(addrs)
+    }
+
+    /// Return true if the actor exists and offers at least one authentication service.
+    pub async fn has_auth_services(
+        &self,
+        asm: Arc<Assembly>,
+        actor_zpr_addr: IpAddr,
+    ) -> Result<bool, VSError> {
+        let services = match self.actor_db.list_services_for_actor(&actor_zpr_addr).await {
+            Ok(svcs) => svcs,
+            Err(_) => return Ok(false),
+        };
+        if services.is_empty() {
+            return Ok(false);
+        }
+        let mut offered_map = HashSet::new();
+        for s in services {
+            offered_map.insert(s);
+        }
+
+        // Then we need to consult policy to get the service details.
+        let pol = asm.policy_mgr.get_current();
+        for svc in pol.list_services_by_kind(ServiceType::Authentication) {
+            if offered_map.contains(&svc.id) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }
 

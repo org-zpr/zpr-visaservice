@@ -153,6 +153,11 @@ impl std::fmt::Display for KeyString {
 }
 
 impl ZAddr {
+    /// If you already have a "zaddr" encoded string, use this to create a ZAddr.
+    pub fn new_from_encoded(s: &str) -> Self {
+        ZAddr(s.into())
+    }
+
     /// Get the string representation of this ZAddr.
     pub fn as_str(&self) -> &str {
         &self.0

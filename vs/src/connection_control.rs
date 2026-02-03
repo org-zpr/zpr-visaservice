@@ -137,7 +137,7 @@ impl ConnectionControl {
         &self,
         asm: Arc<Assembly>,
         req: ConnectRequest,
-        connect_via: IpAddr,
+        connect_via: &IpAddr,
     ) -> Result<Actor, VSError> {
         if req.blobs.is_empty() || req.blobs.len() > 1 {
             return Err(VSError::ParamError("expected exactly one auth blob".into()));

@@ -51,6 +51,9 @@ pub enum VSError {
 
     #[error("cryptographic error: {0}")]
     CryptoError(#[from] CryptoError),
+
+    #[error("error queue full: {0}")]
+    QueueFull(String),
 }
 
 #[derive(Debug, Error)]

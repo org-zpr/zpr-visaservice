@@ -160,6 +160,13 @@ impl ActorRepo {
         Ok(service_entries)
     }
 
+    /// Get a list of services offered by the actor.
+    pub async fn list_services_for_actor(&self, zpr_addr: &IpAddr) -> Result<Vec<String>, DBError> {
+        let services_key = actor_services_key_for(&zpr_addr);
+        let service_names: HashSet<String> = self.db.smembers(&services_key).await?;
+        Ok(service_names.into_iter().collect())
+    }
+
     /// Add an actor record which must only be called after initial authentication (there
     /// will likely be changes to an actor later from trusted services or re-authentication,
     /// but the updates should use a different function.)

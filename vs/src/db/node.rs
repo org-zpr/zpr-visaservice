@@ -142,6 +142,31 @@ impl NodeRepo {
         debug!(target: REDIS, "removed node state for node at addr {}", node_addr);
         Ok(())
     }
+
+    /// The the list of node ZPR addresses.
+    pub async fn list_node_addrs(&self) -> Result<Vec<IpAddr>, DBError> {
+        let keys = self.db.scan_match_all("node:*".into()).await?;
+        let mut addrs = Vec::new();
+        for key in keys {
+            if let Some(stripped) = key.strip_prefix("node:") {
+                if stripped.contains(":") {
+                    // This is not a node key, skip it.
+                    continue;
+                }
+                let zaddr = ZAddr::new_from_encoded(stripped);
+                match IpAddr::try_from(zaddr) {
+                    Ok(addr) => addrs.push(addr),
+                    Err(e) => {
+                        return Err(DBError::InvalidData(format!(
+                            "failed to parse node address '{}' as IpAddr: {}",
+                            stripped, e
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(addrs)
+    }
 }
 
 impl Node {

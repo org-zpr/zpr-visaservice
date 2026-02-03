@@ -19,6 +19,7 @@ mod connection_control;
 mod cparam;
 mod db;
 mod error;
+mod event_mgr;
 mod logging;
 mod net_mgr;
 mod policy_mgr;
@@ -35,6 +36,7 @@ use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
 use crate::db::DbConnection;
 use crate::error::VSError;
+use crate::event_mgr::EventMgr;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 use crate::net_mgr::NetMgr;
@@ -142,6 +144,8 @@ async fn main() -> std::process::ExitCode {
 
     let visa_repo = db::VisaRepo::new(db_handle.clone());
 
+    let (event_tx, event_rx) = mpsc::channel(config::EVENT_QUEUE_DEPTH);
+
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
         system_start_time: std::time::Instant::now(),
@@ -153,9 +157,11 @@ async fn main() -> std::process::ExitCode {
         visa_mgr: VisaMgr::new(visa_repo),
         vss_mgr: VssMgr::new(),
         net_mgr: Arc::new(NetMgr::new_v6().await.expect("failed to create NetMgr")),
+        event_mgr: EventMgr::new(event_tx),
     });
 
     js.spawn_local(signal_worker::launch(asm.clone()));
+    js.spawn_local(event_mgr::launch(asm.clone(), event_rx));
 
     js.spawn_local(vsapi_worker::launch(
         asm.clone(),

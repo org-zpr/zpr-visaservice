@@ -6,6 +6,7 @@ use crate::actor_mgr::ActorMgr;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
 use crate::db::DbConnection;
+use crate::event_mgr::EventMgr;
 use crate::net_mgr::NetMgr;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
@@ -23,6 +24,7 @@ pub struct Assembly {
     pub visa_mgr: VisaMgr,
     pub vss_mgr: VssMgr,
     pub net_mgr: Arc<NetMgr>,
+    pub event_mgr: EventMgr,
 }
 
 impl Assembly {
@@ -82,6 +84,9 @@ pub mod tests {
         let node_repo = NodeRepo::new(db_handle.clone());
         let visa_repo = VisaRepo::new(db_handle.clone());
 
+        let (event_tx, _event_rx) = mpsc::channel(100);
+        // TODO: Start event manager worker?
+
         Assembly {
             config: VSConfig::default(),
             system_start_time: std::time::Instant::now(),
@@ -95,6 +100,7 @@ pub mod tests {
             visa_mgr: VisaMgr::new(visa_repo),
             vss_mgr: VssMgr::new(),
             net_mgr: Arc::new(NetMgr::new_v6().await.expect("failed to create NetMgr")),
+            event_mgr: EventMgr::new(event_tx),
         }
     }
 }
