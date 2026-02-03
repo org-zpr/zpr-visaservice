@@ -542,4 +542,51 @@ mod test {
             assert!(!exists, "expected key to be deleted: {}", key);
         }
     }
+
+    #[tokio::test]
+    async fn test_list_node_addrs_filters_non_node_keys() {
+        let db = Arc::new(FakeDb::new());
+        let repo = NodeRepo::new(db.clone());
+
+        let node_a = Node {
+            ctime: SystemTime::UNIX_EPOCH,
+            zpr_addr: "fd5a:5052::10".parse().unwrap(),
+            cn: "node-a".to_string(),
+            substrate_addr: "[fd5a:5052::100]:1234".parse().unwrap(),
+        };
+        let node_b = Node {
+            ctime: SystemTime::UNIX_EPOCH,
+            zpr_addr: "fd5a:5052::11".parse().unwrap(),
+            cn: "node-b".to_string(),
+            substrate_addr: "[fd5a:5052::101]:1234".parse().unwrap(),
+        };
+
+        repo.add_node(&node_a).await.unwrap();
+        repo.add_node(&node_b).await.unwrap();
+        repo.add_connected_adater(&node_a.zpr_addr, &"fd5a:5052::20".parse().unwrap())
+            .await
+            .unwrap();
+        repo.set_node_vss(&node_b.zpr_addr, &"[fd5a:5052::200]:8080".parse().unwrap())
+            .await
+            .unwrap();
+
+        let mut addrs = repo.list_node_addrs().await.unwrap();
+        addrs.sort();
+
+        assert_eq!(addrs, vec![node_a.zpr_addr, node_b.zpr_addr]);
+    }
+
+    #[tokio::test]
+    async fn test_list_node_addrs_errors_on_invalid_key() {
+        let db = Arc::new(FakeDb::new());
+        let repo = NodeRepo::new(db.clone());
+
+        db.set("node:bad-zaddr", "junk").await.unwrap();
+
+        let err = repo.list_node_addrs().await.unwrap_err();
+        match err {
+            DBError::InvalidData(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
 }

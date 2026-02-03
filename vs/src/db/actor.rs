@@ -531,4 +531,31 @@ mod test {
         let adapter_cns = repo.list_actor_cns(Some(Role::Adapter)).await.unwrap();
         assert_eq!(adapter_cns, vec!["adapter-cn".to_string()]);
     }
+
+    #[tokio::test]
+    async fn test_list_services_for_actor_only_returns_actor_services() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+
+        let node_actor = make_actor(ROLE_NODE, "fd5a:5052::30", &["svc:one", "svc%two"]);
+        let adapter_actor = make_actor(ROLE_ADAPTER, "fd5a:5052::40", &["svc:three"]);
+
+        repo.add_actor(&node_actor).await.unwrap();
+        repo.add_actor(&adapter_actor).await.unwrap();
+
+        let node_addr: IpAddr = "fd5a:5052::30".parse().unwrap();
+        let mut node_services = repo.list_services_for_actor(&node_addr).await.unwrap();
+        node_services.sort();
+
+        assert_eq!(
+            node_services,
+            vec!["svc%two".to_string(), "svc:one".to_string()]
+        );
+
+        let adapter_addr: IpAddr = "fd5a:5052::40".parse().unwrap();
+        let mut adapter_services = repo.list_services_for_actor(&adapter_addr).await.unwrap();
+        adapter_services.sort();
+
+        assert_eq!(adapter_services, vec!["svc:three".to_string()]);
+    }
 }
