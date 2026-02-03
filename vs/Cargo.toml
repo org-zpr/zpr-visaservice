@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8.6", features = ["macros"] }
-capnp-rpc = "0.23.0"
+capnp-rpc = "0.25.0"
 clap = { version = "4.5.50", features = ["derive"] }
 futures-util = "0.3.31"
 hyper = "1.7.0"
@@ -22,10 +22,13 @@ toml = "0.9.8"
 tower-service = "0.3.3"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
-zpr = { git = "https://github.com/org-zpr/zpr-common.git", tag = "v0.6.0", features = ["vsapi"]}
+zpr = { git = "https://github.com/org-zpr/zpr-common.git", tag = "v0.7.0", features = ["vsapi"]}
 admin-api-types = { path = "../admin-api-types" }
 tokio-util = { version = "0.7.16", features = ["compat"] }
-capnp = { version = "0.23.0", features = ["sync_reader"] }
+tokio-rustls = "0.26.4"
+rustls = "0.23.36"
+rcgen = "0.13.0"
+capnp = { version = "0.25.0", features = ["sync_reader"] }
 arc-swap = "1.7.1"
 bytes = "1.10.1"
 ipnet = "2.11.0"
