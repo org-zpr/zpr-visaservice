@@ -15,6 +15,7 @@ mod admin_service;
 mod assembly;
 mod config;
 mod connection_control;
+mod counters;
 mod cparam;
 mod db;
 mod error;
@@ -141,6 +142,7 @@ async fn main() -> std::process::ExitCode {
 
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
+        counters: Default::default(),
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
         policy_mgr: policy_mgr,
