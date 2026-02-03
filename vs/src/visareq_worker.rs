@@ -295,6 +295,8 @@ mod tests {
     use crate::test_helpers::make_node_actor_defexp;
     use std::time::Duration;
 
+    // This test just runs a request through the pipeline. There is no real policy here
+    // so it will fail.  But it should be a visa-deny not some other error.
     #[tokio::test]
     async fn request_visa_wait_response_denies_when_policy_has_no_match() {
         let (vreq_tx, vreq_rx) = mpsc::channel(8);
@@ -302,30 +304,20 @@ mod tests {
 
         let source_actor =
             make_node_actor_defexp("fd5a:5052:3000::1", "source-node", "10.0.0.1:10001");
-        let dest_actor =
-            make_node_actor_defexp("fd5a:5052:3000::2", "dest-node", "10.0.0.2:10002");
+        let dest_actor = make_node_actor_defexp("fd5a:5052:3000::2", "dest-node", "10.0.0.2:10002");
         asm.actor_mgr.add_node(&source_actor).await.unwrap();
         asm.actor_mgr.add_node(&dest_actor).await.unwrap();
 
         let arena = tokio::spawn(launch_arena(asm.clone(), vreq_rx, 1));
 
         let requestor_ip: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
-        let pkt_data = PacketDesc::new_tcp(
-            "fd5a:5052:3000::1",
-            "fd5a:5052:3000::2",
-            12345,
-            80,
-        )
-        .unwrap();
+        let pkt_data =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
 
-        let result = request_visa_wait_response(
-            &asm,
-            &requestor_ip,
-            pkt_data,
-            Duration::from_secs(1),
-        )
-        .await
-        .unwrap();
+        let result =
+            request_visa_wait_response(&asm, &requestor_ip, pkt_data, Duration::from_secs(1))
+                .await
+                .unwrap();
 
         assert!(matches!(result, VisaDecision::Deny(DenyCode::NoMatch)));
 
