@@ -2,6 +2,7 @@ use clap::Parser;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{error, info};
@@ -96,15 +97,8 @@ async fn main() -> std::process::ExitCode {
 
     let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(config::VALKEY_URI);
     let vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
+    info!(target: MAIN, "connecting to ValKey at {}...", vk_uri);
 
-    // TODO: Should I be creating this and saving it in assembly or or just keeping the client in assembly
-    // and then getting connections when I want them?
-    /*
-    let mut vk_conn = vk_client
-        .get_multiplexed_tokio_connection()
-        .await
-        .expect("failed to get redis connection");
-    */
     let mut vk_conn = redis::aio::ConnectionManager::new(vk_client)
         .await
         .expect("failed to get redis connection");
