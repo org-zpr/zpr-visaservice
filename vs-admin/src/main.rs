@@ -1,6 +1,8 @@
+mod error;
 mod executor;
 mod gui;
 mod main_args;
+mod vsclient;
 
 use std::fs::File;
 use std::io::Read;

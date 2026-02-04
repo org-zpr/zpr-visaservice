@@ -51,7 +51,7 @@ pub enum SubCmd {
     Actors {
         /// See more information on a specific actor
         #[arg(long, short = 'c', conflicts_with = "nodes")]
-        cn: Option<u64>,
+        cn: Option<String>,
         /// Remove the actor with a given CN in the VS, along with any associated visas. If revoke is supplied, cn must be as well
         // TODO decide if it should be visas --revoke --id ID or if revoke should also take a u64 and be visas --revoke ID
         #[arg(long, short = 'r', requires = "cn", conflicts_with_all = ["nodes", "visas"])]
@@ -69,7 +69,7 @@ pub enum SubCmd {
     Services {
         /// See more information on a specific service
         #[arg(long, short = 'i')]
-        id: Option<u64>,
+        id: Option<String>,
     },
 
     /// Commands related to auth revokes, provide no additional arguments to see list of IDs of all auth revokes
@@ -77,7 +77,7 @@ pub enum SubCmd {
     AuthRevoke {
         /// See more information on a specific auth revoke
         #[arg(long, short = 'i', conflicts_with = "clear")]
-        id: Option<u64>,
+        id: Option<String>,
         /// Clear list of auth-revokes in the VS
         #[arg(long, short = 'c', conflicts_with_all = ["id", "add", "remove"])]
         clear: bool,

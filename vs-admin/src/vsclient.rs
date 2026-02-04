@@ -1,0 +1,145 @@
+use std::time::Duration;
+
+use colored::Colorize;
+use reqwest;
+use reqwest::tls::Certificate;
+
+use admin_api_types::admin_api_types::reason_for;
+use admin_api_types::admin_api_types::{
+    ActorDescriptor, CnEntry, ListEntry, NamedListEntry, ServiceDescriptor, VisaDescriptor,
+}; // TODO: get rid of this repetition of 'admin_api_types'
+
+use crate::error::VsaError;
+
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug)]
+pub struct VsClient {
+    cert: Certificate,
+    api_url: String,
+    quiet: bool,
+}
+
+#[allow(dead_code)]
+pub enum RoleFilter {
+    All,
+    NodesOnly,
+    AdaptersOnly,
+}
+
+impl VsClient {
+    pub fn new(svc_url: String, cert: Certificate, quiet: bool) -> Self {
+        VsClient {
+            cert,
+            api_url: svc_url,
+            quiet,
+        }
+    }
+
+    fn build_client(&self) -> Result<reqwest::blocking::Client, VsaError> {
+        let cb = reqwest::blocking::ClientBuilder::new()
+            .add_root_certificate(self.cert.clone())
+            .danger_accept_invalid_certs(true)
+            .timeout(HTTP_TIMEOUT);
+        let client = cb.build()?;
+        Ok(client)
+    }
+
+    fn ht_get(&self, url: &str) -> Result<reqwest::blocking::Response, VsaError> {
+        let client = self.build_client()?;
+        if !self.quiet {
+            print!("{}", format!(">> get {url}").dimmed());
+        }
+        let resp = client.get(url).send()?;
+
+        let stat = resp.status();
+        if !self.quiet {
+            println!("  {}", stat);
+        }
+
+        if stat.is_success() {
+            return Ok(resp);
+        }
+        self.display_hterror(resp);
+        Err(VsaError::HttpError(stat))
+    }
+
+    fn display_hterror(&self, error_resp: reqwest::blocking::Response) {
+        if self.quiet {
+            return;
+        }
+        eprintln!(
+            "{} {}: {}",
+            "HTTP Error".red(),
+            error_resp.status(),
+            reason_for(error_resp.status())
+        );
+        if let Ok(txt) = error_resp.text() {
+            eprintln!("       {}", txt);
+        }
+    }
+
+    fn request_get_list_entries<T>(&self, req_uri: &str) -> Result<Vec<T>, VsaError>
+    where
+        T: serde::de::DeserializeOwned + std::fmt::Display,
+    {
+        let resp = self.ht_get(req_uri)?;
+        let entries: Vec<T> = resp.json()?;
+        Ok(entries)
+    }
+
+    /// Returns a list of CN values.
+    pub fn get_actors(&self, filter: RoleFilter) -> Result<Vec<String>, VsaError> {
+        let query = match filter {
+            RoleFilter::NodesOnly => "?role=node",
+            RoleFilter::AdaptersOnly => "?role=adapter",
+            RoleFilter::All => "",
+        };
+        let entry_vec = self.request_get_list_entries::<CnEntry>(&format!(
+            "{}/admin/actors{}",
+            self.api_url, query
+        ))?;
+        let cn_list: Vec<String> = entry_vec.into_iter().map(|e| e.cn).collect();
+        Ok(cn_list)
+    }
+
+    pub fn get_actor(&self, cn: &str) -> Result<ActorDescriptor, VsaError> {
+        let mut requrl = reqwest::Url::parse(&format!("{}/admin/actors", self.api_url))?;
+        requrl.path_segments_mut().unwrap().push(cn);
+        let resp = self.ht_get(requrl.as_str())?;
+        let entry: ActorDescriptor = resp.json()?;
+        Ok(entry)
+    }
+
+    /// Returns a list of service IDs (whihch are names)
+    pub fn get_services(&self) -> Result<Vec<String>, VsaError> {
+        let entry_vec = self.request_get_list_entries::<NamedListEntry>(&format!(
+            "{}/admin/services",
+            self.api_url
+        ))?;
+        let service_ids: Vec<String> = entry_vec.into_iter().map(|e| e.id).collect();
+        Ok(service_ids)
+    }
+
+    pub fn get_service(&self, id: &str) -> Result<ServiceDescriptor, VsaError> {
+        let mut requrl = reqwest::Url::parse(&format!("{}/admin/services", self.api_url))?;
+        requrl.path_segments_mut().unwrap().push(id);
+        let resp = self.ht_get(requrl.as_str())?;
+        let entry: ServiceDescriptor = resp.json()?;
+        Ok(entry)
+    }
+
+    pub fn get_visas(&self) -> Result<Vec<u64>, VsaError> {
+        let entry_vec =
+            self.request_get_list_entries::<ListEntry>(&format!("{}/admin/visas", self.api_url))?;
+        let visa_ids: Vec<u64> = entry_vec.into_iter().map(|e| e.id).collect();
+        Ok(visa_ids)
+    }
+
+    pub fn get_visa(&self, id: u64) -> Result<VisaDescriptor, VsaError> {
+        let req = format!("{}/admin/visas/{}", self.api_url, id);
+        let resp = self.ht_get(&req)?;
+        let entry: VisaDescriptor = resp.json()?;
+        Ok(entry)
+    }
+}
