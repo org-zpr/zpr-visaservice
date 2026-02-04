@@ -22,12 +22,12 @@ mod error;
 mod logging;
 mod policy_mgr;
 mod signal_worker;
+#[cfg(test)]
+mod test_helpers;
 mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
 mod vss_mgr;
-#[cfg(test)]
-mod test_helpers;
 
 use crate::actor_mgr::ActorMgr;
 use crate::admin_service::start_admin_server;

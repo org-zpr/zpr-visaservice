@@ -235,8 +235,7 @@ mod test {
     #[tokio::test]
     async fn test_add_node_and_set_vss() {
         let mgr = make_mgr();
-        let actor =
-            make_node_actor_defexp("fd5a:5052::1", "node-1", "[fd5a:5052::100]:1234");
+        let actor = make_node_actor_defexp("fd5a:5052::1", "node-1", "[fd5a:5052::100]:1234");
         let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
 
         mgr.add_node(&actor).await.unwrap();
@@ -271,8 +270,7 @@ mod test {
     #[tokio::test]
     async fn test_add_adapter_via_node_tracks_connections() {
         let mgr = make_mgr();
-        let node_actor =
-            make_node_actor_defexp("fd5a:5052::4", "node-2", "[fd5a:5052::101]:1234");
+        let node_actor = make_node_actor_defexp("fd5a:5052::4", "node-2", "[fd5a:5052::101]:1234");
         let adapter_actor = make_adapter_actor_defexp("fd5a:5052::5", "adapter-2");
         let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
@@ -295,8 +293,7 @@ mod test {
     #[tokio::test]
     async fn test_remove_actor_by_zpr_addr() {
         let mgr = make_mgr();
-        let node_actor =
-            make_node_actor_defexp("fd5a:5052::6", "node-3", "[fd5a:5052::102]:1234");
+        let node_actor = make_node_actor_defexp("fd5a:5052::6", "node-3", "[fd5a:5052::102]:1234");
         let adapter_actor = make_adapter_actor_defexp("fd5a:5052::7", "adapter-3");
         let node_addr: IpAddr = "fd5a:5052::6".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
