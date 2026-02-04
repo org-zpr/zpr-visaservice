@@ -255,6 +255,7 @@ async fn get_actors(
     State(state): State<SharedState>,
     Query(q): Query<RoleFilter>,
 ) -> (StatusCode, Json<Vec<CnEntry>>) {
+    info!(target: HTADMIN, "GET /admin/actors {:?}", q);
     let db_filter = match q.role {
         Some(ActorRole::Node) => Some(Role::Node),
         Some(ActorRole::Adapter) => Some(Role::Adapter),

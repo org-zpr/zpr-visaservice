@@ -395,3 +395,9 @@ pub fn reason_for(sc: StatusCode) -> String {
 pub struct CnEntry {
     pub cn: String,
 }
+
+impl fmt::Display for CnEntry {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} {}", format!("{}", "cn".dimmed()), self.cn)
+    }
+}

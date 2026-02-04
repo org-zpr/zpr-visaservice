@@ -17,8 +17,8 @@ use reqwest::tls::Certificate;
 
 use admin_api_types::admin_api_types::reason_for;
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, AuthRevokeDescriptor, ListEntry, PolicyBundle, Revokes, ServiceDescriptor,
-    VisaDescriptor,
+    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, PolicyBundle, Revokes,
+    ServiceDescriptor, VisaDescriptor,
 };
 
 use crate::main_args::{Cmd, SubCmd};
@@ -151,10 +151,13 @@ fn load_cert(ca: &Path) -> Result<Certificate, Box<dyn std::error::Error>> {
     Ok(cert)
 }
 
-pub fn request_get_list_entry(
+pub fn request_get_list_entries<T>(
     cert: Certificate,
     req_uri: String,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<T>, Box<dyn std::error::Error>>
+where
+    T: serde::de::DeserializeOwned + std::fmt::Display,
+{
     let cb = reqwest::blocking::ClientBuilder::new()
         .add_root_certificate(cert)
         .danger_accept_invalid_certs(true)
@@ -162,6 +165,7 @@ pub fn request_get_list_entry(
     let client = cb.build()?;
 
     let resp = client.get(req_uri).send()?;
+    println!("XXX response received - status {:?}", resp.status());
     if !resp.status().is_success() {
         return Err(format!(
             "error (status {:?}:{}) : {}",
@@ -172,17 +176,20 @@ pub fn request_get_list_entry(
         .into());
     }
 
-    let entries: Vec<ListEntry> = resp.json()?;
+    let entries: Vec<T> = resp.json()?;
 
     for (i, entry) in entries.iter().enumerate() {
         println!("{} {entry}", format!("ENTRY {}", i).bold());
     }
 
-    Ok(())
+    Ok(entries)
 }
 
-fn get_policies(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
-    request_get_list_entry(cert, format!("{}/admin/policies", api_url))
+fn get_policies(
+    api_url: &str,
+    cert: Certificate,
+) -> Result<Vec<ListEntry>, Box<dyn std::error::Error>> {
+    request_get_list_entries::<ListEntry>(cert, format!("{}/admin/policies", api_url))
 }
 
 fn get_policy(api_url: &str, cert: Certificate, id: u64) -> Result<(), Box<dyn std::error::Error>> {
@@ -310,8 +317,11 @@ fn install_policy(
     Ok(())
 }
 
-fn get_visas(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
-    request_get_list_entry(cert, format!("{}/admin/visas", api_url))
+fn get_visas(
+    api_url: &str,
+    cert: Certificate,
+) -> Result<Vec<ListEntry>, Box<dyn std::error::Error>> {
+    request_get_list_entries::<ListEntry>(cert, format!("{}/admin/visas", api_url))
 }
 
 fn get_visa(api_url: &str, cert: Certificate, id: u64) -> Result<(), Box<dyn std::error::Error>> {
@@ -374,13 +384,14 @@ fn get_actors(
     api_url: &str,
     cert: Certificate,
     nodes: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<CnEntry>, Box<dyn std::error::Error>> {
     let query = match nodes {
         true => "?role=node",
         false => "",
     };
 
-    request_get_list_entry(cert, format!("{}/admin/actors{}", api_url, query))
+    println!("XXX get /admin/actors !");
+    request_get_list_entries::<CnEntry>(cert, format!("{}/admin/actors{}", api_url, query))
 }
 
 fn get_actor(api_url: &str, cert: Certificate, cn: u64) -> Result<(), Box<dyn std::error::Error>> {
@@ -443,12 +454,15 @@ fn get_related_visas(
     api_url: &str,
     cert: Certificate,
     cn: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    request_get_list_entry(cert, format!("{}/admin/actors/{}/visas", api_url, cn))
+) -> Result<Vec<ListEntry>, Box<dyn std::error::Error>> {
+    request_get_list_entries::<ListEntry>(cert, format!("{}/admin/actors/{}/visas", api_url, cn))
 }
 
-fn get_services(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
-    request_get_list_entry(cert, format!("{}/admin/services", api_url))
+fn get_services(
+    api_url: &str,
+    cert: Certificate,
+) -> Result<Vec<ListEntry>, Box<dyn std::error::Error>> {
+    request_get_list_entries::<ListEntry>(cert, format!("{}/admin/services", api_url))
 }
 
 fn get_service(
@@ -481,8 +495,11 @@ fn get_service(
     Ok(())
 }
 
-fn get_revokes(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
-    request_get_list_entry(cert, format!("{}/admin/authrevoke", api_url))
+fn get_revokes(
+    api_url: &str,
+    cert: Certificate,
+) -> Result<Vec<ListEntry>, Box<dyn std::error::Error>> {
+    request_get_list_entries::<ListEntry>(cert, format!("{}/admin/authrevoke", api_url))
 }
 
 fn get_revoke(api_url: &str, cert: Certificate, id: u64) -> Result<(), Box<dyn std::error::Error>> {
