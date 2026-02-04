@@ -365,78 +365,17 @@ mod tests {
 
     use axum::body::Body;
     use http_body_util::BodyExt;
-    use libeval::actor::Actor;
-    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
     use libeval::eval::{Direction, Hit};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
 
     use crate::assembly::tests::new_assembly_for_tests;
-    use std::time::Duration;
-
-    fn make_node_actor(zpr_addr: &str, cn: &str, substrate: &str) -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_NODE),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(cn),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(zpr_addr),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SUBSTRATE_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(substrate),
-            )
-            .unwrap();
-        actor
-    }
-
-    fn make_adapter_actor(zpr_addr: &str, cn: &str) -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_ADAPTER),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(cn),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(zpr_addr),
-            )
-            .unwrap();
-        actor
-    }
+    use crate::test_helpers::{make_adapter_actor_defexp, make_node_actor_defexp};
 
     #[tokio::test]
     async fn test_get_visas_no_visas() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -459,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_visas_one_visa() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -499,7 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_visas_three_visas() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
@@ -557,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_no_actors() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -580,8 +519,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_one_actor() {
-        let asm = Arc::new(new_assembly_for_tests().await);
-        let actor = make_node_actor("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let actor = make_node_actor_defexp("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
         asm.actor_mgr.add_node(&actor).await.unwrap();
 
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
@@ -607,10 +546,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_multiple_actors() {
-        let asm = Arc::new(new_assembly_for_tests().await);
-        let actor0 = make_node_actor("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
-        let actor1 = make_node_actor("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
-        let actor2 = make_node_actor("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let actor0 = make_node_actor_defexp("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
+        let actor1 = make_node_actor_defexp("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
+        let actor2 = make_node_actor_defexp("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
 
         asm.actor_mgr.add_node(&actor0).await.unwrap();
         asm.actor_mgr.add_node(&actor1).await.unwrap();
@@ -648,9 +587,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_role_filter() {
-        let asm = Arc::new(new_assembly_for_tests().await);
-        let node_actor = make_node_actor("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
-        let adapter_actor = make_adapter_actor("fd5a:5052::21", "adapter-1");
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let node_actor = make_node_actor_defexp("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
+        let adapter_actor = make_adapter_actor_defexp("fd5a:5052::21", "adapter-1");
 
         asm.actor_mgr.add_node(&node_actor).await.unwrap();
         asm.actor_mgr
@@ -709,7 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_invalid_role_filter() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
 

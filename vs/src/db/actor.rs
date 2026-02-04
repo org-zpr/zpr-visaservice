@@ -354,96 +354,19 @@ mod test {
     use super::*;
     use crate::db::DbConnection;
     use crate::db::db_fake::FakeDb;
-    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
-    use std::time::Duration;
-
-    fn make_actor(role: &str, zpr_addr: &str, services: &[&str]) -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(role),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("actor-1"),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(zpr_addr),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SERVICES)
-                    .expires_in(Duration::from_secs(3600))
-                    .values(services.iter().copied()),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder("identity.foo")
-                    .expires_in(Duration::from_secs(3600))
-                    .value("id-1"),
-            )
-            .unwrap();
-        actor.add_identity_key(usize::MAX, "identity.foo").unwrap();
-        actor
-    }
-
-    fn make_actor_with_cn(role: &str, zpr_addr: &str, services: &[&str], cn: &str) -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(role),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(cn),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(zpr_addr),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SERVICES)
-                    .expires_in(Duration::from_secs(3600))
-                    .values(services.iter().copied()),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder("identity.foo")
-                    .expires_in(Duration::from_secs(3600))
-                    .value("id-1"),
-            )
-            .unwrap();
-        actor.add_identity_key(usize::MAX, "identity.foo").unwrap();
-        actor
-    }
+    use crate::test_helpers::make_actor_with_services_defexp;
+    use libeval::attribute::{ROLE_ADAPTER, ROLE_NODE};
 
     #[tokio::test]
     async fn test_add_and_get_actor_roundtrip() {
         let db = Arc::new(FakeDb::new());
         let repo = ActorRepo::new(db);
-        let actor = make_actor(ROLE_NODE, "fd5a:5052::1", &["svc:one", "svc%two"]);
+        let actor = make_actor_with_services_defexp(
+            ROLE_NODE,
+            "fd5a:5052::1",
+            &["svc:one", "svc%two"],
+            "actor-1",
+        );
         let zpr_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
 
         repo.add_actor(&actor).await.unwrap();
@@ -461,7 +384,12 @@ mod test {
     async fn test_list_services_decodes_names() {
         let db = Arc::new(FakeDb::new());
         let repo = ActorRepo::new(db);
-        let actor = make_actor(ROLE_ADAPTER, "fd5a:5052::2", &["svc:one", "svc%two"]);
+        let actor = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
+            "fd5a:5052::2",
+            &["svc:one", "svc%two"],
+            "actor-1",
+        );
         let zpr_addr: IpAddr = "fd5a:5052::2".parse().unwrap();
 
         repo.add_actor(&actor).await.unwrap();
@@ -479,7 +407,8 @@ mod test {
     async fn test_rm_actor_cleans_up_keys() {
         let db = Arc::new(FakeDb::new());
         let repo = ActorRepo::new(db.clone());
-        let actor = make_actor(ROLE_NODE, "fd5a:5052::3", &["svc:one"]);
+        let actor =
+            make_actor_with_services_defexp(ROLE_NODE, "fd5a:5052::3", &["svc:one"], "actor-1");
         let zpr_addr: IpAddr = "fd5a:5052::3".parse().unwrap();
 
         repo.add_actor(&actor).await.unwrap();
@@ -504,9 +433,14 @@ mod test {
         let db = Arc::new(FakeDb::new());
         let repo = ActorRepo::new(db);
 
-        let node_actor = make_actor_with_cn(ROLE_NODE, "fd5a:5052::10", &["svc:one"], "node-cn");
-        let adapter_actor =
-            make_actor_with_cn(ROLE_ADAPTER, "fd5a:5052::20", &["svc:two"], "adapter-cn");
+        let node_actor =
+            make_actor_with_services_defexp(ROLE_NODE, "fd5a:5052::10", &["svc:one"], "node-cn");
+        let adapter_actor = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
+            "fd5a:5052::20",
+            &["svc:two"],
+            "adapter-cn",
+        );
 
         repo.add_actor(&node_actor).await.unwrap();
         repo.add_actor(&adapter_actor).await.unwrap();
