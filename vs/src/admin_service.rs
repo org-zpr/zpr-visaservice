@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use libeval::attribute::{ROLE_NODE, key};
 use tracing::{debug, error, info, warn};
 
 use axum::{
@@ -35,7 +36,7 @@ use crate::db::Role;
 use crate::logging::targets::HTADMIN;
 
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NodeRecordBrief, PolicyBundle,
+    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry, PolicyBundle,
     Revokes, ServiceDescriptor, VisaDescriptor,
 };
 
@@ -278,25 +279,51 @@ async fn get_actors(
     }
 }
 
-async fn get_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/actors/{}", cn);
-    let nrb = NodeRecordBrief {
-        pending: 0,
-        last_contact: 0,
-        visa_requests: 0,
-        connect_requests: 0,
-        in_sync: false,
-    };
-    let ad = ActorDescriptor {
-        cn: "c".to_string(),
-        ctime: 0,
-        ident: "i".to_string(),
-        node: false,
-        zpr_addr: "z".to_string(),
-        node_details: nrb,
-    };
+async fn get_actor(
+    State(state): State<SharedState>,
+    EPath(cn): EPath<String>,
+) -> Result<Json<ActorDescriptor>, StatusCode> {
+    info!(target: HTADMIN, "GET /admin/actor/{}", cn);
+    let rstate = state.read().await;
 
-    (StatusCode::OK, Json(ad)).into_response()
+    match rstate.asm.actor_mgr.get_actor_by_cn(&cn).await {
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(opt_a) => match opt_a {
+            None => Err(StatusCode::NOT_FOUND),
+            Some(actor) => {
+                let ident = match actor.get_identity() {
+                    Some(id) => id.join("|"),
+                    None => "".to_string(),
+                };
+
+                let is_node = match actor.get_attribute(key::ROLE) {
+                    Some(role_attr) => {
+                        if let Ok(role_val) = role_attr.get_single_value() {
+                            role_val == ROLE_NODE
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                };
+
+                let zpr_addr_str = match actor.get_zpr_addr() {
+                    Some(addr) => addr.to_string(),
+                    None => "".to_string(),
+                };
+
+                let descriptor = ActorDescriptor {
+                    cn: cn.clone(),
+                    ctime: 0, // TODO: Not tracked yet
+                    ident,
+                    node: is_node,
+                    zpr_addr: zpr_addr_str,
+                    node_details: None, // TODO
+                };
+                return Ok(Json(descriptor));
+            }
+        },
+    }
 }
 
 async fn revoke_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
@@ -314,16 +341,50 @@ async fn get_related_visas(EPath(cn): EPath<String>) -> impl IntoResponse {
     two_elem_list()
 }
 
-async fn get_services() -> impl IntoResponse {
+async fn get_services(State(state): State<SharedState>) -> (StatusCode, Json<Vec<NamedListEntry>>) {
     info!(target: HTADMIN, "GET /admin/services");
-    two_elem_list()
+    let rstate = state.read().await;
+
+    match rstate.asm.actor_mgr.get_services_list().await {
+        Err(e) => {
+            error!(target: HTADMIN, "error listing services: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Vec::<NamedListEntry>::new()),
+            )
+        }
+        Ok(services) => {
+            let sle_list: Vec<NamedListEntry> = services
+                .into_iter()
+                .map(|se| NamedListEntry { id: se.name })
+                .collect();
+            (StatusCode::OK, Json(sle_list))
+        }
+    }
 }
 
-async fn get_service(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/services/{}", cn);
-    let sd = ServiceDescriptor { id: 0, actor_id: 0 };
+async fn get_service(
+    State(state): State<SharedState>,
+    EPath(cn): EPath<String>,
+) -> Result<Json<ServiceDescriptor>, StatusCode> {
+    info!(target: HTADMIN, "GET /admin/service CN={}", cn);
+    let rstate = state.read().await;
 
-    (StatusCode::OK, Json(sd)).into_response()
+    if let Some(detail) = rstate.asm.actor_mgr.get_service_detail(&cn).await.unwrap() {
+        let connect_via = match detail.connect_via.as_ref() {
+            Some(cv_addr) => cv_addr.to_string(),
+            None => "".to_string(),
+        };
+        let sd = ServiceDescriptor {
+            service_name: detail.service_name,
+            zpr_addr: detail.zpr_addr.to_string(),
+            actor_cn: detail.actor_cn,
+            dock_zpr_addr: connect_via,
+        };
+        return Ok(Json(sd));
+    }
+
+    Err(StatusCode::NOT_FOUND)
 }
 
 async fn get_revokes() -> impl IntoResponse {

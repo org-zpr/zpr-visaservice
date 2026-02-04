@@ -11,6 +11,7 @@
 //! - nodes set of IP addresses  of all connected nodes.
 //! - adapters set of IP addresses  of all connected adapters.
 
+use dashmap::DashMap;
 use libeval::actor::Actor;
 use libeval::attribute::Attribute;
 use libeval::attribute::key;
@@ -35,6 +36,8 @@ pub enum Role {
 
 pub struct ActorRepo {
     db: Arc<dyn DbConnection>,
+
+    cn_idx: DashMap<String, IpAddr>, // CN -> ZPR_ADDRESS
 }
 
 /// Location of a service in the ZPRnet.
@@ -52,11 +55,14 @@ impl ServiceEntry {
 
 impl ActorRepo {
     pub fn new(db_handle: Arc<dyn DbConnection>) -> Self {
-        ActorRepo { db: db_handle }
+        ActorRepo {
+            db: db_handle,
+            cn_idx: DashMap::new(),
+        }
     }
 
     /// Undo all the redis additions performed by `add_actor`.
-    async fn clean_up(&self, zpraddr: &IpAddr) -> Result<(), DBError> {
+    async fn clean_up(&self, zpraddr: &IpAddr, cn: Option<&str>) -> Result<(), DBError> {
         //let mut vk_conn = self.db.conn.clone();
 
         let zpraddr_str = zpraddr.to_string();
@@ -103,17 +109,24 @@ impl ActorRepo {
             }
             self.db.del(&services_key).await?;
         }
+
+        if let Some(cn_val) = cn {
+            self.cn_idx.remove(cn_val);
+        }
         Ok(())
     }
 
     pub async fn add_actor(&self, actor: &Actor) -> Result<(), DBError> {
         match self.try_add_actor(actor).await {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.add_to_cache(actor);
+                Ok(())
+            }
             Err(e) => {
                 // Attempt to clean up after ourselves...
                 warn!(target: REDIS, "add_actor failed, attempting cleanup");
                 if let Some(zpraddr) = actor.get_zpr_addr() {
-                    match self.clean_up(zpraddr).await {
+                    match self.clean_up(zpraddr, actor.get_cn()).await {
                         Ok(_) => (),
                         Err(cleanup_err) => {
                             error!(target: REDIS, "actor insert failed and so did clean up for addr={}: {}", zpraddr, cleanup_err);
@@ -121,6 +134,15 @@ impl ActorRepo {
                     }
                 }
                 Err(e)
+            }
+        }
+    }
+
+    /// Update our in-memory cache when we add an actor.
+    pub fn add_to_cache(&self, actor: &Actor) {
+        if let Some(cn_val) = actor.get_cn() {
+            if let Some(zpr_addr) = actor.get_zpr_addr() {
+                self.cn_idx.insert(cn_val.to_string(), zpr_addr.clone());
             }
         }
     }
@@ -160,6 +182,42 @@ impl ActorRepo {
         Ok(service_entries)
     }
 
+    /// Given a service name, look up the ZPR address of the actor providing that service (if any).
+    pub async fn get_zpr_addr_for_service(
+        &self,
+        service_name: &str,
+    ) -> Result<Option<IpAddr>, DBError> {
+        let svc_key = service_key_for(service_name);
+        if let Some(addr_str) = self.db.hget(&svc_key, "zpr_addr").await? {
+            let addr: IpAddr = addr_str.parse().map_err(|e| {
+                DBError::InvalidData(format!(
+                    "invalid zpr_addr in service entry {}: {}",
+                    svc_key, e
+                ))
+            })?;
+            Ok(Some(addr))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Load specific attributes by name from the actor datastructure. Only found attributes are returned.
+    pub async fn get_actor_attrs(
+        &self,
+        zpr_addr: &IpAddr,
+        attr_keys: &[&str],
+    ) -> Result<Vec<Attribute>, DBError> {
+        let attrs_key = attrs_key_for(zpr_addr);
+        let mut attrs = Vec::new();
+        for key in attr_keys {
+            if let Some(attr_json) = self.db.hget(&attrs_key, key).await? {
+                let attr: Attribute = serde_json::from_str(&attr_json)?;
+                attrs.push(attr);
+            }
+        }
+        Ok(attrs)
+    }
+
     /// Add an actor record which must only be called after initial authentication (there
     /// will likely be changes to an actor later from trusted services or re-authentication,
     /// but the updates should use a different function.)
@@ -173,7 +231,7 @@ impl ActorRepo {
             }
         };
 
-        self.clean_up(&zpraddr).await?;
+        self.clean_up(&zpraddr, actor.get_cn()).await?;
 
         let zpraddr_str = zpraddr.to_string();
         let base_key = actor_key_for(&zpraddr);
@@ -250,7 +308,22 @@ impl ActorRepo {
 
     /// Remove actor from the state database, including all services.
     pub async fn rm_actor_by_zpr_addr(&self, zpra: &std::net::IpAddr) -> Result<(), DBError> {
-        self.clean_up(zpra).await?;
+        let opt_cn = match self.get_actor_attrs(zpra, &[key::CN]).await {
+            Ok(attr_list) => {
+                if attr_list.is_empty() {
+                    None
+                } else {
+                    if let Ok(cn_val) = attr_list[0].get_single_value() {
+                        Some(cn_val.to_string())
+                    } else {
+                        None
+                    }
+                }
+            }
+            Err(_) => None,
+        };
+
+        self.clean_up(zpra, opt_cn.as_deref()).await?;
         debug!(target: REDIS, "removed actor from DB: addr={zpra}");
         Ok(())
     }
@@ -288,6 +361,20 @@ impl ActorRepo {
             actor.add_identity_key(usize::MAX, idkey)?; // 0 means no expiration
         }
         Ok(actor)
+    }
+
+    /// Look up actor by CN attribute. Uses our cache.
+    ///
+    /// ## Errors
+    // - Returns `DBError::NotFound` if no actor found for the given CN.
+    pub async fn get_actor_by_cn(&self, cn: &str) -> Result<Actor, DBError> {
+        let actor_addr = match self.cn_idx.get(cn) {
+            Some(addr) => addr.clone(),
+            None => {
+                return Err(DBError::NotFound(format!("actor not found for CN: {}", cn)));
+            }
+        };
+        self.get_actor_by_zpr_addr(&actor_addr).await
     }
 
     /// This uses our "nodes" and "adapters" sets to list the CN values of all connected actors.
