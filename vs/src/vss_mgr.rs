@@ -18,6 +18,7 @@ use zpr::write_to::WriteTo;
 
 use crate::assembly::Assembly;
 use crate::config;
+use crate::counters::CounterType;
 use crate::error::VSSError;
 use crate::logging::targets::VSSMGR;
 
@@ -238,6 +239,7 @@ async fn vss_worker_loop(
         Ok(sock) => sock,
         Err(e) => {
             error!(target: VSSMGR, "failed to connect to VSS at {}: {}", node_addr, e);
+            asm.counters.incr(CounterType::VssErrors);
             return; // TODO: How to signal manager?
         }
     };
@@ -269,6 +271,7 @@ async fn vss_worker_loop(
         Ok(req_resp) => req_resp,
         Err(e) => {
             error!(target: VSSMGR, "VSS connect request failed: {}", e);
+            asm.counters.incr(CounterType::VssErrors);
             return; // TODO: Signal manager?
         }
     };
@@ -280,6 +283,7 @@ async fn vss_worker_loop(
         v1::result::Which::Error(err_obj) => {
             let err_obj = err_obj.unwrap();
             error!(target: VSSMGR, "VSS connect error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
+            asm.counters.incr(CounterType::VssErrors);
             return; // TODO: Signal manager?
         }
     };
@@ -291,6 +295,7 @@ async fn vss_worker_loop(
             debug!(target: VSSMGR, "sending initial auth services list to VSS at {}", node_addr);
             if let Err(e) = do_set_services(&vss_handle, 1, services).await {
                 error!(target: VSSMGR, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
+                asm.counters.incr(CounterType::VssErrors);
             } else {
                 debug!(target: VSSMGR, "initial auth services list sent to VSS at {}", node_addr);
             }
@@ -313,21 +318,25 @@ async fn vss_worker_loop(
                     VssCmd::PushVisas(_visas, resp_tx) => {
                         if let Err(e) = resp_tx.send(Err(VSSError::InternalError("push-visas not implemented".to_string()))) {
                             error!(target: VSSMGR, "failed to send response for push-visas command: {:?}", e);
+                            asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                     VssCmd::RevokeVisasById(_visa_id, resp_tx) => {
                         if let Err(e) = resp_tx.send(Err(VSSError::InternalError("revoke-visas not implemented".to_string()))) {
                             error!(target: VSSMGR, "failed to send response for revoke-visas command: {:?}", e);
+                            asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                     VssCmd::RevokeAuthsByZprAddr(_zpr_addr, resp_tx) => {
                         if let Err(e) = resp_tx.send(Err(VSSError::InternalError("revoke-auths not implemented".to_string()))) {
                             error!(target: VSSMGR, "failed to send response for revoke-auths command: {:?}", e);
+                            asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                     VssCmd::SetServices(_version, _services, resp_tx) => {
                         if let Err(e) = resp_tx.send(do_set_services(&vss_handle, _version, _services).await) {
                             error!(target: VSSMGR, "failed to send response for set-services command: {:?}", e);
+                            asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                 }

@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use crate::actor_mgr::ActorMgr;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
+use crate::counters::Counters;
 use crate::db::DbConnection;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
@@ -13,6 +14,7 @@ use crate::vss_mgr::VssMgr;
 #[allow(dead_code)]
 pub struct Assembly {
     pub config: VSConfig,
+    pub counters: Counters,
     pub system_start_time: std::time::Instant,
     pub cc: ConnectionControl,
     pub policy_mgr: PolicyMgr,
@@ -40,12 +42,12 @@ pub mod tests {
 
     use crate::actor_mgr::ActorMgr;
     use crate::connection_control::ConnectionControl;
-    use crate::policy_mgr::PolicyMgr;
-    use crate::visa_mgr::VisaMgr;
-    use crate::vss_mgr::VssMgr;
-
     use crate::db::FakeDb;
     use crate::db::{ActorRepo, NodeRepo, PolicyRepo, VisaRepo};
+    use crate::policy_mgr::PolicyMgr;
+    use crate::visa_mgr::VisaMgr;
+    use crate::visareq_worker::VisaRequestJob;
+    use crate::vss_mgr::VssMgr;
 
     use bytes::Bytes;
     use libeval::policy::Policy;
@@ -68,8 +70,15 @@ pub mod tests {
         Policy::new_from_policy_bytes(Bytes::copy_from_slice(&bytes)).unwrap()
     }
 
-    pub async fn new_assembly_for_tests() -> Assembly {
-        let (vreq_tx, _vreq_rx) = mpsc::channel(100);
+    pub async fn new_assembly_for_tests(
+        vreq_tx_chan: Option<mpsc::Sender<VisaRequestJob>>,
+    ) -> Assembly {
+        let vreq_tx = if let Some(tx) = vreq_tx_chan {
+            tx
+        } else {
+            let (tx, _rx) = mpsc::channel(100);
+            tx
+        };
 
         let db_handle = Arc::new(FakeDb::new());
 
@@ -82,6 +91,7 @@ pub mod tests {
 
         Assembly {
             config: VSConfig::default(),
+            counters: Default::default(),
             system_start_time: std::time::Instant::now(),
             cc: ConnectionControl::new(),
             policy_mgr: PolicyMgr::new_with_initial_policy(initial_policy, policy_repo)

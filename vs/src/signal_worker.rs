@@ -1,18 +1,25 @@
-use crate::assembly::Assembly;
-use crate::logging::targets::MAIN;
 use std::sync::Arc;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::task::spawn_local;
 use tracing::*;
 
+use crate::assembly::Assembly;
+use crate::counters::Counters;
+use crate::logging::targets::MAIN;
+
 pub async fn launch(asm: Arc<Assembly>) {
     let mut term_stream = signal(SignalKind::terminate()).unwrap();
     let mut int_stream = signal(SignalKind::interrupt()).unwrap();
+    let mut usr1_stream = signal(SignalKind::user_defined1()).unwrap();
 
     let mut int_received = false;
 
     loop {
         tokio::select! {
+            _ = usr1_stream.recv() => {
+                emit_counts(&asm.counters, asm.get_uptime());
+            }
+
             _ = int_stream.recv() => {
                 // Treat a single SIGINT as a UI request to shut down cleanly;
                 // any subsequent SIGINTs as a forced shutdown.
@@ -41,5 +48,20 @@ pub async fn launch(asm: Arc<Assembly>) {
 
 async fn do_clean_shutdown(asm: Arc<Assembly>) -> ! {
     asm.shutdown().await;
+    emit_counts(&asm.counters, asm.get_uptime());
     std::process::exit(0);
+}
+
+fn emit_counts(counters: &Counters, uptime: std::time::Duration) {
+    println!(
+        "{:>42}\n",
+        format!(
+            "** ZPR Visa Service - uptime {}.{}s",
+            uptime.as_secs(),
+            uptime.subsec_millis()
+        ),
+    );
+    for (key, ref value) in &counters.counters {
+        println!("{:>34}: {}", key.name(), value.get_count());
+    }
 }
