@@ -441,8 +441,8 @@ mod test {
     use super::*;
     use crate::db::DbConnection;
     use crate::db::db_fake::FakeDb;
-    use crate::test_helpers::make_actor_with_services_defexp;
-    use libeval::attribute::{ROLE_ADAPTER, ROLE_NODE};
+    use crate::test_helpers::{make_actor_defexp, make_actor_with_services_defexp};
+    use libeval::attribute::{ROLE_ADAPTER, ROLE_NODE, key};
 
     #[tokio::test]
     async fn test_add_and_get_actor_roundtrip() {
@@ -544,5 +544,98 @@ mod test {
 
         let adapter_cns = repo.list_actor_cns(Some(Role::Adapter)).await.unwrap();
         assert_eq!(adapter_cns, vec!["adapter-cn".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_get_zpr_addr_for_service_returns_addr_and_none() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+        let actor =
+            make_actor_with_services_defexp(ROLE_NODE, "fd5a:5052::30", &["svc:one"], "actor-1");
+        let zpr_addr: IpAddr = "fd5a:5052::30".parse().unwrap();
+
+        repo.add_actor(&actor).await.unwrap();
+
+        let found = repo.get_zpr_addr_for_service("svc:one").await.unwrap();
+        assert_eq!(found, Some(zpr_addr));
+
+        let missing = repo.get_zpr_addr_for_service("svc:missing").await.unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_zpr_addr_for_service_invalid_addr() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db.clone());
+        let svc_key = service_key_for("svc:bad");
+
+        db.hset(&svc_key, "zpr_addr", "not-an-ip").await.unwrap();
+
+        let err = repo.get_zpr_addr_for_service("svc:bad").await.unwrap_err();
+        match err {
+            DBError::InvalidData(_) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_actor_attrs_returns_only_found() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+        let actor = make_actor_defexp(&[
+            (key::ROLE, ROLE_ADAPTER),
+            (key::CN, "actor-attrs"),
+            (key::ZPR_ADDR, "fd5a:5052::40"),
+        ]);
+        let zpr_addr: IpAddr = "fd5a:5052::40".parse().unwrap();
+
+        repo.add_actor(&actor).await.unwrap();
+
+        let attrs = repo
+            .get_actor_attrs(&zpr_addr, &[key::CN, "missing.key", key::ROLE])
+            .await
+            .unwrap();
+
+        assert_eq!(attrs.len(), 2);
+        assert_eq!(attrs[0].get_key(), key::CN);
+        assert_eq!(attrs[0].get_single_value().unwrap(), "actor-attrs");
+        assert_eq!(attrs[1].get_key(), key::ROLE);
+        assert_eq!(attrs[1].get_single_value().unwrap(), ROLE_ADAPTER);
+    }
+
+    #[tokio::test]
+    async fn test_get_actor_by_cn_not_found() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+
+        let err = repo.get_actor_by_cn("missing-cn").await.unwrap_err();
+        match err {
+            DBError::NotFound(_) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_actor_by_cn_and_rm_clears_cache() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+        let actor = make_actor_with_services_defexp(
+            ROLE_NODE,
+            "fd5a:5052::50",
+            &["svc:one"],
+            "actor-cache",
+        );
+        let zpr_addr: IpAddr = "fd5a:5052::50".parse().unwrap();
+
+        repo.add_actor(&actor).await.unwrap();
+        let loaded = repo.get_actor_by_cn("actor-cache").await.unwrap();
+        assert_eq!(loaded.get_zpr_addr(), Some(&zpr_addr));
+
+        repo.rm_actor_by_zpr_addr(&zpr_addr).await.unwrap();
+        let err = repo.get_actor_by_cn("actor-cache").await.unwrap_err();
+        match err {
+            DBError::NotFound(_) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

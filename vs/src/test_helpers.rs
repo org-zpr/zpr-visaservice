@@ -23,6 +23,11 @@ pub fn make_actor(attrs: &[(&str, &str)], expires: Duration) -> Actor {
     actor
 }
 
+/// Build an [Actor] with the provided attributes using the default expiration.
+pub fn make_actor_defexp(attrs: &[(&str, &str)]) -> Actor {
+    make_actor(attrs, DEFAULT_EXPIRES)
+}
+
 /// Build a node [Actor] with role, CN, ZPR addr and substrate addr.
 /// Note: `substrate` must be a socket address string (e.g. `HOST:PORT` or `[IPv6]:PORT`).
 pub fn make_node_actor(zpr_addr: &str, cn: &str, substrate: &str, expires: Duration) -> Actor {
