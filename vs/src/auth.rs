@@ -25,7 +25,7 @@ pub fn verify_ss_blob_signature(
 /// Returns TRUE if signature is valid for the given content and public key.
 pub fn verify_rsa_sha256_signature(
     pubkey: PKey<Public>,
-    incomming_signature: &[u8],
+    incoming_signature: &[u8],
     content: &[&[u8]],
 ) -> Result<bool, CryptoError> {
     let mut verifier = Verifier::new(MessageDigest::sha256(), &pubkey)?;
@@ -34,6 +34,6 @@ pub fn verify_rsa_sha256_signature(
         verifier.update(chunk)?;
     }
 
-    let sig_ok = verifier.verify(incomming_signature)?;
+    let sig_ok = verifier.verify(incoming_signature)?;
     Ok(sig_ok)
 }
