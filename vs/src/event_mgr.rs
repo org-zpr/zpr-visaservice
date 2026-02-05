@@ -2,6 +2,7 @@
 //! visa service system such as actor joins/leaves. Operations in here
 //! are not able to report back success/failure to the "caller".
 
+use futures::stream::{self, StreamExt};
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -131,23 +132,29 @@ async fn set_services_all_nodes(
 ) -> Result<(), VSError> {
     let node_list = asm.actor_mgr.list_node_addrs().await.unwrap_or_default();
 
-    for naddr in &node_list {
-        debug!(
-            target: EVNTMGR,
-        "attempting to use VSS to set_services on node {naddr}"
-        );
-        let service_list: Vec<ServiceDescriptor> = service_set.to_vec();
-        if let Some(vss_h) = asm.vss_mgr.get_handle(naddr) {
-            if let Err(e) = vss_h.set_services(1, service_list).await {
-                error!(
-                    target: EVNTMGR,
-                    "failed to set_services on node {}: {}",
-                    naddr,
-                    e
-                );
-            }
-        }
-    }
+    // Make RPC calls to the nodes in parallel.
 
+    stream::iter(node_list)
+        .for_each_concurrent(None, |naddr| {
+            let asm = asm.clone();
+            let service_list: Vec<ServiceDescriptor> = service_set.to_vec();
+            async move {
+                debug!(
+                    target: EVNTMGR,
+                    "attempting to use VSS to set_services on node {naddr}"
+                );
+                if let Some(vss_h) = asm.vss_mgr.get_handle(&naddr) {
+                    if let Err(e) = vss_h.set_services(1, service_list).await {
+                        error!(
+                            target: EVNTMGR,
+                            "failed to set_services on node {}: {}",
+                            naddr,
+                            e
+                        );
+                    }
+                }
+            }
+        })
+        .await;
     Ok(())
 }
