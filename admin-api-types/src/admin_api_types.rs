@@ -58,12 +58,12 @@ pub struct VisaDescriptor {
     pub id: u64,
     pub expires: u64, // milliseconds since the epoch
     pub created: u64, // milliseconds since the epich
-    pub actor_id: String,
     pub policy_id: String,
-    pub source_addr: String,
-    pub dest_addr: String,
-    pub source_port: String,
-    pub dest_port: String,
+    pub requesting_node: String, // ZPR address
+    pub source_addr: String,     // ZPR address
+    pub dest_addr: String,       // ZPR address
+    pub source_port: u16,
+    pub dest_port: u16,
     pub proto: String,
 }
 
@@ -104,8 +104,8 @@ impl fmt::Display for VisaDescriptor {
             "{} {} {} {} {} {}  {}:{} {} {}:{}  {} {}  {} {}   {} {} {}{}:{:02}:{:02} {}",
             format!("{}", "id".dimmed()),
             self.id,
-            format!("{}", "actor id".dimmed()),
-            self.actor_id,
+            format!("{}", "requesting node".dimmed()),
+            self.requesting_node.yellow(),
             format!("{}", "policy id".dimmed()),
             self.policy_id,
             format!("{}", self.source_addr).yellow(),
