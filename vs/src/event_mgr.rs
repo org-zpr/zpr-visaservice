@@ -48,12 +48,12 @@ pub async fn launch(asm: Arc<Assembly>, mut event_rx: mpsc::Receiver<VsEvent>) {
     while let Some(event) = event_rx.recv().await {
         match event {
             VsEvent::ActorJoins(actor) => {
-                if let Err(e) = handle_actor_joins(asm.clone(), actor).await {
+                if let Err(e) = handle_actor_joins(&asm, actor).await {
                     error!(target: EVNTMGR, "failed to handle actor join event: {}", e);
                 }
             }
             VsEvent::ActorLeaves(actor, reason) => {
-                if let Err(e) = handle_actor_leaves(asm.clone(), actor, reason).await {
+                if let Err(e) = handle_actor_leaves(&asm, actor, reason).await {
                     error!(target: EVNTMGR, "failed to handle actor leave event: {}", e);
                 }
             }
@@ -63,7 +63,7 @@ pub async fn launch(asm: Arc<Assembly>, mut event_rx: mpsc::Receiver<VsEvent>) {
 }
 
 // Maybe will call into topology routines from here eventually.
-async fn handle_actor_joins(asm: Arc<Assembly>, actor_addr: IpAddr) -> Result<(), VSError> {
+async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(), VSError> {
     info!(target: EVNTMGR, "actor joined: {}", actor_addr);
     let has_auth_services = asm
         .actor_mgr
@@ -88,7 +88,7 @@ async fn handle_actor_joins(asm: Arc<Assembly>, actor_addr: IpAddr) -> Result<()
 // The goal is somewhere to centralize high level logic that imapacts all sorts of areas in the
 // visa service.
 async fn handle_actor_leaves(
-    asm: Arc<Assembly>,
+    asm: &Arc<Assembly>,
     actor_addr: IpAddr,
     reason: DisconnectReason,
 ) -> Result<(), VSError> {
