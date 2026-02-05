@@ -7,7 +7,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use crate::assembly::Assembly;
 use crate::config;
 use crate::db;
-use crate::error::VSError;
+use crate::error::{DBError, VSError};
 use crate::logging::targets::VMGR;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
@@ -229,6 +229,25 @@ impl VisaMgr {
     pub async fn list_all_visa_ids(&self) -> Result<Vec<u64>, VSError> {
         let visa_ids = self.repo.list_visa_ids().await?;
         Ok(visa_ids)
+    }
+
+    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Option<Visa>, VSError> {
+        match self.repo.get_visa_by_id(visa_id).await {
+            Ok(visa) => Ok(Some(visa)),
+            Err(DBError::NotFound(_)) => Ok(None),
+            Err(e) => Err(VSError::from(e)),
+        }
+    }
+
+    pub async fn get_visa_metadata_by_id(
+        &self,
+        visa_id: u64,
+    ) -> Result<Option<db::VisaMetadata>, VSError> {
+        match self.repo.get_visa_metadata_by_id(visa_id).await {
+            Ok(md) => Ok(Some(md)),
+            Err(DBError::NotFound(_)) => Ok(None),
+            Err(e) => Err(VSError::from(e)),
+        }
     }
 }
 

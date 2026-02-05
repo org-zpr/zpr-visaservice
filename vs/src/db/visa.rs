@@ -35,8 +35,26 @@ pub enum NodeVisaState {
     Revoked,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisaMetadata {
+    pub requesting_node: IpAddr,
+    pub ctime: u64, // unix timestamp millisconds
+}
+
 pub struct VisaRepo {
     db: Arc<dyn DbConnection>,
+}
+
+impl VisaMetadata {
+    pub fn new(requesting_node: IpAddr) -> Self {
+        VisaMetadata {
+            requesting_node,
+            ctime: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
+        }
+    }
 }
 
 impl VisaRepo {
@@ -109,7 +127,8 @@ impl VisaRepo {
         visa: &Visa,
         nstate: NodeVisaState,
     ) -> Result<(), DBError> {
-        match self.try_store_visa(requesting_node, visa, nstate).await {
+        let metadata = VisaMetadata::new(*requesting_node);
+        match self.try_store_visa(&metadata, visa, nstate).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 warn!(target: REDIS, "failed to store visa: {}, attempting cleanup", visa.issuer_id);
@@ -131,7 +150,7 @@ impl VisaRepo {
     /// want to set it as [NodeVisaState::Installed].
     async fn try_store_visa(
         &self,
-        requesting_node: &IpAddr,
+        metadata: &VisaMetadata,
         visa: &Visa,
         nstate: NodeVisaState,
     ) -> Result<(), DBError> {
@@ -167,17 +186,10 @@ impl VisaRepo {
 
         //
         // visa:<ID>
-        //       |- requesting_node -> string, zpr address
-        //       |- ctime           -> string, timestamp
+        //       |- JSON(VisaMetadata)
         //
         self.db
-            .hset_multiple(
-                &key_visa,
-                &[
-                    ("requesting_node", requesting_node.to_string().as_str()),
-                    ("ctime", &gen_timestamp()),
-                ],
-            )
+            .set(&key_visa, &serde_json::to_string(&metadata)?)
             .await?;
         self.db.expire(&key_visa, expiration_seconds as i64).await?;
 
@@ -189,7 +201,7 @@ impl VisaRepo {
 
         // TODO: We may want to use a struct here for the whole state entry and just serialize it all
         // as JSON, but for now am leaving open option of just updating fields individually using redis.
-        let key_nodevisa = node_visa_key_for_visa(requesting_node, visa_id);
+        let key_nodevisa = node_visa_key_for_visa(&metadata.requesting_node, visa_id);
         self.db
             .hset_multiple(
                 &key_nodevisa,
@@ -281,6 +293,42 @@ impl VisaRepo {
         }
 
         Ok(visas)
+    }
+
+    /// Get the visa by ID.
+    ///
+    /// ## Errors
+    /// - [DBError::NotFound] if the visa does not exist.
+    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Visa, DBError> {
+        let blob_key = blob_key_for_visa(visa_id);
+        if !self.db.exists(&blob_key).await? {
+            return Err(DBError::NotFound(format!(
+                "visa blob not found for ID {}",
+                visa_id
+            )));
+        }
+        let visa_blob = self.db.get_bin(&blob_key).await?;
+        let visa = Visa::from_capnp_bytes(&visa_blob)?;
+        Ok(visa)
+    }
+
+    /// Get the metadata for the visa by ID.
+    ///
+    /// ## Errors
+    /// - [DBError::NotFound] if the visa metadata does not exist.
+    pub async fn get_visa_metadata_by_id(&self, visa_id: u64) -> Result<VisaMetadata, DBError> {
+        let visa_key = visa_key_for_visa(visa_id);
+        if !self.db.exists(&visa_key).await? {
+            return Err(DBError::NotFound(format!(
+                "visa metadata not found for ID {}",
+                visa_id
+            )));
+        }
+        let metadata_str: String = self.db.get(&visa_key).await?.ok_or_else(|| {
+            DBError::NotFound(format!("visa metadata not found for ID {}", visa_id))
+        })?;
+        let metadata: VisaMetadata = serde_json::from_str(&metadata_str)?;
+        Ok(metadata)
     }
 
     /// Copy all the visa IDs into a vec.

@@ -11,7 +11,7 @@ pub use actor::{ActorRepo, Role, ServiceEntry};
 pub use db_redis::RedisDb;
 pub use node::{Node, NodeRepo};
 pub use policy::PolicyRepo;
-pub use visa::{NodeVisaState, VisaRepo};
+pub use visa::{NodeVisaState, VisaMetadata, VisaRepo};
 
 #[cfg(test)]
 pub use db_fake::FakeDb;
