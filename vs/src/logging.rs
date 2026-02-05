@@ -2,33 +2,18 @@ use tracing::Level;
 use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*};
 
 /// Target of a log message, for filtering.
+/// Convention: const name = UPPER(string value).
 pub mod targets {
     pub const MAIN: &str = "main";
-
-    /// HTTPS admin server.
-    pub const HTADMIN: &str = "htadmin";
-
-    /// The Capn Proto VS-API service.
-    pub const VSAPI: &str = "vsapi";
-
-    /// Connection Control.
-    pub const CC: &str = "conctrl";
-
-    /// Redis/ValKey store
-    pub const REDIS: &str = "redisdb";
-
-    /// Visa Manager
-    pub const VMGR: &str = "visamgr";
-
-    /// Actor Manager
+    pub const ADMIN: &str = "admin";
+    pub const API: &str = "api";
+    pub const CC: &str = "cc";
+    pub const DB: &str = "db";
+    pub const VISA: &str = "visa";
     #[allow(dead_code)]
-    pub const AMGR: &str = "actormgr";
-
-    /// VSS Manager
-    pub const VSSMGR: &str = "vssmgr";
-
-    /// Visa request worker pool
-    pub const VISAREQ: &str = "visareq";
+    pub const ACTOR: &str = "actor";
+    pub const VSS: &str = "vss";
+    pub const VREQ: &str = "vreq";
 }
 
 pub fn enable_logging(verbose: bool) {

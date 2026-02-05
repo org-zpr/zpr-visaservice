@@ -15,7 +15,7 @@ use tracing::debug;
 use crate::db;
 use crate::db::{DbConnection, DbOp};
 use crate::error::DBError;
-use crate::logging::targets::REDIS;
+use crate::logging::targets::DB;
 
 const KEY_POLICIES: &str = "policies";
 const KEY_POLICY: &str = "policy";
@@ -49,7 +49,7 @@ impl PolicyRepo {
                 .await?;
         let mut updated = false;
         if !exists || force_overwrite {
-            debug!(target: REDIS, "updating current policy in DB to phash {phash}");
+            debug!(target: DB, "updating current policy in DB to phash {phash}");
             let pbuf = policy.get_serialized(); // get capn proto bytes
 
             //
@@ -82,7 +82,7 @@ impl PolicyRepo {
 
             updated = true;
         } else {
-            debug!(target: REDIS, "set_current_policy found policy already set, hash={phash}");
+            debug!(target: DB, "set_current_policy found policy already set, hash={phash}");
         }
 
         Ok(updated)

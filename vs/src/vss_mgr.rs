@@ -20,7 +20,7 @@ use crate::assembly::Assembly;
 use crate::config;
 use crate::counters::CounterType;
 use crate::error::VSSError;
-use crate::logging::targets::VSSMGR;
+use crate::logging::targets::VSS;
 
 pub struct VssMgr {
     // Each node has an entry here, handle is a thread monitoring the nodes VSS.
@@ -214,7 +214,7 @@ async fn run_vss_job(job: Job) {
             delay,
             cmd_rx,
         } => {
-            debug!(target: VSSMGR, "starting VSS worker for node at {}", vss_addr);
+            debug!(target: VSS, "starting VSS worker for node at {}", vss_addr);
             let naddr = vss_addr.ip().to_owned();
             tokio::time::sleep(delay).await;
             vss_worker_loop(asm.clone(), vss_addr, cmd_rx).await;
@@ -232,13 +232,13 @@ async fn vss_worker_loop(
     mut cmd_rx: mpsc::Receiver<VssCmd>,
 ) {
     // Open connect to VSS.
-    info!(target: VSSMGR, "connecting to VSS at {}", node_addr);
+    info!(target: VSS, "connecting to VSS at {}", node_addr);
 
     // TODO: TLS
     let sock = match tokio::net::TcpStream::connect(node_addr).await {
         Ok(sock) => sock,
         Err(e) => {
-            error!(target: VSSMGR, "failed to connect to VSS at {}: {}", node_addr, e);
+            error!(target: VSS, "failed to connect to VSS at {}: {}", node_addr, e);
             asm.counters.incr(CounterType::VssErrors);
             return; // TODO: How to signal manager?
         }
@@ -270,7 +270,7 @@ async fn vss_worker_loop(
     let handle_result_rdr = match req.send().promise.await {
         Ok(req_resp) => req_resp,
         Err(e) => {
-            error!(target: VSSMGR, "VSS connect request failed: {}", e);
+            error!(target: VSS, "VSS connect request failed: {}", e);
             asm.counters.incr(CounterType::VssErrors);
             return; // TODO: Signal manager?
         }
@@ -282,26 +282,26 @@ async fn vss_worker_loop(
         v1::result::Which::Ok(vss_handle_obj) => vss_handle_obj.unwrap(),
         v1::result::Which::Error(err_obj) => {
             let err_obj = err_obj.unwrap();
-            error!(target: VSSMGR, "VSS connect error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
+            error!(target: VSS, "VSS connect error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
             asm.counters.incr(CounterType::VssErrors);
             return; // TODO: Signal manager?
         }
     };
 
-    info!(target: VSSMGR, "connected to VSS at {}", node_addr);
+    info!(target: VSS, "connected to VSS at {}", node_addr);
 
     match asm.actor_mgr.get_auth_services_list(asm.clone()).await {
         Ok(services) => {
-            debug!(target: VSSMGR, "sending initial auth services list to VSS at {}", node_addr);
+            debug!(target: VSS, "sending initial auth services list to VSS at {}", node_addr);
             if let Err(e) = do_set_services(&vss_handle, 1, services).await {
-                error!(target: VSSMGR, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
+                error!(target: VSS, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
                 asm.counters.incr(CounterType::VssErrors);
             } else {
-                debug!(target: VSSMGR, "initial auth services list sent to VSS at {}", node_addr);
+                debug!(target: VSS, "initial auth services list sent to VSS at {}", node_addr);
             }
         }
         Err(e) => {
-            warn!(target: VSSMGR, "failed to get auth services list for VSS at {}: {}", node_addr, e);
+            warn!(target: VSS, "failed to get auth services list for VSS at {}: {}", node_addr, e);
         }
     }
 
@@ -312,30 +312,30 @@ async fn vss_worker_loop(
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     VssCmd::Stop() => {
-                        info!(target: VSSMGR, "stop called on VSS worker for {}", node_addr);
+                        info!(target: VSS, "stop called on VSS worker for {}", node_addr);
                         break;
                     }
                     VssCmd::PushVisas(_visas, resp_tx) => {
                         if let Err(e) = resp_tx.send(Err(VSSError::InternalError("push-visas not implemented".to_string()))) {
-                            error!(target: VSSMGR, "failed to send response for push-visas command: {:?}", e);
+                            error!(target: VSS, "failed to send response for push-visas command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                     VssCmd::RevokeVisasById(_visa_id, resp_tx) => {
                         if let Err(e) = resp_tx.send(Err(VSSError::InternalError("revoke-visas not implemented".to_string()))) {
-                            error!(target: VSSMGR, "failed to send response for revoke-visas command: {:?}", e);
+                            error!(target: VSS, "failed to send response for revoke-visas command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                     VssCmd::RevokeAuthsByZprAddr(_zpr_addr, resp_tx) => {
                         if let Err(e) = resp_tx.send(Err(VSSError::InternalError("revoke-auths not implemented".to_string()))) {
-                            error!(target: VSSMGR, "failed to send response for revoke-auths command: {:?}", e);
+                            error!(target: VSS, "failed to send response for revoke-auths command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                     VssCmd::SetServices(_version, _services, resp_tx) => {
                         if let Err(e) = resp_tx.send(do_set_services(&vss_handle, _version, _services).await) {
-                            error!(target: VSSMGR, "failed to send response for set-services command: {:?}", e);
+                            error!(target: VSS, "failed to send response for set-services command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
@@ -347,16 +347,16 @@ async fn vss_worker_loop(
                 let ping_req = vss_handle.ping_request();
                 let ping_response_or_err = ping_req.send().promise.await;
                 if ping_response_or_err.is_err() {
-                    info!(target: VSSMGR, "ping to VSS at {} failed", node_addr);
+                    info!(target: VSS, "ping to VSS at {} failed", node_addr);
                 }
                 else {
                     let ping_response_rdr = ping_response_or_err.unwrap();
                     let ping_response_ok_or_error = ping_response_rdr.get();
                     match ping_response_ok_or_error.unwrap().get_res().unwrap().which().unwrap() {
-                        v1::ok_or_error::Which::Ok(_) => debug!(target: VSSMGR, "ping to VSS at {} succeeded", node_addr),
+                        v1::ok_or_error::Which::Ok(_) => debug!(target: VSS, "ping to VSS at {} succeeded", node_addr),
                         v1::ok_or_error::Which::Error(err_rdr) => {
                             let err_obj = err_rdr.unwrap();
-                            error!(target: VSSMGR, "VSS ping returns error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
+                            error!(target: VSS, "VSS ping returns error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
                         }
                     }
 

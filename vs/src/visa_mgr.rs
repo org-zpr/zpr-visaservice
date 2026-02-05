@@ -8,7 +8,7 @@ use crate::assembly::Assembly;
 use crate::config;
 use crate::db;
 use crate::error::VSError;
-use crate::logging::targets::VMGR;
+use crate::logging::targets::VISA;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval::{Direction, Hit};
@@ -215,13 +215,13 @@ impl VisaMgr {
     /// the revocation messages out to the other nodes.
     ///
     pub async fn remove_visas_for_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
-        info!(target: VMGR, "TODO: remove visas for node {node_addr}");
+        info!(target: VISA, "TODO: remove visas for node {node_addr}");
         Ok(())
     }
 
     /// Remove all visas tied to the listed actors, assumes the actors have departed.
     pub async fn remove_visas_for_actors(&self, _actor_addrs: &[IpAddr]) -> Result<(), VSError> {
-        info!(target: VMGR, "TODO: remove visas for actors now removed");
+        info!(target: VISA, "TODO: remove visas for actors now removed");
         Ok(())
     }
 

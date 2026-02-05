@@ -20,7 +20,7 @@ use tracing::debug;
 
 use crate::db::{DbConnection, DbOp, ZAddr};
 use crate::error::DBError;
-use crate::logging::targets::REDIS;
+use crate::logging::targets::DB;
 
 // We keep this whole thing as JSON in node:<ZADDR>
 #[derive(Debug, Serialize, Deserialize)]
@@ -139,7 +139,7 @@ impl NodeRepo {
             DbOp::Del(vss_key_for_node(node_addr)),
         ];
         self.db.atomic_pipeline(&ops).await?;
-        debug!(target: REDIS, "removed node state for node at addr {}", node_addr);
+        debug!(target: DB, "removed node state for node at addr {}", node_addr);
         Ok(())
     }
 }

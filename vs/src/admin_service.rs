@@ -32,7 +32,7 @@ use tokio_native_tls::{
 
 use crate::assembly::Assembly;
 use crate::db::Role;
-use crate::logging::targets::HTADMIN;
+use crate::logging::targets::ADMIN;
 
 use admin_api_types::admin_api_types::{
     ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NodeRecordBrief, PolicyBundle,
@@ -67,7 +67,7 @@ pub async fn start_admin_server(
     listen: SocketAddr,
     asm: &Arc<Assembly>,
 ) {
-    info!(target: HTADMIN, "admin service starting");
+    info!(target: ADMIN, "admin service starting");
     let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
     serve(
         native_tls_acceptor(key_file, cert_file),
@@ -123,7 +123,7 @@ async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedSta
     let listener = TcpListener::bind(listen).await.unwrap_or_else(|e| {
         panic!("failed to bind admin https listener on {listen}: {e}");
     });
-    info!(target: HTADMIN, "admin https service listening on {listen} (TLS)");
+    info!(target: ADMIN, "admin https service listening on {listen} (TLS)");
 
     pin_mut!(listener);
 
@@ -135,7 +135,7 @@ async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedSta
             let stream = match tls_acceptor.accept(cnx).await {
                 Ok(stream) => stream,
                 Err(e) => {
-                    error!(target: HTADMIN, "error during TLS handshake from {addr}, Error {e}");
+                    error!(target: ADMIN, "error during TLS handshake from {addr}, Error {e}");
                     return;
                 }
             };
@@ -150,7 +150,7 @@ async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedSta
                 .await;
 
             if let Err(e) = ret {
-                warn!(target: HTADMIN, "error serving admin connection from {addr}: {}", e);
+                warn!(target: ADMIN, "error serving admin connection from {addr}: {}", e);
             }
         });
     }
@@ -164,12 +164,12 @@ fn two_elem_list() -> impl IntoResponse {
 }
 
 async fn get_policies() -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/policies");
+    info!(target: ADMIN, "GET /admin/policies");
     two_elem_list()
 }
 
 async fn get_policy(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/policies/{}", id);
+    info!(target: ADMIN, "GET /admin/policies/{}", id);
     let pb = PolicyBundle {
         config_id: 0,
         version: "v".to_string(),
@@ -181,7 +181,7 @@ async fn get_policy(EPath(id): EPath<String>) -> impl IntoResponse {
 }
 
 async fn get_curr_policy() -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/policies/curr");
+    info!(target: ADMIN, "GET /admin/policies/curr");
     let pb = PolicyBundle {
         config_id: 0,
         version: "v".to_string(),
@@ -193,7 +193,7 @@ async fn get_curr_policy() -> impl IntoResponse {
 }
 
 async fn install_policy(EJson(_body): EJson<PolicyBundle>) -> impl IntoResponse {
-    info!(target: HTADMIN, "POST /admin/policies");
+    info!(target: ADMIN, "POST /admin/policies");
 
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
@@ -203,13 +203,13 @@ async fn install_policy(EJson(_body): EJson<PolicyBundle>) -> impl IntoResponse 
 #[axum::debug_handler]
 //async fn get_visas(State(state): State<SharedState>) -> impl IntoResponse {
 async fn get_visas(State(state): State<SharedState>) -> (StatusCode, Json<Vec<ListEntry>>) {
-    debug!(target: HTADMIN, "GET /admin/visas");
+    debug!(target: ADMIN, "GET /admin/visas");
     let rstate = state.read().await;
 
     // TODO: The API does not include details on how to do pagination.
     match rstate.asm.visa_mgr.list_all_visa_ids().await {
         Err(e) => {
-            error!(target: HTADMIN, "error listing visa IDs: {}", e);
+            error!(target: ADMIN, "error listing visa IDs: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(Vec::<ListEntry>::new()),
@@ -223,7 +223,7 @@ async fn get_visas(State(state): State<SharedState>) -> (StatusCode, Json<Vec<Li
 }
 
 async fn get_visa(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/visas/{}", id);
+    info!(target: ADMIN, "GET /admin/visas/{}", id);
     let vd = VisaDescriptor {
         id: 0,
         expires: 0,
@@ -241,7 +241,7 @@ async fn get_visa(EPath(id): EPath<String>) -> impl IntoResponse {
 }
 
 async fn revoke_visa(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "DELETE /admin/visas/{}", id);
+    info!(target: ADMIN, "DELETE /admin/visas/{}", id);
     let r = Revokes {
         id: "i".to_string(),
         revoked: vec![0],
@@ -264,7 +264,7 @@ async fn get_actors(
     let rstate = state.read().await;
     match rstate.asm.actor_mgr.list_actor_cns(db_filter).await {
         Err(e) => {
-            error!(target: HTADMIN, "error listing connected actors: {}", e);
+            error!(target: ADMIN, "error listing connected actors: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(Vec::<CnEntry>::new()),
@@ -278,7 +278,7 @@ async fn get_actors(
 }
 
 async fn get_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/actors/{}", cn);
+    info!(target: ADMIN, "GET /admin/actors/{}", cn);
     let nrb = NodeRecordBrief {
         pending: 0,
         last_contact: 0,
@@ -299,7 +299,7 @@ async fn get_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
 }
 
 async fn revoke_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "DELETE /admin/actors/{}", cn);
+    info!(target: ADMIN, "DELETE /admin/actors/{}", cn);
     let r = Revokes {
         id: "i".to_string(),
         revoked: vec![0, 1, 2],
@@ -309,29 +309,29 @@ async fn revoke_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
 }
 
 async fn get_related_visas(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/actors/{}/visas", cn);
+    info!(target: ADMIN, "GET /admin/actors/{}/visas", cn);
     two_elem_list()
 }
 
 async fn get_services() -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/services");
+    info!(target: ADMIN, "GET /admin/services");
     two_elem_list()
 }
 
 async fn get_service(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/services/{}", cn);
+    info!(target: ADMIN, "GET /admin/services/{}", cn);
     let sd = ServiceDescriptor { id: 0, actor_id: 0 };
 
     (StatusCode::OK, Json(sd)).into_response()
 }
 
 async fn get_revokes() -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/authrevoke");
+    info!(target: ADMIN, "GET /admin/authrevoke");
     two_elem_list()
 }
 
 async fn get_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "GET /admin/authrevoke/{}", id);
+    info!(target: ADMIN, "GET /admin/authrevoke/{}", id);
     let ard: AuthRevokeDescriptor = AuthRevokeDescriptor {
         ty: "t".to_string(),
         cn: "c".to_string(),
@@ -341,18 +341,18 @@ async fn get_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
 }
 
 async fn clear_revokes() -> impl IntoResponse {
-    info!(target: HTADMIN, "POST /admin/authrevoke/clear");
+    info!(target: ADMIN, "POST /admin/authrevoke/clear");
     two_elem_list()
 }
 
 async fn remove_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "DELETE /admin/authrevoke/{}", id);
+    info!(target: ADMIN, "DELETE /admin/authrevoke/{}", id);
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
 }
 
 async fn add_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: HTADMIN, "POST /admin/authrevoke/{}", id);
+    info!(target: ADMIN, "POST /admin/authrevoke/{}", id);
 
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
