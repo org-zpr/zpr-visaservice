@@ -182,7 +182,11 @@ impl VisaMgr {
     }
 
     /// Register that visa `visa_id` has been installed on node at ZPR address `node_addr`.
-    pub async fn visa_installed(&self, visa_id: u64, node_addr: &IpAddr) -> Result<(), ServiceError> {
+    pub async fn visa_installed(
+        &self,
+        visa_id: u64,
+        node_addr: &IpAddr,
+    ) -> Result<(), ServiceError> {
         self.repo
             .update_node_visa_state(node_addr, visa_id, db::NodeVisaState::Installed)
             .await?;
@@ -220,7 +224,10 @@ impl VisaMgr {
     }
 
     /// Remove all visas tied to the listed actors, assumes the actors have departed.
-    pub async fn remove_visas_for_actors(&self, _actor_addrs: &[IpAddr]) -> Result<(), ServiceError> {
+    pub async fn remove_visas_for_actors(
+        &self,
+        _actor_addrs: &[IpAddr],
+    ) -> Result<(), ServiceError> {
         info!(target: VMGR, "TODO: remove visas for actors now removed");
         Ok(())
     }

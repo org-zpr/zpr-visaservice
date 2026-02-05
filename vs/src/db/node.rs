@@ -107,7 +107,10 @@ impl NodeRepo {
     }
 
     /// Get the list of adapter addresses connected to the given node.
-    pub async fn get_connected_adapters(&self, node_addr: &IpAddr) -> Result<Vec<IpAddr>, StoreError> {
+    pub async fn get_connected_adapters(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<Vec<IpAddr>, StoreError> {
         let adapter_zaddr_strings = self
             .db
             .smembers(&connections_key_for_node(node_addr))

@@ -259,7 +259,10 @@ impl ActorRepo {
     ///
     /// ## Errors
     /// - Returns `StoreError::NotFound` if no actor found for the given ZPR address.
-    pub async fn get_actor_by_zpr_addr(&self, zpra: &std::net::IpAddr) -> Result<Actor, StoreError> {
+    pub async fn get_actor_by_zpr_addr(
+        &self,
+        zpra: &std::net::IpAddr,
+    ) -> Result<Actor, StoreError> {
         let base_key = actor_key_for(&zpra);
         let exists: bool = self.db.exists(&base_key).await?;
         if !exists {

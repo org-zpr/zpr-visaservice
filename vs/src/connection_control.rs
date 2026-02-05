@@ -94,7 +94,9 @@ impl ConnectionControl {
         })?;
         if !sig_ok {
             info!(target: CC, "signature verification failed for cn {}", cn);
-            return Err(ServiceError::AuthenticationFailed("invalid signature".into()));
+            return Err(ServiceError::AuthenticationFailed(
+                "invalid signature".into(),
+            ));
         }
 
         // The policy sees everything as a bunch of claims.

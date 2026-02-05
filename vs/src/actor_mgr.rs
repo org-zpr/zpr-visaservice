@@ -52,7 +52,11 @@ impl ActorMgr {
     }
 
     /// Update vss socket for given node in the DB.
-    pub async fn set_node_vss(&self, node_addr: &IpAddr, vss: &SocketAddr) -> Result<(), ServiceError> {
+    pub async fn set_node_vss(
+        &self,
+        node_addr: &IpAddr,
+        vss: &SocketAddr,
+    ) -> Result<(), ServiceError> {
         self.node_db.set_node_vss(node_addr, vss).await?;
         Ok(())
     }
@@ -91,7 +95,10 @@ impl ActorMgr {
     }
 
     /// Returns Ok(None) if not found.
-    pub async fn get_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<Option<Actor>, ServiceError> {
+    pub async fn get_actor_by_zpr_addr(
+        &self,
+        zpra: &IpAddr,
+    ) -> Result<Option<Actor>, ServiceError> {
         match self.actor_db.get_actor_by_zpr_addr(zpra).await {
             Ok(actor) => Ok(Some(actor)),
             Err(StoreError::NotFound(_)) => Ok(None),
@@ -156,7 +163,10 @@ impl ActorMgr {
     }
 
     /// Get the list of connectioned actor CN values, optionally filtered by role.
-    pub async fn list_actor_cns(&self, by_role: Option<db::Role>) -> Result<Vec<String>, ServiceError> {
+    pub async fn list_actor_cns(
+        &self,
+        by_role: Option<db::Role>,
+    ) -> Result<Vec<String>, ServiceError> {
         let cns = self.actor_db.list_actor_cns(by_role).await?;
         Ok(cns)
     }

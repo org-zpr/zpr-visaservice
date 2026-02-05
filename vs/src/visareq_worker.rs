@@ -102,7 +102,9 @@ pub async fn request_visa_wait_response(
 
         Err(_timedout) => {
             asm.counters.incr(CounterType::VisaRequestQueueFull);
-            Err(ServiceError::Timeout("timeout enqueuing visa request".into()))
+            Err(ServiceError::Timeout(
+                "timeout enqueuing visa request".into(),
+            ))
         }
     }?;
 
