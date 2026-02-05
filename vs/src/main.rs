@@ -16,6 +16,7 @@ mod assembly;
 mod auth;
 mod config;
 mod connection_control;
+mod counters;
 mod cparam;
 mod db;
 mod error;
@@ -24,6 +25,8 @@ mod logging;
 mod net_mgr;
 mod policy_mgr;
 mod signal_worker;
+#[cfg(test)]
+mod test_helpers;
 mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
@@ -100,15 +103,8 @@ async fn main() -> std::process::ExitCode {
 
     let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(config::VALKEY_URI);
     let vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
+    info!(target: MAIN, "connecting to ValKey at {}...", vk_uri);
 
-    // TODO: Should I be creating this and saving it in assembly or or just keeping the client in assembly
-    // and then getting connections when I want them?
-    /*
-    let mut vk_conn = vk_client
-        .get_multiplexed_tokio_connection()
-        .await
-        .expect("failed to get redis connection");
-    */
     let mut vk_conn = redis::aio::ConnectionManager::new(vk_client)
         .await
         .expect("failed to get redis connection");
@@ -148,6 +144,7 @@ async fn main() -> std::process::ExitCode {
 
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
+        counters: Default::default(),
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
         policy_mgr: policy_mgr,
@@ -171,20 +168,18 @@ async fn main() -> std::process::ExitCode {
         ),
     ));
 
-    let admin_asm = asm.clone();
-
-    let rt_handle = tokio::runtime::Handle::current();
-    js.spawn_blocking(move || {
-        rt_handle.block_on(start_admin_server(
-            &cfg.core.admin_key,
-            &cfg.core.admin_cert,
-            SocketAddr::new(
-                cfg.get_vs_addr(),
-                cfg.core.admin_port.unwrap_or(config::ADMIN_HTTPS_PORT),
-            ),
-            &admin_asm,
-        ));
-    });
+    {
+        let admin_key = cfg.core.admin_key.clone();
+        let admin_cert = cfg.core.admin_cert.clone();
+        let admin_listen = SocketAddr::new(
+            cfg.get_vs_addr(),
+            cfg.core.admin_port.unwrap_or(config::ADMIN_HTTPS_PORT),
+        );
+        let admin_asm = asm.clone();
+        js.spawn_local(async move {
+            start_admin_server(&admin_key, &admin_cert, admin_listen, &admin_asm).await;
+        });
+    }
 
     js.spawn_local(visareq_worker::launch_arena(
         asm.clone(),

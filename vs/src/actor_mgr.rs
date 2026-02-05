@@ -256,85 +256,16 @@ mod test {
     use super::*;
     use crate::assembly::tests::new_assembly_for_tests;
     use crate::db::{ActorRepo, FakeDb, NodeRepo};
+    use crate::test_helpers::{
+        make_actor_with_services_defexp, make_adapter_actor_defexp, make_node_actor_defexp,
+    };
     use bytes::Bytes;
-    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
+    use libeval::attribute::ROLE_ADAPTER;
     use libeval::policy::Policy;
     use std::net::{IpAddr, SocketAddr};
     use std::sync::Arc;
-    use std::time::Duration;
     use zpr::policy_types::{JoinPolicy, PFlags, Service};
     use zpr::write_to::WriteTo;
-
-    fn make_node_actor(zpr_addr: &str, cn: &str, substrate: &str) -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_NODE),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(cn),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(zpr_addr),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SUBSTRATE_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(substrate),
-            )
-            .unwrap();
-        actor
-    }
-
-    fn make_adapter_actor(zpr_addr: &str, cn: &str) -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_ADAPTER),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(cn),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(zpr_addr),
-            )
-            .unwrap();
-        actor
-    }
-
-    fn make_adapter_actor_with_services(zpr_addr: &str, cn: &str, services: &[&str]) -> Actor {
-        let mut actor = make_adapter_actor(zpr_addr, cn);
-        actor
-            .add_attribute(
-                Attribute::builder(key::SERVICES)
-                    .expires_in(Duration::from_secs(3600))
-                    .values(services.iter().copied()),
-            )
-            .unwrap();
-        actor
-    }
 
     fn make_mgr() -> ActorMgr {
         let db = Arc::new(FakeDb::new());
@@ -368,7 +299,7 @@ mod test {
     #[tokio::test]
     async fn test_add_node_and_set_vss() {
         let mgr = make_mgr();
-        let actor = make_node_actor("fd5a:5052::1", "node-1", "[fd5a:5052::100]:1234");
+        let actor = make_node_actor_defexp("fd5a:5052::1", "node-1", "[fd5a:5052::100]:1234");
         let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
 
         mgr.add_node(&actor).await.unwrap();
@@ -382,7 +313,7 @@ mod test {
     #[tokio::test]
     async fn test_add_node_rejects_non_node() {
         let mgr = make_mgr();
-        let actor = make_adapter_actor("fd5a:5052::2", "adapter-1");
+        let actor = make_adapter_actor_defexp("fd5a:5052::2", "adapter-1");
 
         let err = mgr.add_node(&actor).await.unwrap_err();
         match err {
@@ -403,8 +334,8 @@ mod test {
     #[tokio::test]
     async fn test_add_adapter_via_node_tracks_connections() {
         let mgr = make_mgr();
-        let node_actor = make_node_actor("fd5a:5052::4", "node-2", "[fd5a:5052::101]:1234");
-        let adapter_actor = make_adapter_actor("fd5a:5052::5", "adapter-2");
+        let node_actor = make_node_actor_defexp("fd5a:5052::4", "node-2", "[fd5a:5052::101]:1234");
+        let adapter_actor = make_adapter_actor_defexp("fd5a:5052::5", "adapter-2");
         let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
 
@@ -426,8 +357,8 @@ mod test {
     #[tokio::test]
     async fn test_remove_actor_by_zpr_addr() {
         let mgr = make_mgr();
-        let node_actor = make_node_actor("fd5a:5052::6", "node-3", "[fd5a:5052::102]:1234");
-        let adapter_actor = make_adapter_actor("fd5a:5052::7", "adapter-3");
+        let node_actor = make_node_actor_defexp("fd5a:5052::6", "node-3", "[fd5a:5052::102]:1234");
+        let adapter_actor = make_adapter_actor_defexp("fd5a:5052::7", "adapter-3");
         let node_addr: IpAddr = "fd5a:5052::6".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
 
@@ -510,10 +441,11 @@ mod test {
     #[tokio::test]
     async fn test_get_auth_services_list_filters_and_formats() {
         let mgr = make_mgr();
-        let actor = make_adapter_actor_with_services(
+        let actor = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
             "fd5a:5052::11",
-            "adapter-auth",
             &["svc:auth", "svc:regular", "svc:unknown"],
+            "adapter-auth",
         );
         mgr.add_magic_adapter(&actor).await.unwrap();
 
@@ -539,7 +471,7 @@ mod test {
         };
         let policy = make_policy_with_services(vec![auth_service, regular_service]);
 
-        let asm = new_assembly_for_tests().await;
+        let asm = new_assembly_for_tests(None).await;
         asm.policy_mgr.update_policy(policy).unwrap();
         let asm = Arc::new(asm);
 
@@ -559,8 +491,12 @@ mod test {
     #[tokio::test]
     async fn test_get_auth_services_list_returns_empty_without_policy_auth() {
         let mgr = make_mgr();
-        let actor =
-            make_adapter_actor_with_services("fd5a:5052::12", "adapter-regular", &["svc:auth"]);
+        let actor = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
+            "fd5a:5052::12",
+            &["svc:auth"],
+            "adapter-regular",
+        );
         mgr.add_magic_adapter(&actor).await.unwrap();
 
         let regular_service = Service {
@@ -575,7 +511,7 @@ mod test {
         };
         let policy = make_policy_with_services(vec![regular_service]);
 
-        let asm = new_assembly_for_tests().await;
+        let asm = new_assembly_for_tests(None).await;
         asm.policy_mgr.update_policy(policy).unwrap();
         let asm = Arc::new(asm);
 

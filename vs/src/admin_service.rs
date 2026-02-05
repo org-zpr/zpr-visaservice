@@ -18,17 +18,15 @@ use axum::{
     routing::{delete, get, post},
 };
 
-use futures_util::pin_mut;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
+use rustls::ServerConfig;
+use rustls::pki_types::PrivateKeyDer;
 use serde::Deserialize;
 use tokio::net::TcpListener;
-use tokio_native_tls::{
-    TlsAcceptor,
-    native_tls::{Identity, Protocol, TlsAcceptor as NativeTlsAcceptor},
-};
+use tokio_rustls::TlsAcceptor;
 
 use crate::assembly::Assembly;
 use crate::db::Role;
@@ -70,7 +68,7 @@ pub async fn start_admin_server(
     info!(target: HTADMIN, "admin service starting");
     let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
     serve(
-        native_tls_acceptor(key_file, cert_file),
+        rustls_tls_acceptor(key_file, cert_file),
         listen,
         shared_state,
     )
@@ -83,15 +81,23 @@ impl AdminState {
     }
 }
 
-fn native_tls_acceptor(key_file: &Path, cert_file: &Path) -> NativeTlsAcceptor {
-    let key_pem = std::fs::read_to_string(key_file).expect("failed to read admin key file");
-    let cert_pem = std::fs::read_to_string(cert_file).expect("failed to read admin cert file");
-    let identity = Identity::from_pkcs8(cert_pem.as_bytes(), key_pem.as_bytes())
-        .expect("failed to create identity from admin cert/key");
-    NativeTlsAcceptor::builder(identity)
-        .min_protocol_version(Some(Protocol::Tlsv12))
-        .build()
-        .expect("failed to build native TLS acceptor")
+fn rustls_tls_acceptor(key_file: &Path, cert_file: &Path) -> TlsAcceptor {
+    let cert_pem = std::fs::read(cert_file).expect("failed to read admin cert file");
+    let certs: Vec<_> = rustls_pemfile::certs(&mut &cert_pem[..])
+        .collect::<Result<_, _>>()
+        .expect("failed to parse admin cert PEM");
+
+    let key_pem = std::fs::read(key_file).expect("failed to read admin key file");
+    let key: PrivateKeyDer = rustls_pemfile::private_key(&mut &key_pem[..])
+        .expect("failed to parse admin key PEM")
+        .expect("no private key found in admin key file");
+
+    let cfg = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("failed to build rustls ServerConfig");
+
+    TlsAcceptor::from(Arc::new(cfg))
 }
 
 fn admin_app(state: SharedState) -> Router {
@@ -117,15 +123,12 @@ fn admin_app(state: SharedState) -> Router {
         .with_state(state.clone())
 }
 
-async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedState) {
+async fn serve(tls_acceptor: TlsAcceptor, listen: SocketAddr, state: SharedState) {
     let app = admin_app(state);
-    let tls_acceptor = TlsAcceptor::from(acceptor);
     let listener = TcpListener::bind(listen).await.unwrap_or_else(|e| {
         panic!("failed to bind admin https listener on {listen}: {e}");
     });
     info!(target: HTADMIN, "admin https service listening on {listen} (TLS)");
-
-    pin_mut!(listener);
 
     loop {
         let tower_service = app.clone();
@@ -365,78 +368,17 @@ mod tests {
 
     use axum::body::Body;
     use http_body_util::BodyExt;
-    use libeval::actor::Actor;
-    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
     use libeval::eval::{Direction, Hit};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
 
     use crate::assembly::tests::new_assembly_for_tests;
-    use std::time::Duration;
-
-    fn make_node_actor(zpr_addr: &str, cn: &str, substrate: &str) -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_NODE),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(cn),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(zpr_addr),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SUBSTRATE_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(substrate),
-            )
-            .unwrap();
-        actor
-    }
-
-    fn make_adapter_actor(zpr_addr: &str, cn: &str) -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_ADAPTER),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(cn),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(zpr_addr),
-            )
-            .unwrap();
-        actor
-    }
+    use crate::test_helpers::{make_adapter_actor_defexp, make_node_actor_defexp};
 
     #[tokio::test]
     async fn test_get_visas_no_visas() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -459,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_visas_one_visa() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -499,7 +441,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_visas_three_visas() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
@@ -557,7 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_no_actors() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -580,8 +522,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_one_actor() {
-        let asm = Arc::new(new_assembly_for_tests().await);
-        let actor = make_node_actor("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let actor = make_node_actor_defexp("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
         asm.actor_mgr.add_node(&actor).await.unwrap();
 
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
@@ -607,10 +549,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_multiple_actors() {
-        let asm = Arc::new(new_assembly_for_tests().await);
-        let actor0 = make_node_actor("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
-        let actor1 = make_node_actor("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
-        let actor2 = make_node_actor("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let actor0 = make_node_actor_defexp("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
+        let actor1 = make_node_actor_defexp("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
+        let actor2 = make_node_actor_defexp("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
 
         asm.actor_mgr.add_node(&actor0).await.unwrap();
         asm.actor_mgr.add_node(&actor1).await.unwrap();
@@ -648,9 +590,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_role_filter() {
-        let asm = Arc::new(new_assembly_for_tests().await);
-        let node_actor = make_node_actor("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
-        let adapter_actor = make_adapter_actor("fd5a:5052::21", "adapter-1");
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let node_actor = make_node_actor_defexp("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
+        let adapter_actor = make_adapter_actor_defexp("fd5a:5052::21", "adapter-1");
 
         asm.actor_mgr.add_node(&node_actor).await.unwrap();
         asm.actor_mgr
@@ -709,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_actors_invalid_role_filter() {
-        let asm = Arc::new(new_assembly_for_tests().await);
+        let asm = Arc::new(new_assembly_for_tests(None).await);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
 

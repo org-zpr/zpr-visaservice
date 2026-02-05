@@ -25,9 +25,10 @@ use futures::StreamExt;
 use futures::future::FutureExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::assembly::Assembly;
+use crate::counters::CounterType;
 use crate::error::VSError;
 use crate::logging::targets::VISAREQ;
 
@@ -69,9 +70,12 @@ pub async fn launch_arena(
 }
 
 /// Helper function to submit a visa request job and wait for the decision.
+/// All visa request jobs should run through this so that visa request related counters
+/// are properly updated.
 ///
 /// ### Errors
 /// - [VSError::Timeout] if the request times out.
+/// - [VSError::InternalError] if there is an internal error enqueuing the request or receiving the response.
 pub async fn request_visa_wait_response(
     asm: &Assembly,
     requesting_node: &IpAddr,
@@ -81,46 +85,59 @@ pub async fn request_visa_wait_response(
     let deadline = tokio::time::Instant::now() + timeout;
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
 
-    match tokio::time::timeout_at(deadline, asm.vreq_chan.send(job)).await {
-        Ok(Ok(())) => (),
-        Ok(Err(e)) => {
-            error!(target: VISAREQ, "error enqueuing visa request: {}", e);
-            return Err(VSError::InternalError(
+    asm.counters.incr(CounterType::VisaRequests);
+
+    match tokio::time::timeout_at(deadline, asm.vreq_chan.reserve()).await {
+        Ok(Ok(permit)) => {
+            permit.send(job);
+            Ok(())
+        }
+
+        Ok(Err(_closed)) => {
+            asm.counters.incr(CounterType::VisaRequestQueueError);
+            Err(VSError::InternalError(
                 "internal error enqueuing visa request".to_string(),
-            ));
+            ))
         }
-        Err(_) => {
-            error!(
-                target: VISAREQ,
-                "timeout enqueuing visa request after {:?}",
-                timeout
-            );
-            return Err(VSError::Timeout(format!(
-                "timeout enqueuing visa request after {:?}",
-                timeout
-            )));
+
+        Err(_timedout) => {
+            asm.counters.incr(CounterType::VisaRequestQueueFull);
+            Err(VSError::Timeout("timeout enqueuing visa request".into()))
         }
-    };
+    }?;
 
     // Now wait for a response with the remaining timeout.
-    // This will fill in the api response.
-
     match tokio::time::timeout_at(deadline, response_rx).await {
+        // Increment the appropriate counters before returning.
         Ok(Ok(vr_result)) => match vr_result {
-            Ok(vd) => Ok(vd),
-            Err(e) => Err(VSError::InternalError(format!(
-                "internal error processing visa request: {}",
-                e
-            ))),
+            Ok(VisaDecision::Allow(_)) => {
+                asm.counters.incr(CounterType::VisaRequestsApproved);
+                vr_result
+            }
+            Ok(VisaDecision::Deny(_)) => {
+                asm.counters.incr(CounterType::VisaRequestsDenied);
+                vr_result
+            }
+            Err(_) => {
+                asm.counters.incr(CounterType::VisaRequestFailed);
+                vr_result
+            }
         },
-        Ok(Err(e)) => Err(VSError::InternalError(format!(
-            "internal error receiving visa request response: {}",
-            e
-        ))),
-        Err(_) => Err(VSError::Timeout(format!(
-            "timeout waiting for visa request response after {:?}",
-            timeout
-        ))),
+        Ok(Err(e)) => {
+            // Queue read error -- probably closed?
+            asm.counters.incr(CounterType::VisaRequestQueueError);
+            Err(VSError::InternalError(format!(
+                "queue error receiving visa request response: {}",
+                e
+            )))
+        }
+        Err(_timedout) => {
+            asm.counters.incr(CounterType::VisaRequestTimeout);
+            Err(VSError::Timeout(format!(
+                "timeout waiting for visa request response after {:?}",
+                timeout
+            )))
+        }
     }
 }
 
@@ -158,7 +175,7 @@ impl VisaRequestJob {
 /// This is just a rough sketch for now.
 async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
     // Run the job, send the result back over the job response channel.
-    let vrr = process_visa_request(asm, &job).await;
+    let vrr = process_visa_request(asm.clone(), &job).await;
     job.complete(vrr);
 }
 
@@ -206,10 +223,10 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
                 Ok(visa) => Ok(VisaDecision::Allow(visa)),
                 Err(e) => {
                     debug!(target: VISAREQ,
-                        "error creating visa for request from {:?}: {}",
+                        "visa_mgr error creating visa for request from {:?}: {}",
                         job.requesting_node, e
                     );
-                    Err(e.into())
+                    Err(e)
                 }
             }
         }
@@ -268,4 +285,42 @@ async fn get_actors(
     };
 
     Ok((source_actor, dest_actor))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::assembly::tests::new_assembly_for_tests;
+    use crate::test_helpers::make_node_actor_defexp;
+    use std::time::Duration;
+
+    // This test just runs a request through the pipeline. There is no real policy here
+    // so it will fail.  But it should be a visa-deny not some other error.
+    #[tokio::test]
+    async fn request_visa_wait_response_denies_when_policy_has_no_match() {
+        let (vreq_tx, vreq_rx) = mpsc::channel(8);
+        let asm = Arc::new(new_assembly_for_tests(Some(vreq_tx)).await);
+
+        let source_actor =
+            make_node_actor_defexp("fd5a:5052:3000::1", "source-node", "10.0.0.1:10001");
+        let dest_actor = make_node_actor_defexp("fd5a:5052:3000::2", "dest-node", "10.0.0.2:10002");
+        asm.actor_mgr.add_node(&source_actor).await.unwrap();
+        asm.actor_mgr.add_node(&dest_actor).await.unwrap();
+
+        let arena = tokio::spawn(launch_arena(asm.clone(), vreq_rx, 1));
+
+        let requestor_ip: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        let pkt_data =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+
+        let result =
+            request_visa_wait_response(&asm, &requestor_ip, pkt_data, Duration::from_secs(1))
+                .await
+                .unwrap();
+
+        assert!(matches!(result, VisaDecision::Deny(DenyCode::NoMatch)));
+
+        arena.abort();
+    }
 }

@@ -258,7 +258,8 @@ mod test {
     use super::*;
     use crate::db::DbConnection;
     use crate::db::db_fake::FakeDb;
-    use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE};
+    use crate::test_helpers::make_actor;
+    use libeval::attribute::{ROLE_ADAPTER, ROLE_NODE};
     use std::time::Duration;
 
     fn make_node() -> Node {
@@ -270,47 +271,17 @@ mod test {
         }
     }
 
-    fn make_node_actor_base() -> Actor {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_NODE),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("node-1"),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("fd5a:5052::1"),
-            )
-            .unwrap();
-        actor
-    }
-
-    fn make_node_actor() -> Actor {
-        let mut actor = make_node_actor_base();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SUBSTRATE_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("[fd5a:5052::100]:1234"),
-            )
-            .unwrap();
-        actor
-    }
-
     #[test]
     fn test_new_from_node_actor_success() {
-        let actor = make_node_actor();
+        let actor = make_actor(
+            &[
+                (key::ROLE, ROLE_NODE),
+                (key::CN, "node-1"),
+                (key::ZPR_ADDR, "fd5a:5052::1"),
+                (key::SUBSTRATE_ADDR, "[fd5a:5052::100]:1234"),
+            ],
+            Duration::from_secs(3600),
+        );
         let node = Node::new_from_node_actor(&actor).unwrap();
         assert_eq!(node.cn, "node-1");
         assert_eq!(node.zpr_addr, "fd5a:5052::1".parse::<IpAddr>().unwrap());
@@ -322,14 +293,15 @@ mod test {
 
     #[test]
     fn test_new_from_node_actor_non_node_role() {
-        let mut actor = make_node_actor();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_ADAPTER),
-            )
-            .unwrap();
+        let actor = make_actor(
+            &[
+                (key::ROLE, ROLE_ADAPTER),
+                (key::CN, "node-1"),
+                (key::ZPR_ADDR, "fd5a:5052::1"),
+                (key::SUBSTRATE_ADDR, "[fd5a:5052::100]:1234"),
+            ],
+            Duration::from_secs(3600),
+        );
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
             DBError::InvalidData(_) => {}
@@ -339,28 +311,14 @@ mod test {
 
     #[test]
     fn test_new_from_node_actor_missing_cn() {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_NODE),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("fd5a:5052::1"),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SUBSTRATE_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("[fd5a:5052::100]:1234"),
-            )
-            .unwrap();
+        let actor = make_actor(
+            &[
+                (key::ROLE, ROLE_NODE),
+                (key::ZPR_ADDR, "fd5a:5052::1"),
+                (key::SUBSTRATE_ADDR, "[fd5a:5052::100]:1234"),
+            ],
+            Duration::from_secs(3600),
+        );
 
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
@@ -371,28 +329,14 @@ mod test {
 
     #[test]
     fn test_new_from_node_actor_missing_zpr_addr() {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_NODE),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("node-1"),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SUBSTRATE_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("[fd5a:5052::100]:1234"),
-            )
-            .unwrap();
+        let actor = make_actor(
+            &[
+                (key::ROLE, ROLE_NODE),
+                (key::CN, "node-1"),
+                (key::SUBSTRATE_ADDR, "[fd5a:5052::100]:1234"),
+            ],
+            Duration::from_secs(3600),
+        );
 
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
@@ -403,28 +347,14 @@ mod test {
 
     #[test]
     fn test_new_from_node_actor_missing_substrate_addr() {
-        let mut actor = Actor::new();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ROLE)
-                    .expires_in(Duration::from_secs(3600))
-                    .value(ROLE_NODE),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::CN)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("node-1"),
-            )
-            .unwrap();
-        actor
-            .add_attribute(
-                Attribute::builder(key::ZPR_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("fd5a:5052::1"),
-            )
-            .unwrap();
+        let actor = make_actor(
+            &[
+                (key::ROLE, ROLE_NODE),
+                (key::CN, "node-1"),
+                (key::ZPR_ADDR, "fd5a:5052::1"),
+            ],
+            Duration::from_secs(3600),
+        );
 
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
@@ -435,14 +365,15 @@ mod test {
 
     #[test]
     fn test_new_from_node_actor_invalid_substrate_addr() {
-        let mut actor = make_node_actor_base();
-        actor
-            .add_attribute(
-                Attribute::builder(key::SUBSTRATE_ADDR)
-                    .expires_in(Duration::from_secs(3600))
-                    .value("not-a-socket-addr"),
-            )
-            .unwrap();
+        let actor = make_actor(
+            &[
+                (key::ROLE, ROLE_NODE),
+                (key::CN, "node-1"),
+                (key::ZPR_ADDR, "fd5a:5052::1"),
+                (key::SUBSTRATE_ADDR, "not-a-socket-addr"),
+            ],
+            Duration::from_secs(3600),
+        );
 
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
