@@ -27,7 +27,7 @@ admin-api-types = { path = "../admin-api-types" }
 tokio-util = { version = "0.7.16", features = ["compat"] }
 tokio-rustls = "0.26.4"
 rustls = "0.23.36"
-rcgen = "0.13.0"
+rcgen = "0.14.7"
 capnp = { version = "0.25.0", features = ["sync_reader"] }
 arc-swap = "1.7.1"
 bytes = "1.10.1"
