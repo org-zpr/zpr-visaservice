@@ -174,7 +174,8 @@ impl ActorMgr {
     ) -> Result<bool, VSError> {
         let services = match self.actor_db.list_services_for_actor(&actor_zpr_addr).await {
             Ok(svcs) => svcs,
-            Err(_) => return Ok(false),
+            Err(DBError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(VSError::from(e)),
         };
         if services.is_empty() {
             return Ok(false);
