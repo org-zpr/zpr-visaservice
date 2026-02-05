@@ -158,20 +158,18 @@ async fn main() -> std::process::ExitCode {
         ),
     ));
 
-    let admin_asm = asm.clone();
-
-    let rt_handle = tokio::runtime::Handle::current();
-    js.spawn_blocking(move || {
-        rt_handle.block_on(start_admin_server(
-            &cfg.core.admin_key,
-            &cfg.core.admin_cert,
-            SocketAddr::new(
-                cfg.get_vs_addr(),
-                cfg.core.admin_port.unwrap_or(config::ADMIN_HTTPS_PORT),
-            ),
-            &admin_asm,
-        ));
-    });
+    {
+        let admin_key = cfg.core.admin_key.clone();
+        let admin_cert = cfg.core.admin_cert.clone();
+        let admin_listen = SocketAddr::new(
+            cfg.get_vs_addr(),
+            cfg.core.admin_port.unwrap_or(config::ADMIN_HTTPS_PORT),
+        );
+        let admin_asm = asm.clone();
+        js.spawn_local(async move {
+            start_admin_server(&admin_key, &admin_cert, admin_listen, &admin_asm).await;
+        });
+    }
 
     js.spawn_local(visareq_worker::launch_arena(
         asm.clone(),
