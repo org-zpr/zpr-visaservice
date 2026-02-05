@@ -66,19 +66,29 @@ pub async fn launch(asm: Arc<Assembly>, mut event_rx: mpsc::Receiver<VsEvent>) {
 // Maybe will call into topology routines from here eventually.
 async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(), VSError> {
     info!(target: EVNTMGR, "actor joined: {}", actor_addr);
-    let has_auth_services = asm
+    let has_auth_services = match asm
         .actor_mgr
         .has_auth_services(asm.clone(), actor_addr)
         .await
-        .unwrap_or(false);
-    if has_auth_services {
-        let service_list = asm
-            .actor_mgr
-            .get_auth_services_list(asm.clone())
-            .await
-            .unwrap_or_default();
+    {
+        Ok(v) => v,
+        Err(e) => {
+            error!(target: EVNTMGR, "actor_mgr.has_auth_services failed: {}", e);
+            false
+        }
+    };
 
-        set_services_all_nodes(&asm, &service_list).await?;
+    if has_auth_services {
+        //let service_list =
+        match asm.actor_mgr.get_auth_services_list(asm.clone()).await {
+            Ok(svcs) => set_services_all_nodes(&asm, &svcs).await?,
+            Err(e) => {
+                error!(
+                    target: EVNTMGR,
+                    "actor_mgr.get_auth_services_list failed: {}", e
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -108,12 +118,8 @@ async fn handle_actor_leaves(
     asm.cc.disconnect(asm.clone(), actor_addr, reason).await?;
 
     if !prev_auth_services.is_empty() {
-        let new_auth_services: HashSet<ServiceDescriptor> = HashSet::from_iter(
-            asm.actor_mgr
-                .get_auth_services_list(asm.clone())
-                .await
-                .unwrap_or_default(),
-        );
+        let new_auth_services: HashSet<ServiceDescriptor> =
+            HashSet::from_iter(asm.actor_mgr.get_auth_services_list(asm.clone()).await?); // will error out on DB error
 
         // If there is a difference between previous and new authorized services, we need to update nodes.
         if prev_auth_services != new_auth_services {
