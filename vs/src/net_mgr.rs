@@ -99,20 +99,11 @@ impl NetMgr {
 
     /// Release a previously allocated address.
     pub async fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), VSError> {
-        match addr {
-            IpAddr::V4(_) => self
-                .adapter_addrs
-                .lock()
-                .unwrap()
-                .release(addr)
-                .or_else(|_| self.node_addrs.lock().unwrap().release(addr)),
-            IpAddr::V6(_) => self
-                .adapter_addrs
-                .lock()
-                .unwrap()
-                .release(addr)
-                .or_else(|_| self.node_addrs.lock().unwrap().release(addr)),
-        }
+        self.adapter_addrs
+            .lock()
+            .unwrap()
+            .release(addr)
+            .or_else(|_| self.node_addrs.lock().unwrap().release(addr))
     }
 }
 
