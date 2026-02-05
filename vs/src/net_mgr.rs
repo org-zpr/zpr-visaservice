@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex};
 use crate::config;
 use crate::error::VSError;
 
+/// Minimum prefix length at which IPv4 `hosts()` includes the network address
+/// (RFC 3021 point-to-point links and /32 host routes).
+const IPV4_POINT_TO_POINT_PREFIX_LEN: u8 = 31;
+
 pub struct NetMgr {
     node_addrs: Arc<Mutex<dyn AddrAllocator + Send>>,
     adapter_addrs: Arc<Mutex<dyn AddrAllocator + Send>>,
@@ -194,7 +198,7 @@ impl AddrAllocator for Addr4Allocator {
                 )));
             }
             let n = u32::from(v4addr) - u32::from(self.net.network());
-            let host_index = if self.net.prefix_len() < 31 {
+            let host_index = if self.net.prefix_len() < IPV4_POINT_TO_POINT_PREFIX_LEN {
                 n.checked_sub(1).ok_or_else(|| {
                     VSError::InternalError(format!(
                         "attempted to release IPv4 network address: {addr}"
@@ -291,5 +295,74 @@ mod tests {
 
         assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
         assert!(mgr.release_zpr_addr(node_addr).await.is_err());
+    }
+
+    #[test]
+    fn v4_allocate_release_on_slash31() {
+        let net = Ipv4Net::from_str("10.0.0.0/31").unwrap();
+        let mut alloc = Addr4Allocator::new(net);
+
+        let addr = alloc.allocate().expect("failed to allocate from /31");
+        match addr {
+            IpAddr::V4(v4) => assert!(net.contains(&v4)),
+            _ => panic!("expected v4 address"),
+        }
+        alloc.release(addr).expect("failed to release /31 address");
+        assert!(alloc.release(addr).is_err(), "double release should fail");
+    }
+
+    #[test]
+    fn v4_allocate_release_all_slash31_hosts() {
+        let net = Ipv4Net::from_str("10.0.0.0/31").unwrap();
+        let mut alloc = Addr4Allocator::new(net);
+
+        // A /31 has exactly 2 usable hosts; allocate until we get both.
+        let mut addrs = HashSet::new();
+        for _ in 0..10_000 {
+            if addrs.len() == 2 {
+                break;
+            }
+            if let Some(addr) = alloc.allocate() {
+                addrs.insert(addr);
+            }
+        }
+        assert_eq!(addrs.len(), 2, "should allocate both /31 addresses");
+
+        for addr in &addrs {
+            alloc.release(*addr).expect("failed to release /31 address");
+        }
+    }
+
+    #[test]
+    fn v4_allocate_release_on_slash32() {
+        let net = Ipv4Net::from_str("10.0.0.1/32").unwrap();
+        let mut alloc = Addr4Allocator::new(net);
+
+        let addr = alloc.allocate().expect("failed to allocate from /32");
+        assert_eq!(addr, IpAddr::from([10, 0, 0, 1]));
+        alloc.release(addr).expect("failed to release /32 address");
+        assert!(alloc.release(addr).is_err(), "double release should fail");
+    }
+
+    #[test]
+    fn v4_allocate_release_on_slash30() {
+        let net = Ipv4Net::from_str("10.0.0.0/30").unwrap();
+        let mut alloc = Addr4Allocator::new(net);
+
+        // A /30 has 2 usable hosts (network and broadcast excluded).
+        let mut addrs = HashSet::new();
+        for _ in 0..10_000 {
+            if addrs.len() == 2 {
+                break;
+            }
+            if let Some(addr) = alloc.allocate() {
+                addrs.insert(addr);
+            }
+        }
+        assert_eq!(addrs.len(), 2, "should allocate both /30 host addresses");
+
+        for addr in &addrs {
+            alloc.release(*addr).expect("failed to release /30 address");
+        }
     }
 }
