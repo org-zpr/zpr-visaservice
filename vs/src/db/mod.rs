@@ -70,12 +70,12 @@ pub enum DbOp {
 /// In the redis, we sometimes need to use a ZPR address as part of a key.
 /// In that case we use this `ZAddr` type instead.  Only thing it it does
 /// is replace colons in IPv6 addresses with dashes.
-pub struct ZAddr(pub String);
+struct ZAddr(String);
 
 /// In redis if we want to use user supllied text as part of a key we
 /// want to remove any colons in there so we use percent encoding.
 /// All colons and '%' in the original are encoded.
-pub struct KeyString(pub String);
+struct KeyString(String);
 
 impl From<&str> for KeyString {
     fn from(s: &str) -> Self {
@@ -97,8 +97,13 @@ impl TryFrom<KeyString> for String {
 impl KeyString {
     /// Create a KeyString from a raw (already encoded) string.
     /// Caller must ensure that the string is properly encoded.
-    pub fn from_raw(s: String) -> Self {
+    fn from_raw(s: String) -> Self {
         KeyString(s)
+    }
+
+    /// Get the string representation of this KeyString.
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -149,26 +154,6 @@ impl std::fmt::Display for ZAddr {
 impl std::fmt::Display for KeyString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-impl ZAddr {
-    /// Get the string representation of this ZAddr.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    pub fn to_string(&self) -> String {
-        self.0.clone()
-    }
-}
-
-impl KeyString {
-    /// Get the string representation of this KeyString.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    pub fn to_string(&self) -> String {
-        self.0.clone()
     }
 }
 
