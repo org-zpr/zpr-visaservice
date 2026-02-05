@@ -35,7 +35,7 @@ use crate::assembly::Assembly;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
 use crate::db::DbConnection;
-use crate::error::VSError;
+use crate::error::ServiceError;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 use crate::policy_mgr::PolicyMgr;
@@ -197,7 +197,7 @@ async fn main() -> std::process::ExitCode {
 async fn create_actor_mgr(
     dbh: Arc<dyn DbConnection>,
     vs_addr: &IpAddr,
-) -> Result<ActorMgr, VSError> {
+) -> Result<ActorMgr, ServiceError> {
     let adb = db::ActorRepo::new(dbh.clone());
     let ndb = db::NodeRepo::new(dbh);
     let mgr = ActorMgr::new(adb, ndb);

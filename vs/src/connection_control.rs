@@ -29,7 +29,7 @@ use zpr::vsapi::v1 as vsapi;
 
 use crate::assembly::Assembly;
 use crate::config;
-use crate::error::VSError;
+use crate::error::ServiceError;
 use crate::logging::targets::CC;
 
 pub struct ConnectionControl {
@@ -58,14 +58,14 @@ impl ConnectionControl {
         challenge_response: &[u8],
         remote: SocketAddr,
         node_req_addr: IpAddr,
-    ) -> Result<Actor, VSError> {
+    ) -> Result<Actor, ServiceError> {
         // We need to be aware that the policy could be updated in the manager at any time.
         let policy = asm.policy_mgr.get_current();
 
         // TODO: Remove this placeholder code once we have keys in policy.
         let bootstrap_key = match policy.get_bootstrap_key_by_cn(cn) {
             Some(k) => k,
-            None => return Err(VSError::AuthenticationFailed("key not found".into())),
+            None => return Err(ServiceError::AuthenticationFailed("key not found".into())),
         };
 
         // The node challenge response is an rsa signature of
@@ -75,7 +75,7 @@ impl ConnectionControl {
             Ok(v) => v,
             Err(e) => {
                 error!(target: CC, "failed to create openssl verifier: {}", e);
-                return Err(VSError::InternalError("signature processing failed".into()));
+                return Err(ServiceError::Internal("signature processing failed".into()));
             }
         };
 
@@ -86,15 +86,15 @@ impl ConnectionControl {
 
         verifier.update(&data).map_err(|e| {
             error!(target: CC, "failed to update openssl verifier: {}", e);
-            VSError::InternalError("signature processing failed".into())
+            ServiceError::Internal("signature processing failed".into())
         })?;
         let sig_ok = verifier.verify(challenge_response).map_err(|_| {
             error!(target: CC, "signature verification processing failed for cn {}", cn);
-            VSError::InternalError("signature processing failed".into())
+            ServiceError::Internal("signature processing failed".into())
         })?;
         if !sig_ok {
             info!(target: CC, "signature verification failed for cn {}", cn);
-            return Err(VSError::AuthenticationFailed("invalid signature".into()));
+            return Err(ServiceError::AuthenticationFailed("invalid signature".into()));
         }
 
         // The policy sees everything as a bunch of claims.
@@ -123,7 +123,7 @@ impl ConnectionControl {
                 // Make sure policy verified that the actor is in fact a node.
                 if !actor.is_node() {
                     info!(target: CC, "connection not approved for cn {}: not a node", cn);
-                    return Err(VSError::AuthenticationFailed("not authorized".into()));
+                    return Err(ServiceError::AuthenticationFailed("not authorized".into()));
                 }
                 actor
             }
@@ -142,7 +142,7 @@ impl ConnectionControl {
         asm: Arc<Assembly>,
         zpr_addr: IpAddr,
         reason: vsapi::DisconnectReason,
-    ) -> Result<(), VSError> {
+    ) -> Result<(), ServiceError> {
         info!(target: CC, "disconnect actor at {} for reason {:?}", zpr_addr, reason);
 
         let maybe_actor = asm.actor_mgr.get_actor_by_zpr_addr(&zpr_addr).await?;

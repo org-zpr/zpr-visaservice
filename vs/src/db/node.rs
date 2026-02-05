@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use tracing::debug;
 
 use crate::db::{DbConnection, DbOp, ZAddr};
-use crate::error::DBError;
+use crate::error::StoreError;
 use crate::logging::targets::REDIS;
 
 // We keep this whole thing as JSON in node:<ZADDR>
@@ -51,7 +51,7 @@ impl NodeRepo {
     /// A node record is assoicated with an actor that is a node role.
     /// Nodes authenticate with the visa service directly.
     /// One node is also the visa service's dock.
-    pub async fn add_node(&self, node: &Node) -> Result<(), DBError> {
+    pub async fn add_node(&self, node: &Node) -> Result<(), StoreError> {
         //
         // node:<ZADDR> -> string, json formatted Node struct.
         //
@@ -69,10 +69,10 @@ impl NodeRepo {
         &self,
         node_zpr_addr: &IpAddr,
         vss_addr: &SocketAddr,
-    ) -> Result<(), DBError> {
+    ) -> Result<(), StoreError> {
         let does_exist: bool = self.db.exists(&node_key_for_node(node_zpr_addr)).await?;
         if !does_exist {
-            return Err(DBError::NotFound(format!(
+            return Err(StoreError::NotFound(format!(
                 "node not found for address {}",
                 node_zpr_addr
             )));
@@ -93,7 +93,7 @@ impl NodeRepo {
         &self,
         node_addr: &IpAddr,
         adapter_addr: &IpAddr,
-    ) -> Result<(), DBError> {
+    ) -> Result<(), StoreError> {
         //
         // node:<ZADDR>:connections -> SET [ <zpr_address as string> ]
         //
@@ -107,7 +107,7 @@ impl NodeRepo {
     }
 
     /// Get the list of adapter addresses connected to the given node.
-    pub async fn get_connected_adapters(&self, node_addr: &IpAddr) -> Result<Vec<IpAddr>, DBError> {
+    pub async fn get_connected_adapters(&self, node_addr: &IpAddr) -> Result<Vec<IpAddr>, StoreError> {
         let adapter_zaddr_strings = self
             .db
             .smembers(&connections_key_for_node(node_addr))
@@ -118,7 +118,7 @@ impl NodeRepo {
             match addr_str.parse::<IpAddr>() {
                 Ok(addr) => adapter_addrs.push(addr),
                 Err(e) => {
-                    return Err(DBError::InvalidData(format!(
+                    return Err(StoreError::InvalidData(format!(
                         "failed to parse address string '{}' as IpAddr: {}",
                         addr_str, e
                     )));
@@ -129,7 +129,7 @@ impl NodeRepo {
     }
 
     /// Removes all the ancillary node tables.
-    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), DBError> {
+    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), StoreError> {
         let ops = vec![
             DbOp::Del(connections_key_for_node(node_addr)),
             DbOp::Del(todo_vinstall_key_for_node(node_addr)),
@@ -147,22 +147,22 @@ impl NodeRepo {
 impl Node {
     /// Create a Node object from a node Actor. Returns errors if the actor
     /// is not setup correctly to be a node.
-    pub fn new_from_node_actor(actor: &Actor) -> Result<Self, DBError> {
+    pub fn new_from_node_actor(actor: &Actor) -> Result<Self, StoreError> {
         if !actor.is_node() {
-            return Err(DBError::InvalidData(
+            return Err(StoreError::InvalidData(
                 "attempt to create Node from non-node actor".into(),
             ));
         }
         let cn = match actor.get_cn() {
             Some(c) => c.to_string(),
             None => {
-                return Err(DBError::MissingRequired("node actor missing CN".into()));
+                return Err(StoreError::MissingRequired("node actor missing CN".into()));
             }
         };
         let zpr_addr = match actor.get_zpr_addr() {
             Some(addr) => addr.clone(),
             None => {
-                return Err(DBError::MissingRequired(
+                return Err(StoreError::MissingRequired(
                     "node actor missing ZPR address".into(),
                 ));
             }
@@ -171,20 +171,20 @@ impl Node {
             Some(addr) => addr
                 .get_single_value()
                 .map_err(|e| {
-                    DBError::InvalidData(format!(
+                    StoreError::InvalidData(format!(
                         "failed to get single value for substrate address: {}",
                         e
                     ))
                 })?
                 .parse::<SocketAddr>()
                 .map_err(|e| {
-                    DBError::InvalidData(format!(
+                    StoreError::InvalidData(format!(
                         "failed to parse substrate address attribute as SocketAddr: {}",
                         e
                     ))
                 })?,
             None => {
-                return Err(DBError::MissingRequired(
+                return Err(StoreError::MissingRequired(
                     "node actor missing substrate address".into(),
                 ));
             }
@@ -279,7 +279,7 @@ mod test {
         );
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
-            DBError::InvalidData(_) => {}
+            StoreError::InvalidData(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -297,7 +297,7 @@ mod test {
 
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
-            DBError::MissingRequired(_) => {}
+            StoreError::MissingRequired(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -315,7 +315,7 @@ mod test {
 
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
-            DBError::MissingRequired(_) => {}
+            StoreError::MissingRequired(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -333,7 +333,7 @@ mod test {
 
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
-            DBError::MissingRequired(_) => {}
+            StoreError::MissingRequired(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -352,7 +352,7 @@ mod test {
 
         let err = Node::new_from_node_actor(&actor).unwrap_err();
         match err {
-            DBError::InvalidData(_) => {}
+            StoreError::InvalidData(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -395,7 +395,7 @@ mod test {
 
         let err = repo.set_node_vss(&node_addr, &vss_addr).await.unwrap_err();
         match err {
-            DBError::NotFound(_) => {}
+            StoreError::NotFound(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }

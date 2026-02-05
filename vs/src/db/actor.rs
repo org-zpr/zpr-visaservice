@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tracing::{debug, error, warn};
 
 use crate::db::{DbConnection, DbOp, KeyString, ZAddr, gen_timestamp};
-use crate::error::DBError;
+use crate::error::StoreError;
 use crate::logging::targets::REDIS;
 
 const KEY_ACTOR: &str = "actor";
@@ -56,7 +56,7 @@ impl ActorRepo {
     }
 
     /// Undo all the redis additions performed by `add_actor`.
-    async fn clean_up(&self, zpraddr: &IpAddr) -> Result<(), DBError> {
+    async fn clean_up(&self, zpraddr: &IpAddr) -> Result<(), StoreError> {
         //let mut vk_conn = self.db.conn.clone();
 
         let zpraddr_str = zpraddr.to_string();
@@ -106,7 +106,7 @@ impl ActorRepo {
         Ok(())
     }
 
-    pub async fn add_actor(&self, actor: &Actor) -> Result<(), DBError> {
+    pub async fn add_actor(&self, actor: &Actor) -> Result<(), StoreError> {
         match self.try_add_actor(actor).await {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -127,7 +127,7 @@ impl ActorRepo {
 
     /// Get a list of all the connected services -- what they are called and where
     /// they are connected.
-    pub async fn list_services(&self) -> Result<Vec<ServiceEntry>, DBError> {
+    pub async fn list_services(&self) -> Result<Vec<ServiceEntry>, StoreError> {
         let mut service_entries = Vec::new();
 
         let svc_keys = self.db.scan_match_all(format!("{KEY_SERVICE}:*")).await?;
@@ -139,7 +139,7 @@ impl ActorRepo {
             );
             if let Some(addr_str) = self.db.hget(&svc_key, "zpr_addr").await? {
                 let addr: IpAddr = addr_str.parse().map_err(|e| {
-                    DBError::InvalidData(format!(
+                    StoreError::InvalidData(format!(
                         "invalid zpr_addr in service entry {}: {}",
                         svc_key, e
                     ))
@@ -147,7 +147,7 @@ impl ActorRepo {
                 match String::try_from(munged_svc_name) {
                     Ok(svc_name) => service_entries.push(ServiceEntry::new(svc_name, addr)),
                     Err(_) => {
-                        return Err(DBError::InvalidData(format!(
+                        return Err(StoreError::InvalidData(format!(
                             "invalid service name encoding for key {svc_key}"
                         )));
                     }
@@ -163,11 +163,11 @@ impl ActorRepo {
     /// Add an actor record which must only be called after initial authentication (there
     /// will likely be changes to an actor later from trusted services or re-authentication,
     /// but the updates should use a different function.)
-    async fn try_add_actor(&self, actor: &Actor) -> Result<(), DBError> {
+    async fn try_add_actor(&self, actor: &Actor) -> Result<(), StoreError> {
         let zpraddr = match actor.get_zpr_addr() {
             Some(addr) => addr.clone(),
             None => {
-                return Err(DBError::MissingRequired(
+                return Err(StoreError::MissingRequired(
                     "attempt to add actor with no ZPR address".into(),
                 ));
             }
@@ -249,7 +249,7 @@ impl ActorRepo {
     }
 
     /// Remove actor from the state database, including all services.
-    pub async fn rm_actor_by_zpr_addr(&self, zpra: &std::net::IpAddr) -> Result<(), DBError> {
+    pub async fn rm_actor_by_zpr_addr(&self, zpra: &std::net::IpAddr) -> Result<(), StoreError> {
         self.clean_up(zpra).await?;
         debug!(target: REDIS, "removed actor from DB: addr={zpra}");
         Ok(())
@@ -258,12 +258,12 @@ impl ActorRepo {
     /// Look up actor by ZPR address. Creates a new actor instance from the DB data if found.
     ///
     /// ## Errors
-    /// - Returns `DBError::NotFound` if no actor found for the given ZPR address.
-    pub async fn get_actor_by_zpr_addr(&self, zpra: &std::net::IpAddr) -> Result<Actor, DBError> {
+    /// - Returns `StoreError::NotFound` if no actor found for the given ZPR address.
+    pub async fn get_actor_by_zpr_addr(&self, zpra: &std::net::IpAddr) -> Result<Actor, StoreError> {
         let base_key = actor_key_for(&zpra);
         let exists: bool = self.db.exists(&base_key).await?;
         if !exists {
-            return Err(DBError::NotFound(format!("actor not found: {}", zpra)));
+            return Err(StoreError::NotFound(format!("actor not found: {}", zpra)));
         }
 
         let mut actor = Actor::new();
@@ -291,7 +291,7 @@ impl ActorRepo {
     }
 
     /// This uses our "nodes" and "adapters" sets to list the CN values of all connected actors.
-    pub async fn list_actor_cns(&self, by_roles: Option<Role>) -> Result<Vec<String>, DBError> {
+    pub async fn list_actor_cns(&self, by_roles: Option<Role>) -> Result<Vec<String>, StoreError> {
         let mut cns = Vec::new();
 
         let set_keys = match by_roles {

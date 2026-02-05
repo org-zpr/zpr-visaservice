@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::PathBuf;
 
-use crate::error::VSError;
+use crate::error::ServiceError;
 
 pub const VS_CN: &str = "vs.zpr";
 
@@ -96,7 +96,7 @@ impl Default for CoreSection {
 
 impl VSConfig {
     /// Load configuration from a file.
-    pub fn from_file(path: &std::path::Path) -> Result<Self, VSError> {
+    pub fn from_file(path: &std::path::Path) -> Result<Self, ServiceError> {
         let contents = std::fs::read_to_string(path)?;
         let cfg: VSConfig = toml::from_str(&contents)?;
         Ok(cfg)

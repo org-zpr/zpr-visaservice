@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 
 use crate::assembly::Assembly;
 use crate::counters::CounterType;
-use crate::error::VSError;
+use crate::error::ServiceError;
 use crate::logging::targets::VISAREQ;
 
 use libeval::actor::Actor;
@@ -42,8 +42,8 @@ pub enum VisaDecision {
 }
 
 /// The result is either a [Visa], or a regular denial, or there was an unexpected failure
-/// and you get a [VSError].
-pub type VisaRequestResult = Result<VisaDecision, VSError>;
+/// and you get a [ServiceError].
+pub type VisaRequestResult = Result<VisaDecision, ServiceError>;
 
 /// TODO: add a job ID for tracing/logging.
 pub struct VisaRequestJob {
@@ -74,14 +74,14 @@ pub async fn launch_arena(
 /// are properly updated.
 ///
 /// ### Errors
-/// - [VSError::Timeout] if the request times out.
-/// - [VSError::InternalError] if there is an internal error enqueuing the request or receiving the response.
+/// - [ServiceError::Timeout] if the request times out.
+/// - [ServiceError::InternalError] if there is an internal error enqueuing the request or receiving the response.
 pub async fn request_visa_wait_response(
     asm: &Assembly,
     requesting_node: &IpAddr,
     pkt_data: PacketDesc,
     timeout: Duration,
-) -> Result<VisaDecision, VSError> {
+) -> Result<VisaDecision, ServiceError> {
     let deadline = tokio::time::Instant::now() + timeout;
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
 
@@ -95,14 +95,14 @@ pub async fn request_visa_wait_response(
 
         Ok(Err(_closed)) => {
             asm.counters.incr(CounterType::VisaRequestQueueError);
-            Err(VSError::InternalError(
+            Err(ServiceError::Internal(
                 "internal error enqueuing visa request".to_string(),
             ))
         }
 
         Err(_timedout) => {
             asm.counters.incr(CounterType::VisaRequestQueueFull);
-            Err(VSError::Timeout("timeout enqueuing visa request".into()))
+            Err(ServiceError::Timeout("timeout enqueuing visa request".into()))
         }
     }?;
 
@@ -126,14 +126,14 @@ pub async fn request_visa_wait_response(
         Ok(Err(e)) => {
             // Queue read error -- probably closed?
             asm.counters.incr(CounterType::VisaRequestQueueError);
-            Err(VSError::InternalError(format!(
+            Err(ServiceError::Internal(format!(
                 "queue error receiving visa request response: {}",
                 e
             )))
         }
         Err(_timedout) => {
             asm.counters.incr(CounterType::VisaRequestTimeout);
-            Err(VSError::Timeout(format!(
+            Err(ServiceError::Timeout(format!(
                 "timeout waiting for visa request response after {:?}",
                 timeout
             )))
@@ -244,7 +244,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
 async fn get_actors(
     asm: &Arc<Assembly>,
     job: &VisaRequestJob,
-) -> Result<(Option<Actor>, Option<Actor>), VSError> {
+) -> Result<(Option<Actor>, Option<Actor>), ServiceError> {
     // TODO: The source or destination could be from an unauthenticated adapter
     // using an AAA address to talk to an authentication service.
 
@@ -263,7 +263,7 @@ async fn get_actors(
                 "error retrieving source actor for visa request from {:?}: {e}",
                 job.requesting_node
             );
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 "error retrieving source actor".into(),
             ));
         }
@@ -280,7 +280,7 @@ async fn get_actors(
                 "error retrieving dest actor for visa request from {:?}: {e}",
                 job.requesting_node
             );
-            return Err(VSError::InternalError("error retrieving dest actor".into()));
+            return Err(ServiceError::Internal("error retrieving dest actor".into()));
         }
     };
 

@@ -6,7 +6,7 @@ use thiserror::Error;
 use zpr::vsapi_types::{ApiResponseError, ErrorCode, VsapiTypeError};
 
 #[derive(Debug, Error)]
-pub enum VSError {
+pub enum ServiceError {
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -14,7 +14,7 @@ pub enum VSError {
     Config(#[from] toml::de::Error),
 
     #[error("parameter error: {0}")]
-    ParamError(String),
+    Param(String),
 
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
@@ -23,16 +23,16 @@ pub enum VSError {
     AuthenticationFailed(String),
 
     #[error("internal error: {0}")]
-    InternalError(String),
+    Internal(String),
 
     #[error("timed out: {0}")]
     Timeout(String),
 
     #[error("evaluation error: {0}")]
-    EvalErr(#[from] EvalError),
+    Eval(#[from] EvalError),
 
     #[error("policy error: {0}")]
-    PolicyError(#[from] libeval::policy::PolicyError),
+    Policy(#[from] libeval::policy::PolicyError),
 
     #[error("visa denied: {0}")]
     VisaDenied(String),
@@ -41,19 +41,19 @@ pub enum VSError {
     Utf8(#[from] std::str::Utf8Error),
 
     #[error("Capn Proto not in schema: {0}")]
-    CpnpNotInSchema(#[from] capnp::NotInSchema),
+    CapnpSchema(#[from] capnp::NotInSchema),
 
     #[error("attribute error: {0}")]
-    AttributeError(#[from] actor::AttributeError),
+    Attribute(#[from] actor::AttributeError),
 
-    #[error("database error: {0}")]
-    DBError(#[from] DBError),
+    #[error("store error: {0}")]
+    Store(#[from] StoreError),
 }
 
 #[derive(Debug, Error)]
-pub enum DBError {
+pub enum StoreError {
     #[error("redis error: {0}")]
-    RedisError(#[from] redis::RedisError),
+    Redis(#[from] redis::RedisError),
 
     #[error("policy missing required details: {0}")]
     MissingRequired(String),
@@ -62,28 +62,28 @@ pub enum DBError {
     InvalidData(String),
 
     #[error("openssl error: {0}")]
-    OpenSslError(#[from] openssl::error::ErrorStack),
+    Tls(#[from] openssl::error::ErrorStack),
 
     #[error("not found: {0}")]
     NotFound(String),
 
     #[error("serialization/deserialization error: {0}")]
-    SerializationError(#[from] serde_json::Error),
+    Serialization(#[from] serde_json::Error),
 
     #[error("attribute error: {0}")]
-    AttributeError(#[from] actor::AttributeError),
+    Attribute(#[from] actor::AttributeError),
 
     #[error("Cap'n Proto error: {0}")]
     Capnp(#[from] capnp::Error),
 
     #[error("vsapi error: {0}")]
-    VsapiError(#[from] VsapiTypeError),
+    VsapiType(#[from] VsapiTypeError),
 }
 
 #[derive(Debug, Error)]
-pub enum VSSError {
+pub enum VssSyncError {
     #[error("internal error: {0}")]
-    InternalError(String),
+    Internal(String),
 
     #[error("queue full: {0}")]
     QueueFull(String),
@@ -95,17 +95,17 @@ pub enum VSSError {
     Capnp(#[from] capnp::Error),
 
     #[error("vsapi error: {0}")]
-    VsapiError(#[from] VsapiTypeError),
+    VsapiType(#[from] VsapiTypeError),
 
     #[error("api response error: {0:?} ({1}, retry {2})")]
-    ApiResponseError(ErrorCode, String, u32),
+    ApiResponse(ErrorCode, String, u32),
 
     #[error("duplicate vss worker for {0}")]
     DuplicateWorker(SocketAddr),
 }
 
-impl From<ApiResponseError> for VSSError {
+impl From<ApiResponseError> for VssSyncError {
     fn from(err: ApiResponseError) -> Self {
-        VSSError::ApiResponseError(err.code, err.message, err.retry_in)
+        VssSyncError::ApiResponse(err.code, err.message, err.retry_in)
     }
 }
