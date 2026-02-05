@@ -1,37 +1,26 @@
 //! "Executes" all the commands kicked off in main (except gui).
 
-use std::fs::File;
-use std::io::Read;
-use std::io::prelude::*;
-use std::path::Path;
-use std::time::Duration;
-
 use base64::prelude::*;
 use colored::Colorize;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use reqwest;
-use reqwest::tls::Certificate;
+use std::fs::File;
+use std::io::Read;
+use std::io::prelude::*;
+use std::path::Path;
 
-use admin_api_types::admin_api_types::reason_for;
-use admin_api_types::admin_api_types::{AuthRevokeDescriptor, ListEntry, PolicyBundle, Revokes};
+use admin_api_types::admin_api_types::{ListEntry, PolicyBundle};
 
 use crate::vsclient::{RoleFilter, VsClient};
 
 pub struct Executor {
     vs_cli: VsClient,
-
-    // TODO: Remove these old things -- currently porting over to the vs_cli above.
-    api_url: String,
-    cert: Certificate,
 }
 
 impl Executor {
-    pub fn new(api_url: String, cert: Certificate) -> Self {
+    pub fn new(api_url: String, cert: reqwest::tls::Certificate) -> Self {
         Executor {
-            vs_cli: VsClient::new(api_url.clone(), cert.clone(), false),
-            api_url,
-            cert,
+            vs_cli: VsClient::new(api_url, cert, false),
         }
     }
 
@@ -135,92 +124,23 @@ impl Executor {
         Ok(())
     }
 
-    pub fn request_get_list_entries<T>(
-        &self,
-        req_uri: &str,
-    ) -> Result<Vec<T>, Box<dyn std::error::Error>>
-    where
-        T: serde::de::DeserializeOwned + std::fmt::Display,
-    {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client.get(req_uri).send()?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let entries: Vec<T> = resp.json()?;
-
+    fn get_policies(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let entries = self.vs_cli.get_policies()?;
         for (i, entry) in entries.iter().enumerate() {
             println!("{} {entry}", format!("ENTRY {}", i).bold());
         }
-
-        Ok(entries)
-    }
-
-    fn get_policies(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = self
-            .request_get_list_entries::<ListEntry>(&format!("{}/admin/policies", self.api_url))?;
         Ok(())
     }
 
     fn get_policy(&self, id: u64) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client
-            .get(format!("{}/admin/policies/{}", self.api_url, id))
-            .send()?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let entry: PolicyBundle = resp.json()?;
+        let entry = self.vs_cli.get_policy(id)?;
         println!("{entry}");
 
         Ok(())
     }
 
     fn get_curr_policy(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client
-            .get(format!("{}/admin/policies/curr", self.api_url))
-            .send()?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let entry: PolicyBundle = resp.json()?;
+        let entry = self.vs_cli.get_curr_policy()?;
         println!("{entry}");
 
         Ok(())
@@ -237,12 +157,6 @@ impl Executor {
         compiler_version: &str,
         policy: &Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
         let mut policy_buf = Vec::new();
         File::open(policy)?.read_to_end(&mut policy_buf)?;
 
@@ -276,22 +190,7 @@ impl Executor {
             container,
         };
 
-        let resp = client
-            .post(format!("{}/admin/policies", self.api_url))
-            .json(&bundle)
-            .send()?;
-
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let entry: ListEntry = resp.json()?;
+        let entry: ListEntry = self.vs_cli.install_policy(&bundle)?;
 
         println!("{entry}");
 
@@ -313,26 +212,7 @@ impl Executor {
     }
 
     fn revoke_visa(&self, id: u64) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client
-            .delete(format!("{}/admin/visas/{}", self.api_url, id))
-            .send()?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let revoke: Revokes = resp.json()?;
+        let revoke = self.vs_cli.revoke_visa(id)?;
         println!("{revoke}");
 
         Ok(())
@@ -360,36 +240,17 @@ impl Executor {
     }
 
     fn revoke_actor(&self, cn: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client
-            .delete(format!("{}/admin/actors/{}", self.api_url, cn))
-            .send()?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let revoke: Revokes = resp.json()?;
+        let revoke = self.vs_cli.revoke_actor(cn)?;
         println!("{revoke}");
 
         Ok(())
     }
 
     fn get_related_visas(&self, cn: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = self.request_get_list_entries::<ListEntry>(&format!(
-            "{}/admin/actors/{}/visas",
-            self.api_url, cn
-        ))?;
+        let entries = self.vs_cli.get_related_visas(cn)?;
+        for (i, entry) in entries.iter().enumerate() {
+            println!("{} {entry}", format!("ENTRY {}", i).bold());
+        }
         Ok(())
     }
 
@@ -408,59 +269,22 @@ impl Executor {
     }
 
     fn get_revokes(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = self
-            .request_get_list_entries::<ListEntry>(&format!("{}/admin/authrevoke", self.api_url))?;
+        let entries = self.vs_cli.get_revokes()?;
+        for (i, entry) in entries.iter().enumerate() {
+            println!("{} {entry}", format!("ENTRY {}", i).bold());
+        }
         Ok(())
     }
 
     fn get_revoke(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client
-            .get(format!("{}/admin/authrevoke/{}", self.api_url, id))
-            .send()?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let entry: AuthRevokeDescriptor = resp.json()?;
+        let entry = self.vs_cli.get_revoke(id)?;
         println!("{entry}");
 
         Ok(())
     }
 
     fn clear_revokes(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client
-            .post(format!("{}/admin/authrevoke/clear", self.api_url))
-            .send()?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let entries: Vec<ListEntry> = resp.json()?;
-
+        let entries = self.vs_cli.clear_revokes()?;
         for (i, entry) in entries.iter().enumerate() {
             println!("{} {entry}", format!("ENTRY {}", i).bold());
         }
@@ -469,26 +293,7 @@ impl Executor {
     }
 
     fn remove_revoke(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client
-            .delete(format!("{}/admin/authrevoke/{}", self.api_url, id))
-            .send()?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let entry: ListEntry = resp.json()?;
+        let entry = self.vs_cli.remove_revoke(id)?;
 
         println!("{entry}");
 
@@ -499,27 +304,7 @@ impl Executor {
     // Some options would be take in a file with a JSON VisaDescriptor or take in
     // the parts we care about via arguments on the command line
     fn add_revoke(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
-
-        let resp = client
-            .post(format!("{}/admin/authrevoke/{}", self.api_url, id))
-            .send()?;
-
-        if !resp.status().is_success() {
-            return Err(format!(
-                "error (status {:?}:{}) : {}",
-                resp.status(),
-                reason_for(resp.status()),
-                resp.text()?
-            )
-            .into());
-        }
-
-        let entry: ListEntry = resp.json()?;
+        let entry = self.vs_cli.add_revoke(id)?;
 
         println!("{entry}");
 

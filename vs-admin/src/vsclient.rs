@@ -6,7 +6,8 @@ use reqwest::tls::Certificate;
 
 use admin_api_types::admin_api_types::reason_for;
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, CnEntry, ListEntry, NamedListEntry, ServiceDescriptor, VisaDescriptor,
+    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry, PolicyBundle,
+    Revokes, ServiceDescriptor, VisaDescriptor,
 }; // TODO: get rid of this repetition of 'admin_api_types'
 
 use crate::error::VsaError;
@@ -64,6 +65,67 @@ impl VsClient {
         Err(VsaError::HttpError(stat))
     }
 
+    fn ht_post(&self, url: &str) -> Result<reqwest::blocking::Response, VsaError> {
+        let client = self.build_client()?;
+        if !self.quiet {
+            print!("{}", format!(">> post {url}").dimmed());
+        }
+        let resp = client.post(url).send()?;
+
+        let stat = resp.status();
+        if !self.quiet {
+            println!("  {}", stat);
+        }
+
+        if stat.is_success() {
+            return Ok(resp);
+        }
+        self.display_hterror(resp);
+        Err(VsaError::HttpError(stat))
+    }
+
+    fn ht_post_json<T: serde::Serialize>(
+        &self,
+        url: &str,
+        body: &T,
+    ) -> Result<reqwest::blocking::Response, VsaError> {
+        let client = self.build_client()?;
+        if !self.quiet {
+            print!("{}", format!(">> post {url}").dimmed());
+        }
+        let resp = client.post(url).json(body).send()?;
+
+        let stat = resp.status();
+        if !self.quiet {
+            println!("  {}", stat);
+        }
+
+        if stat.is_success() {
+            return Ok(resp);
+        }
+        self.display_hterror(resp);
+        Err(VsaError::HttpError(stat))
+    }
+
+    fn ht_delete(&self, url: &str) -> Result<reqwest::blocking::Response, VsaError> {
+        let client = self.build_client()?;
+        if !self.quiet {
+            print!("{}", format!(">> delete {url}").dimmed());
+        }
+        let resp = client.delete(url).send()?;
+
+        let stat = resp.status();
+        if !self.quiet {
+            println!("  {}", stat);
+        }
+
+        if stat.is_success() {
+            return Ok(resp);
+        }
+        self.display_hterror(resp);
+        Err(VsaError::HttpError(stat))
+    }
+
     fn display_hterror(&self, error_resp: reqwest::blocking::Response) {
         if self.quiet {
             return;
@@ -81,7 +143,7 @@ impl VsClient {
 
     fn request_get_list_entries<T>(&self, req_uri: &str) -> Result<Vec<T>, VsaError>
     where
-        T: serde::de::DeserializeOwned + std::fmt::Display,
+        T: serde::de::DeserializeOwned,
     {
         let resp = self.ht_get(req_uri)?;
         let entries: Vec<T> = resp.json()?;
@@ -140,6 +202,92 @@ impl VsClient {
         let req = format!("{}/admin/visas/{}", self.api_url, id);
         let resp = self.ht_get(&req)?;
         let entry: VisaDescriptor = resp.json()?;
+        Ok(entry)
+    }
+
+    pub fn get_policies(&self) -> Result<Vec<ListEntry>, VsaError> {
+        let entry_vec = self
+            .request_get_list_entries::<ListEntry>(&format!("{}/admin/policies", self.api_url))?;
+        Ok(entry_vec)
+    }
+
+    pub fn get_policy(&self, id: u64) -> Result<PolicyBundle, VsaError> {
+        let req = format!("{}/admin/policies/{}", self.api_url, id);
+        let resp = self.ht_get(&req)?;
+        let entry: PolicyBundle = resp.json()?;
+        Ok(entry)
+    }
+
+    pub fn get_curr_policy(&self) -> Result<PolicyBundle, VsaError> {
+        let req = format!("{}/admin/policies/curr", self.api_url);
+        let resp = self.ht_get(&req)?;
+        let entry: PolicyBundle = resp.json()?;
+        Ok(entry)
+    }
+
+    pub fn install_policy(&self, bundle: &PolicyBundle) -> Result<ListEntry, VsaError> {
+        let req = format!("{}/admin/policies", self.api_url);
+        let resp = self.ht_post_json(&req, bundle)?;
+        let entry: ListEntry = resp.json()?;
+        Ok(entry)
+    }
+
+    pub fn revoke_visa(&self, id: u64) -> Result<Revokes, VsaError> {
+        let req = format!("{}/admin/visas/{}", self.api_url, id);
+        let resp = self.ht_delete(&req)?;
+        let revoke: Revokes = resp.json()?;
+        Ok(revoke)
+    }
+
+    pub fn revoke_actor(&self, cn: &str) -> Result<Revokes, VsaError> {
+        let mut requrl = reqwest::Url::parse(&format!("{}/admin/actors", self.api_url))?;
+        requrl.path_segments_mut().unwrap().push(cn);
+        let resp = self.ht_delete(requrl.as_str())?;
+        let revoke: Revokes = resp.json()?;
+        Ok(revoke)
+    }
+
+    pub fn get_related_visas(&self, cn: &str) -> Result<Vec<ListEntry>, VsaError> {
+        let mut requrl = reqwest::Url::parse(&format!("{}/admin/actors", self.api_url))?;
+        requrl.path_segments_mut().unwrap().push(cn).push("visas");
+        let entry_vec = self.request_get_list_entries::<ListEntry>(requrl.as_str())?;
+        Ok(entry_vec)
+    }
+
+    pub fn get_revokes(&self) -> Result<Vec<ListEntry>, VsaError> {
+        let entry_vec = self
+            .request_get_list_entries::<ListEntry>(&format!("{}/admin/authrevoke", self.api_url))?;
+        Ok(entry_vec)
+    }
+
+    pub fn get_revoke(&self, id: &str) -> Result<AuthRevokeDescriptor, VsaError> {
+        let mut requrl = reqwest::Url::parse(&format!("{}/admin/authrevoke", self.api_url))?;
+        requrl.path_segments_mut().unwrap().push(id);
+        let resp = self.ht_get(requrl.as_str())?;
+        let entry: AuthRevokeDescriptor = resp.json()?;
+        Ok(entry)
+    }
+
+    pub fn clear_revokes(&self) -> Result<Vec<ListEntry>, VsaError> {
+        let req = format!("{}/admin/authrevoke/clear", self.api_url);
+        let resp = self.ht_post(&req)?;
+        let entries: Vec<ListEntry> = resp.json()?;
+        Ok(entries)
+    }
+
+    pub fn remove_revoke(&self, id: &str) -> Result<ListEntry, VsaError> {
+        let mut requrl = reqwest::Url::parse(&format!("{}/admin/authrevoke", self.api_url))?;
+        requrl.path_segments_mut().unwrap().push(id);
+        let resp = self.ht_delete(requrl.as_str())?;
+        let entry: ListEntry = resp.json()?;
+        Ok(entry)
+    }
+
+    pub fn add_revoke(&self, id: &str) -> Result<ListEntry, VsaError> {
+        let mut requrl = reqwest::Url::parse(&format!("{}/admin/authrevoke", self.api_url))?;
+        requrl.path_segments_mut().unwrap().push(id);
+        let resp = self.ht_post(requrl.as_str())?;
+        let entry: ListEntry = resp.json()?;
         Ok(entry)
     }
 }
