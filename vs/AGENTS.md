@@ -18,6 +18,10 @@ This makes use of two other projects:
 - Example usage of building `Actor` values with attributes is in `src/db/actor.rs` and `src/db/node.rs` tests.
 
 
+## Development (adding code)
+- All code must be run through `cargo fmt`.
+- Always run a unit test after adding one.
+
 ## Project notes (learned during sessions -- agents add to this and keep it up to date)
 
 - Tests can use the in-memory DB in `src/db/db_fake.rs` by importing `crate::db::FakeDb`. The module is private, but `src/db/mod.rs` re-exports it under `#[cfg(test)]`.

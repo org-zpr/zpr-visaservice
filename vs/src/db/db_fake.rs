@@ -87,7 +87,7 @@ impl FakeDb {
                 Ok(())
             }
             _ => Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+                redis::ErrorKind::UnexpectedReturnType,
                 "value is not a hash",
             ))),
         }
@@ -105,7 +105,7 @@ impl FakeDb {
                     Ok(())
                 }
                 _ => Err(redis::RedisError::from((
-                    redis::ErrorKind::TypeError,
+                    redis::ErrorKind::UnexpectedReturnType,
                     "value is not a set",
                 ))),
             }
@@ -144,7 +144,7 @@ impl DbConnection for FakeDb {
                 FakeDbValue::Str(s) => Ok(Some(s.clone())),
                 FakeDbValue::Bin(b) => Ok(Some(String::from_utf8_lossy(b).to_string())),
                 _ => Err(redis::RedisError::from((
-                    redis::ErrorKind::TypeError,
+                    redis::ErrorKind::UnexpectedReturnType,
                     "value is not string",
                 ))),
             }
@@ -179,7 +179,7 @@ impl DbConnection for FakeDb {
         let _rlock = self.lock.read().await;
         if !self.exists(key).await? {
             return Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+                redis::ErrorKind::UnexpectedReturnType,
                 "key not found",
             )));
         }
@@ -188,13 +188,13 @@ impl DbConnection for FakeDb {
                 FakeDbValue::Bin(b) => Ok(b.clone()),
                 FakeDbValue::Str(s) => Ok(s.as_bytes().to_vec()),
                 _ => Err(redis::RedisError::from((
-                    redis::ErrorKind::TypeError,
+                    redis::ErrorKind::UnexpectedReturnType,
                     "value is not binary",
                 ))),
             }
         } else {
             Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+                redis::ErrorKind::UnexpectedReturnType,
                 "key not found",
             )))
         }
@@ -222,7 +222,7 @@ impl DbConnection for FakeDb {
                     Ok(result)
                 }
                 _ => Err(redis::RedisError::from((
-                    redis::ErrorKind::TypeError,
+                    redis::ErrorKind::UnexpectedReturnType,
                     "value is not a set",
                 ))),
             }
@@ -241,7 +241,7 @@ impl DbConnection for FakeDb {
             match &entry.value {
                 FakeDbValue::Hash(h) => Ok(h.get(field).map(|v| v.value().clone())),
                 _ => Err(redis::RedisError::from((
-                    redis::ErrorKind::TypeError,
+                    redis::ErrorKind::UnexpectedReturnType,
                     "value is not a hash",
                 ))),
             }
@@ -266,7 +266,7 @@ impl DbConnection for FakeDb {
                     Ok(result)
                 }
                 _ => Err(redis::RedisError::from((
-                    redis::ErrorKind::TypeError,
+                    redis::ErrorKind::UnexpectedReturnType,
                     "value is not a hash",
                 ))),
             }
@@ -295,7 +295,7 @@ impl DbConnection for FakeDb {
                 Ok(())
             }
             _ => Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+                redis::ErrorKind::UnexpectedReturnType,
                 "value is not a hash",
             ))),
         }
@@ -316,7 +316,7 @@ impl DbConnection for FakeDb {
                 Ok(())
             }
             _ => Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+                redis::ErrorKind::UnexpectedReturnType,
                 "value is not a hash",
             ))),
         }
@@ -335,7 +335,7 @@ impl DbConnection for FakeDb {
                 Ok(())
             }
             _ => Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+                redis::ErrorKind::UnexpectedReturnType,
                 "value is not a set",
             ))),
         }
@@ -352,7 +352,7 @@ impl DbConnection for FakeDb {
             FakeDbValue::Str(s) => {
                 let mut num: u64 = s.parse().map_err(|_| {
                     redis::RedisError::from((
-                        redis::ErrorKind::TypeError,
+                        redis::ErrorKind::UnexpectedReturnType,
                         "value is not an integer",
                     ))
                 })?;
@@ -361,7 +361,7 @@ impl DbConnection for FakeDb {
                 Ok(num)
             }
             _ => Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+                redis::ErrorKind::UnexpectedReturnType,
                 "value is not a string",
             ))),
         }
@@ -415,7 +415,7 @@ impl DbConnection for FakeDb {
         let pattern = pattern.replace("*", ".*");
         let re = Regex::new(&pattern).map_err(|e| {
             redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+                redis::ErrorKind::UnexpectedReturnType,
                 "invalid pattern regex",
                 e.to_string(),
             ))
@@ -547,9 +547,9 @@ mod test {
         db.set("string:key", "value").await.unwrap();
 
         let err = db.hget("string:key", "field").await.unwrap_err();
-        assert_eq!(err.kind(), redis::ErrorKind::TypeError);
+        assert_eq!(err.kind(), redis::ErrorKind::UnexpectedReturnType);
 
         let err = db.smembers("string:key").await.unwrap_err();
-        assert_eq!(err.kind(), redis::ErrorKind::TypeError);
+        assert_eq!(err.kind(), redis::ErrorKind::UnexpectedReturnType);
     }
 }

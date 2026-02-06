@@ -18,17 +18,15 @@ use axum::{
     routing::{delete, get, post},
 };
 
-use futures_util::pin_mut;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
+use rustls::ServerConfig;
+use rustls::pki_types::PrivateKeyDer;
 use serde::Deserialize;
 use tokio::net::TcpListener;
-use tokio_native_tls::{
-    TlsAcceptor,
-    native_tls::{Identity, Protocol, TlsAcceptor as NativeTlsAcceptor},
-};
+use tokio_rustls::TlsAcceptor;
 
 use crate::assembly::Assembly;
 use crate::db::Role;
@@ -70,7 +68,7 @@ pub async fn start_admin_server(
     info!(target: ADMIN, "admin service starting");
     let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
     serve(
-        native_tls_acceptor(key_file, cert_file),
+        rustls_tls_acceptor(key_file, cert_file),
         listen,
         shared_state,
     )
@@ -83,15 +81,23 @@ impl AdminState {
     }
 }
 
-fn native_tls_acceptor(key_file: &Path, cert_file: &Path) -> NativeTlsAcceptor {
-    let key_pem = std::fs::read_to_string(key_file).expect("failed to read admin key file");
-    let cert_pem = std::fs::read_to_string(cert_file).expect("failed to read admin cert file");
-    let identity = Identity::from_pkcs8(cert_pem.as_bytes(), key_pem.as_bytes())
-        .expect("failed to create identity from admin cert/key");
-    NativeTlsAcceptor::builder(identity)
-        .min_protocol_version(Some(Protocol::Tlsv12))
-        .build()
-        .expect("failed to build native TLS acceptor")
+fn rustls_tls_acceptor(key_file: &Path, cert_file: &Path) -> TlsAcceptor {
+    let cert_pem = std::fs::read(cert_file).expect("failed to read admin cert file");
+    let certs: Vec<_> = rustls_pemfile::certs(&mut &cert_pem[..])
+        .collect::<Result<_, _>>()
+        .expect("failed to parse admin cert PEM");
+
+    let key_pem = std::fs::read(key_file).expect("failed to read admin key file");
+    let key: PrivateKeyDer = rustls_pemfile::private_key(&mut &key_pem[..])
+        .expect("failed to parse admin key PEM")
+        .expect("no private key found in admin key file");
+
+    let cfg = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("failed to build rustls ServerConfig");
+
+    TlsAcceptor::from(Arc::new(cfg))
 }
 
 fn admin_app(state: SharedState) -> Router {
@@ -117,15 +123,12 @@ fn admin_app(state: SharedState) -> Router {
         .with_state(state.clone())
 }
 
-async fn serve(acceptor: NativeTlsAcceptor, listen: SocketAddr, state: SharedState) {
+async fn serve(tls_acceptor: TlsAcceptor, listen: SocketAddr, state: SharedState) {
     let app = admin_app(state);
-    let tls_acceptor = TlsAcceptor::from(acceptor);
     let listener = TcpListener::bind(listen).await.unwrap_or_else(|e| {
         panic!("failed to bind admin https listener on {listen}: {e}");
     });
     info!(target: ADMIN, "admin https service listening on {listen} (TLS)");
-
-    pin_mut!(listener);
 
     loop {
         let tower_service = app.clone();

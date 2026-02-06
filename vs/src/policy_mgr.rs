@@ -65,8 +65,11 @@ impl PolicyMgr {
 
     /// Update the current policy.  The new policy will be assigned a new version instance number (vinst)
     /// that is one greater than the current policy's vinst.
+    ///
+    /// TODO: There is a lot of housekeeping that needs to happen around a policy update. None of that
+    /// is implemented here. Right now this is just to support unit tests.
     #[allow(dead_code)]
-    fn update_policy(&self, new_policy: Policy) -> Result<(), PMError> {
+    pub fn update_policy(&self, new_policy: Policy) -> Result<(), PMError> {
         let mut np = Arc::new(new_policy);
         self.inner.rcu(move |op| {
             Arc::get_mut(&mut np).unwrap().set_vinst(op.vinst() + 1);

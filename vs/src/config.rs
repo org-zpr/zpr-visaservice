@@ -3,13 +3,21 @@
 use serde::Deserialize;
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::error::VSError;
 
 pub const VS_CN: &str = "vs.zpr";
 
+pub const ADAPTER_BASE_V6NET: &str = "fd5a:5052:adda:1::/64";
+pub const NODE_BASE_V6NET: &str = "fd5a:5052:90de:1::/64";
+
+pub const ADAPTER_BASE_V4NET: &str = "10.128.0.0/22";
+pub const NODE_BASE_V4NET: &str = "10.192.0.0/22";
+
 pub const MAX_VISA_REQUEST_WORKERS: usize = 1024;
 pub const VISA_REQUEST_QUEUE_DEPTH: usize = 1024;
+pub const EVENT_QUEUE_DEPTH: usize = 1024;
 
 // We only load policy files built by this version or later.
 pub const POLICY_MIN_COMPILER_MAJOR: u32 = 0;
@@ -32,7 +40,9 @@ pub const VS_ZPR_ADDR: Ipv6Addr = Ipv6Addr::new(
 /// Maximum allowed clock skew allowed during node authentication, in seconds.
 pub const MAX_CLOCK_SKEW_SECS: u64 = 180;
 
-pub const DEFAULT_EXPIRATION_SECONDS: u64 = 4 * 60 * 60; // 4 hours in seconds
+pub const DEFAULT_VISA_EXPIRATION: Duration = Duration::from_secs(4 * 60 * 60); // 4 hours
+
+pub const DEFAULT_AUTH_EXPIRATION: Duration = Duration::from_secs(4 * 60 * 60); // 4 hours
 
 /// How long to wait after getting the VSS addr from the node and opening a connection back to it.
 /// This delay allows time for the node to install the visa before we try to use it.

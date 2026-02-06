@@ -9,6 +9,7 @@ pub mod targets {
     pub const API: &str = "api";
     pub const CC: &str = "cc";
     pub const DB: &str = "db";
+    pub const EVENT: &str = "event";
     pub const VISA: &str = "visa";
     #[allow(dead_code)]
     pub const ACTOR: &str = "actor";

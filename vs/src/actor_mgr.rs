@@ -2,7 +2,7 @@
 //!
 
 use libeval::actor::Actor;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -160,6 +160,41 @@ impl ActorMgr {
         let cns = self.actor_db.list_actor_cns(by_role).await?;
         Ok(cns)
     }
+
+    pub async fn list_node_addrs(&self) -> Result<Vec<IpAddr>, VSError> {
+        let addrs = self.node_db.list_node_addrs().await?;
+        Ok(addrs)
+    }
+
+    /// Return true if the actor exists and offers at least one authentication service.
+    pub async fn has_auth_services(
+        &self,
+        asm: Arc<Assembly>,
+        actor_zpr_addr: IpAddr,
+    ) -> Result<bool, VSError> {
+        let services = match self.actor_db.list_services_for_actor(&actor_zpr_addr).await {
+            Ok(svcs) => svcs,
+            Err(DBError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(VSError::from(e)),
+        };
+        if services.is_empty() {
+            return Ok(false);
+        }
+        let mut offered_map = HashSet::new();
+        for s in services {
+            offered_map.insert(s);
+        }
+
+        // Then we need to consult policy to get the service details.
+        let pol = asm.policy_mgr.get_current();
+        for svc in pol.list_services_by_kind(ServiceType::Authentication) {
+            if offered_map.contains(&svc.id) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
 }
 
 // The auth service URI is of the form: <ZPR_AUTH_SCHEME>://<addr>:<port>/path
@@ -220,16 +255,46 @@ fn uri_for_service(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::assembly::tests::new_assembly_for_tests;
     use crate::db::{ActorRepo, FakeDb, NodeRepo};
-    use crate::test_helpers::{make_adapter_actor_defexp, make_node_actor_defexp};
+    use crate::test_helpers::{
+        make_actor_with_services_defexp, make_adapter_actor_defexp, make_node_actor_defexp,
+    };
+    use bytes::Bytes;
+    use libeval::attribute::ROLE_ADAPTER;
+    use libeval::policy::Policy;
     use std::net::{IpAddr, SocketAddr};
     use std::sync::Arc;
+    use zpr::policy_types::{JoinPolicy, PFlags, Service};
+    use zpr::write_to::WriteTo;
 
     fn make_mgr() -> ActorMgr {
         let db = Arc::new(FakeDb::new());
         let actor_repo = ActorRepo::new(db.clone());
         let node_repo = NodeRepo::new(db);
         ActorMgr::new(actor_repo, node_repo)
+    }
+
+    fn make_policy_with_services(services: Vec<Service>) -> Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy_bldr = msg.init_root::<zpr::policy::v1::policy::Builder>();
+            policy_bldr.set_created("2024-01-01T00:00:00Z");
+            policy_bldr.set_version(1);
+            policy_bldr.set_metadata("");
+
+            let mut jp_list = policy_bldr.reborrow().init_join_policies(1);
+            let mut jp_bldr = jp_list.reborrow().get(0);
+            let jp = JoinPolicy {
+                conditions: Vec::new(),
+                flags: PFlags::default(),
+                provides: Some(services),
+            };
+            jp.write_to(&mut jp_bldr);
+        }
+        let mut bytes = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        Policy::new_from_policy_bytes(Bytes::copy_from_slice(&bytes)).unwrap()
     }
 
     #[tokio::test]
@@ -345,12 +410,14 @@ mod test {
             port_range: None,
         }];
 
+        // Non-auth service types are not supported for auth service URIs.
         let err = uri_for_service(&ServiceType::Regular, &addr, &endpoints).unwrap_err();
         match err {
             VSError::InternalError(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
 
+        // Auth services must declare exactly one endpoint scope.
         let err = uri_for_service(&ServiceType::Authentication, &addr, &[]).unwrap_err();
         match err {
             VSError::InternalError(_) => {}
@@ -363,11 +430,93 @@ mod test {
             port: None,
             port_range: None,
         }];
+        // Auth service scope must include a concrete port number.
         let err = uri_for_service(&ServiceType::Authentication, &addr, &endpoints_missing_port)
             .unwrap_err();
         match err {
             VSError::InternalError(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_auth_services_list_filters_and_formats() {
+        let mgr = make_mgr();
+        let actor = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
+            "fd5a:5052::11",
+            &["svc:auth", "svc:regular", "svc:unknown"],
+            "adapter-auth",
+        );
+        mgr.add_magic_adapter(&actor).await.unwrap();
+
+        let auth_service = Service {
+            id: "svc:auth".to_string(),
+            endpoints: vec![Scope {
+                protocol: 0,
+                flag: None,
+                port: Some(4000),
+                port_range: None,
+            }],
+            kind: ServiceType::Authentication,
+        };
+        let regular_service = Service {
+            id: "svc:regular".to_string(),
+            endpoints: vec![Scope {
+                protocol: 0,
+                flag: None,
+                port: Some(8080),
+                port_range: None,
+            }],
+            kind: ServiceType::Regular,
+        };
+        let policy = make_policy_with_services(vec![auth_service, regular_service]);
+
+        let asm = new_assembly_for_tests(None).await;
+        asm.policy_mgr.update_policy(policy).unwrap();
+        let asm = Arc::new(asm);
+
+        let mut services = mgr.get_auth_services_list(asm).await.unwrap();
+        services.sort_by(|a, b| a.service_id.cmp(&b.service_id));
+
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].service_id, "svc:auth");
+        assert_eq!(
+            services[0].service_uri,
+            "zpr-oauthrsa://[fd5a:5052::11]:4000"
+        );
+        let addr: IpAddr = "fd5a:5052::11".parse().unwrap();
+        assert_eq!(services[0].zpr_addr, addr);
+    }
+
+    #[tokio::test]
+    async fn test_get_auth_services_list_returns_empty_without_policy_auth() {
+        let mgr = make_mgr();
+        let actor = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
+            "fd5a:5052::12",
+            &["svc:auth"],
+            "adapter-regular",
+        );
+        mgr.add_magic_adapter(&actor).await.unwrap();
+
+        let regular_service = Service {
+            id: "svc:auth".to_string(),
+            endpoints: vec![Scope {
+                protocol: 0,
+                flag: None,
+                port: Some(8080),
+                port_range: None,
+            }],
+            kind: ServiceType::Regular, // NOT an auth service
+        };
+        let policy = make_policy_with_services(vec![regular_service]);
+
+        let asm = new_assembly_for_tests(None).await;
+        asm.policy_mgr.update_policy(policy).unwrap();
+        let asm = Arc::new(asm);
+
+        let services = mgr.get_auth_services_list(asm).await.unwrap();
+        assert!(services.is_empty());
     }
 }

@@ -270,7 +270,7 @@ impl VisaRepo {
                         let visa = Visa::from_capnp_bytes(&visa_blob)?;
                         visas.push(visa);
                     }
-                    Err(err) if err.kind() == redis::ErrorKind::TypeError => {
+                    Err(err) if err.kind() == redis::ErrorKind::UnexpectedReturnType => {
                         // Missing/expired visa blob. Skip it but keep other visas.
                         warn!(target: DB, "visa blob missing for key {}", blob_key);
                         continue;
