@@ -48,6 +48,21 @@ pub enum VSError {
 
     #[error("database error: {0}")]
     DBError(#[from] DBError),
+
+    #[error("cryptographic error: {0}")]
+    CryptoError(#[from] CryptoError),
+
+    #[error("error queue full: {0}")]
+    QueueFull(String),
+}
+
+#[derive(Debug, Error)]
+pub enum CryptoError {
+    #[error("openssl error: {0}")]
+    OpenSslError(#[from] openssl::error::ErrorStack),
+
+    #[error("base64 decode error: {0}")]
+    Base64DecodeError(#[from] base64::DecodeError),
 }
 
 #[derive(Debug, Error)]

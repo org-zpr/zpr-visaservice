@@ -157,6 +157,13 @@ impl std::fmt::Display for KeyString {
     }
 }
 
+impl ZAddr {
+    /// If you already have a "zaddr" encoded string, use this to create a ZAddr.
+    pub fn new_from_encoded(s: &str) -> Self {
+        ZAddr(s.into())
+    }
+}
+
 /// All database string timestamps look like this.
 pub fn gen_timestamp() -> String {
     let now = Utc::now();

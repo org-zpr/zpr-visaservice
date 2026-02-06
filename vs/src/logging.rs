@@ -29,6 +29,9 @@ pub mod targets {
 
     /// Visa request worker pool
     pub const VISAREQ: &str = "visareq";
+
+    /// Event Manager
+    pub const EVNTMGR: &str = "eventmgr";
 }
 
 pub fn enable_logging(verbose: bool) {
