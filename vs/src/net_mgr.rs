@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use crate::config;
-use crate::error::VSError;
+use crate::error::ServiceError;
 
 /// Minimum prefix length at which IPv4 `hosts()` includes the network address
 /// (RFC 3021 point-to-point links and /32 host routes).
@@ -22,7 +22,7 @@ pub struct NetMgr {
 
 trait AddrAllocator {
     fn allocate(&mut self) -> Option<IpAddr>;
-    fn release(&mut self, addr: IpAddr) -> Result<(), VSError>;
+    fn release(&mut self, addr: IpAddr) -> Result<(), ServiceError>;
 }
 
 struct Addr6Allocator {
@@ -39,7 +39,7 @@ struct Addr4Allocator {
 
 impl NetMgr {
     /// Create a NetMgr backed by IPv6 address pools.
-    pub async fn new_v6() -> Result<Self, VSError> {
+    pub async fn new_v6() -> Result<Self, ServiceError> {
         let adapter_net: Ipv6Net = config::ADAPTER_BASE_V6NET
             .parse()
             .expect("error in net_mgr ADAPTER_BASE_NET constant");
@@ -57,7 +57,7 @@ impl NetMgr {
 
     /// Create a NetMgr backed by IPv4 address pools.
     #[allow(dead_code)]
-    pub async fn new_v4() -> Result<Self, VSError> {
+    pub async fn new_v4() -> Result<Self, ServiceError> {
         let adapter_net: Ipv4Net = config::ADAPTER_BASE_V4NET
             .parse()
             .expect("error in net_mgr ADAPTER_BASE_NET constant");
@@ -74,14 +74,14 @@ impl NetMgr {
     }
 
     /// Return an unused, random address in our network space.
-    pub async fn get_next_zpr_addr(&self, role: Role) -> Result<IpAddr, VSError> {
+    pub async fn get_next_zpr_addr(&self, role: Role) -> Result<IpAddr, ServiceError> {
         let addr = match role {
             Role::Adapter => {
                 self.adapter_addrs
                     .lock()
                     .unwrap()
                     .allocate()
-                    .ok_or(VSError::InternalError(
+                    .ok_or(ServiceError::Internal(
                         "failed to allocate adapter address".to_string(),
                     ))?
             }
@@ -90,7 +90,7 @@ impl NetMgr {
                     .lock()
                     .unwrap()
                     .allocate()
-                    .ok_or(VSError::InternalError(
+                    .ok_or(ServiceError::Internal(
                         "failed to allocate node address".to_string(),
                     ))?
             }
@@ -102,7 +102,7 @@ impl NetMgr {
     }
 
     /// Release a previously allocated address.
-    pub async fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), VSError> {
+    pub async fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), ServiceError> {
         self.adapter_addrs
             .lock()
             .unwrap()
@@ -139,10 +139,10 @@ impl AddrAllocator for Addr6Allocator {
     }
 
     /// Release a previously allocated IPv6 address.
-    fn release(&mut self, addr: IpAddr) -> Result<(), VSError> {
+    fn release(&mut self, addr: IpAddr) -> Result<(), ServiceError> {
         if let IpAddr::V6(v6addr) = addr {
             if !self.net.contains(&v6addr) {
-                return Err(VSError::InternalError(format!(
+                return Err(ServiceError::Internal(format!(
                     "attempted to release IPv6 address outside allocator net: {addr}"
                 )));
             }
@@ -150,12 +150,12 @@ impl AddrAllocator for Addr6Allocator {
             if self.used.remove(&(n as u64)) {
                 Ok(())
             } else {
-                Err(VSError::InternalError(format!(
+                Err(ServiceError::Internal(format!(
                     "attempted to release unallocated IPv6 address: {addr}"
                 )))
             }
         } else {
-            Err(VSError::InternalError(
+            Err(ServiceError::Internal(
                 "attempted to release non-IPv6 address from IPv6 allocator".to_string(),
             ))
         }
@@ -190,17 +190,17 @@ impl AddrAllocator for Addr4Allocator {
     }
 
     /// Release a previously allocated IPv4 address.
-    fn release(&mut self, addr: IpAddr) -> Result<(), VSError> {
+    fn release(&mut self, addr: IpAddr) -> Result<(), ServiceError> {
         if let IpAddr::V4(v4addr) = addr {
             if !self.net.contains(&v4addr) {
-                return Err(VSError::InternalError(format!(
+                return Err(ServiceError::Internal(format!(
                     "attempted to release IPv4 address outside allocator net: {addr}"
                 )));
             }
             let n = u32::from(v4addr) - u32::from(self.net.network());
             let host_index = if self.net.prefix_len() < IPV4_POINT_TO_POINT_PREFIX_LEN {
                 n.checked_sub(1).ok_or_else(|| {
-                    VSError::InternalError(format!(
+                    ServiceError::Internal(format!(
                         "attempted to release IPv4 network address: {addr}"
                     ))
                 })?
@@ -210,12 +210,12 @@ impl AddrAllocator for Addr4Allocator {
             if self.used.remove(&host_index) {
                 Ok(())
             } else {
-                Err(VSError::InternalError(format!(
+                Err(ServiceError::Internal(format!(
                     "attempted to release unallocated IPv4 address: {addr}"
                 )))
             }
         } else {
-            Err(VSError::InternalError(
+            Err(ServiceError::Internal(
                 "attempted to release non-IPv4 address from IPv4 allocator".to_string(),
             ))
         }

@@ -19,7 +19,7 @@ use zpr::write_to::WriteTo;
 use crate::assembly::Assembly;
 use crate::config;
 use crate::counters::CounterType;
-use crate::error::VSSError;
+use crate::error::VssSyncError;
 use crate::logging::targets::VSS;
 
 pub struct VssMgr {
@@ -46,9 +46,9 @@ enum Job {
     },
 }
 
-type VssPushResponse = Result<usize, VSSError>; // usize is number items pushed.
-type VssRevokeAuthResponse = Result<usize, VSSError>; // usize is number of items revoked.
-type VssSetServicesResponse = Result<(), VSSError>;
+type VssPushResponse = Result<usize, VssSyncError>; // usize is number items pushed.
+type VssRevokeAuthResponse = Result<usize, VssSyncError>; // usize is number of items revoked.
+type VssSetServicesResponse = Result<(), VssSyncError>;
 
 // Each API call is expressed as a message using this enum.
 #[allow(dead_code)]
@@ -99,12 +99,12 @@ impl VssMgr {
         asm: Arc<Assembly>,
         vss_addr: &SocketAddr,
         delay: std::time::Duration,
-    ) -> Result<(), VSSError> {
+    ) -> Result<(), VssSyncError> {
         let node_ip = vss_addr.ip();
 
         // Return error if we already have a worker for this node.
         if self.workers.contains_key(&node_ip) {
-            return Err(VSSError::DuplicateWorker(*vss_addr));
+            return Err(VssSyncError::DuplicateWorker(*vss_addr));
         }
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<VssCmd>(16);
@@ -117,7 +117,7 @@ impl VssMgr {
         };
         let send_result = self.jobs_tx.try_send(job);
         if let Err(e) = send_result {
-            return Err(VSSError::QueueFull(format!(
+            return Err(VssSyncError::QueueFull(format!(
                 "failed to queue VSS worker start job for {}: {}",
                 vss_addr, e
             )));
@@ -144,44 +144,44 @@ impl VssMgr {
 
 /// Each VSS thread has a handle to it stored in the [VssMgr] `workers` map.
 impl VssHandle {
-    async fn send_command(&self, cmd: VssCmd) -> Result<(), VSSError> {
+    async fn send_command(&self, cmd: VssCmd) -> Result<(), VssSyncError> {
         self.cmd_tx
             .send(cmd)
             .await
-            .map_err(|_| VSSError::ConnClosed)
+            .map_err(|_| VssSyncError::ConnClosed)
     }
 
     /// Stop the worker.
-    pub async fn stop(&self) -> Result<(), VSSError> {
+    pub async fn stop(&self) -> Result<(), VssSyncError> {
         let cmd = VssCmd::Stop();
         self.send_command(cmd).await
     }
 
     /// Send visas to the node.
     #[allow(dead_code)]
-    pub async fn push_visas(&self, visas: Vec<Visa>) -> Result<usize, VSSError> {
+    pub async fn push_visas(&self, visas: Vec<Visa>) -> Result<usize, VssSyncError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let cmd = VssCmd::PushVisas(visas, resp_tx);
         self.send_command(cmd).await?;
-        resp_rx.await.map_err(|_| VSSError::ConnClosed)?
+        resp_rx.await.map_err(|_| VssSyncError::ConnClosed)?
     }
 
     /// Revoke visas installed on the node by their IDs.
     #[allow(dead_code)]
-    pub async fn revoke_visas(&self, ids: Vec<u64>) -> Result<usize, VSSError> {
+    pub async fn revoke_visas(&self, ids: Vec<u64>) -> Result<usize, VssSyncError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let cmd = VssCmd::RevokeVisasById(ids, resp_tx);
         self.send_command(cmd).await?;
-        resp_rx.await.map_err(|_| VSSError::ConnClosed)?
+        resp_rx.await.map_err(|_| VssSyncError::ConnClosed)?
     }
 
     /// Revoke authorizations present on the node for the given zpr addresses.
     #[allow(dead_code)]
-    pub async fn revoke_auths(&self, addrs: Vec<IpAddr>) -> Result<usize, VSSError> {
+    pub async fn revoke_auths(&self, addrs: Vec<IpAddr>) -> Result<usize, VssSyncError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let cmd = VssCmd::RevokeAuthsByZprAddr(addrs, resp_tx);
         self.send_command(cmd).await?;
-        resp_rx.await.map_err(|_| VSSError::ConnClosed)?
+        resp_rx.await.map_err(|_| VssSyncError::ConnClosed)?
     }
 
     /// Tell the node about authentication services connected to the ZPRnet.
@@ -190,11 +190,11 @@ impl VssHandle {
         &self,
         version: u64,
         services: Vec<ServiceDescriptor>,
-    ) -> Result<(), VSSError> {
+    ) -> Result<(), VssSyncError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let cmd = VssCmd::SetServices(version, services, resp_tx);
         self.send_command(cmd).await?;
-        resp_rx.await.map_err(|_| VSSError::ConnClosed)?
+        resp_rx.await.map_err(|_| VssSyncError::ConnClosed)?
     }
 }
 
@@ -316,19 +316,19 @@ async fn vss_worker_loop(
                         break;
                     }
                     VssCmd::PushVisas(_visas, resp_tx) => {
-                        if let Err(e) = resp_tx.send(Err(VSSError::InternalError("push-visas not implemented".to_string()))) {
+                        if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("push-visas not implemented".to_string()))) {
                             error!(target: VSS, "failed to send response for push-visas command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                     VssCmd::RevokeVisasById(_visa_id, resp_tx) => {
-                        if let Err(e) = resp_tx.send(Err(VSSError::InternalError("revoke-visas not implemented".to_string()))) {
+                        if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("revoke-visas not implemented".to_string()))) {
                             error!(target: VSS, "failed to send response for revoke-visas command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
                     VssCmd::RevokeAuthsByZprAddr(_zpr_addr, resp_tx) => {
-                        if let Err(e) = resp_tx.send(Err(VSSError::InternalError("revoke-auths not implemented".to_string()))) {
+                        if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("revoke-auths not implemented".to_string()))) {
                             error!(target: VSS, "failed to send response for revoke-auths command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
@@ -440,7 +440,7 @@ async fn do_set_services(
     vss_handle: &v1::v_s_s_handle::Client,
     version: u64,
     services: Vec<ServiceDescriptor>,
-) -> Result<(), VSSError> {
+) -> Result<(), VssSyncError> {
     // The API calls for a "version" to be returned, but that is rather complicated
     // to manage here. So for now we just send version=1 always and leave it up to the node
     // to check the list and decide if anything has changed.
@@ -464,7 +464,7 @@ async fn do_set_services(
         v1::ok_or_error::Which::Ok(_) => (),
         v1::ok_or_error::Which::Error(err_rdr) => {
             let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
-            return Err(VSSError::from(api_err));
+            return Err(VssSyncError::from(api_err));
         }
     }
 

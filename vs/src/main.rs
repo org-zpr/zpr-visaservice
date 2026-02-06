@@ -25,12 +25,13 @@ mod logging;
 mod net_mgr;
 mod policy_mgr;
 mod signal_worker;
-#[cfg(test)]
-mod test_helpers;
 mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
 mod vss_mgr;
+
+#[cfg(test)]
+mod test_helpers;
 
 use crate::actor_mgr::ActorMgr;
 use crate::admin_service::start_admin_server;
@@ -38,7 +39,7 @@ use crate::assembly::Assembly;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
 use crate::db::DbConnection;
-use crate::error::VSError;
+use crate::error::ServiceError;
 use crate::event_mgr::EventMgr;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
@@ -205,7 +206,7 @@ async fn main() -> std::process::ExitCode {
 async fn create_actor_mgr(
     dbh: Arc<dyn DbConnection>,
     vs_addr: &IpAddr,
-) -> Result<ActorMgr, VSError> {
+) -> Result<ActorMgr, ServiceError> {
     let adb = db::ActorRepo::new(dbh.clone());
     let ndb = db::NodeRepo::new(dbh);
     let mgr = ActorMgr::new(adb, ndb);

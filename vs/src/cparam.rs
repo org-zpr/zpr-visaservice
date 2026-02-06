@@ -1,4 +1,4 @@
-use crate::error::VSError;
+use crate::error::ServiceError;
 use ::zpr::vsapi::v1 as vsapi;
 use std::net::IpAddr;
 
@@ -29,7 +29,7 @@ impl CParam {
     pub fn from_connect_request(
         vscr: &vsapi::v_s_connect_request::Reader,
         limit: usize,
-    ) -> Result<Vec<CParam>, VSError> {
+    ) -> Result<Vec<CParam>, ServiceError> {
         let mut results = Vec::new();
         let params = vscr.get_params()?;
         for param in params.iter() {
@@ -46,7 +46,7 @@ impl CParam {
                         });
                     }
                     _ => {
-                        return Err(VSError::ParamError(format!(
+                        return Err(ServiceError::Param(format!(
                             "CParam::from_connect_request: String param {} has invalid value type",
                             pname,
                         )));
@@ -60,7 +60,7 @@ impl CParam {
                         });
                     }
                     _ => {
-                        return Err(VSError::ParamError(format!(
+                        return Err(ServiceError::Param(format!(
                             "CParam::from_connect_request: U64 param {} has invalid value type",
                             pname,
                         )));
@@ -70,7 +70,7 @@ impl CParam {
                     vsapi::param::ValueData(data) => {
                         let pval = data?;
                         if pval.len() != IPV4_ADDRESS_SIZE {
-                            return Err(VSError::ParamError(format!(
+                            return Err(ServiceError::Param(format!(
                                 "CParam::from_connect_request: Ipv4 param {} has invalid length {}",
                                 pname,
                                 pval.len()
@@ -85,7 +85,7 @@ impl CParam {
                         });
                     }
                     _ => {
-                        return Err(VSError::ParamError(format!(
+                        return Err(ServiceError::Param(format!(
                             "CParam::from_connect_request: Ipv4 param {} has invalid value type",
                             pname,
                         )));
@@ -95,7 +95,7 @@ impl CParam {
                     vsapi::param::ValueData(data) => {
                         let pval = data?;
                         if pval.len() != IPV6_ADDRESS_SIZE {
-                            return Err(VSError::ParamError(format!(
+                            return Err(ServiceError::Param(format!(
                                 "CParam::from_connect_request: Ipv6 param {} has invalid length {}",
                                 pname,
                                 pval.len()
@@ -110,7 +110,7 @@ impl CParam {
                         });
                     }
                     _ => {
-                        return Err(VSError::ParamError(format!(
+                        return Err(ServiceError::Param(format!(
                             "CParam::from_connect_request: Ipv6 param {} has invalid value type",
                             pname,
                         )));
@@ -125,7 +125,7 @@ impl CParam {
     }
 
     /// Helper to extract an IpAddr type param with given key from a list.
-    pub fn get_ipaddr(params: &[CParam], name: &str) -> Result<IpAddr, VSError> {
+    pub fn get_ipaddr(params: &[CParam], name: &str) -> Result<IpAddr, ServiceError> {
         for pp in params {
             if pp.name == name {
                 match &pp.value {
@@ -136,18 +136,18 @@ impl CParam {
                         return Ok(IpAddr::V6(*ipv6));
                     }
                     _ => {
-                        return Err(VSError::ParamError(format!(
+                        return Err(ServiceError::Param(format!(
                             "param {name} has invalid type",
                         )));
                     }
                 }
             }
         }
-        Err(VSError::ParamError(format!("param {name} not found")))
+        Err(ServiceError::Param(format!("param {name} not found")))
     }
 
     /// Get a string param with given key from a list as a reference.
-    pub fn get_string<'a>(params: &'a [CParam], name: &str) -> Result<&'a str, VSError> {
+    pub fn get_string<'a>(params: &'a [CParam], name: &str) -> Result<&'a str, ServiceError> {
         for pp in params {
             if pp.name == name {
                 match &pp.value {
@@ -155,14 +155,14 @@ impl CParam {
                         return Ok(s);
                     }
                     _ => {
-                        return Err(VSError::ParamError(format!(
+                        return Err(ServiceError::Param(format!(
                             "param {name} has invalid type",
                         )));
                     }
                 }
             }
         }
-        Err(VSError::ParamError(format!("param {name} not found")))
+        Err(ServiceError::Param(format!("param {name} not found")))
     }
 }
 
@@ -402,7 +402,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(VSError::ParamError(msg)) => {
+            Err(ServiceError::Param(msg)) => {
                 assert!(msg.contains("Ipv4"));
                 assert!(msg.contains("invalid length"));
             }
@@ -426,7 +426,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(VSError::ParamError(msg)) => {
+            Err(ServiceError::Param(msg)) => {
                 assert!(msg.contains("Ipv6"));
                 assert!(msg.contains("invalid length"));
             }
@@ -450,7 +450,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(VSError::ParamError(msg)) => {
+            Err(ServiceError::Param(msg)) => {
                 assert!(msg.contains("String"));
                 assert!(msg.contains("invalid value type"));
             }
@@ -474,7 +474,7 @@ mod tests {
 
         assert!(result.is_err());
         match result {
-            Err(VSError::ParamError(msg)) => {
+            Err(ServiceError::Param(msg)) => {
                 assert!(msg.contains("U64"));
                 assert!(msg.contains("invalid value type"));
             }
@@ -517,7 +517,7 @@ mod tests {
         let result = CParam::get_ipaddr(&params, "zpr_addr");
         assert!(result.is_err());
         match result {
-            Err(VSError::ParamError(msg)) => {
+            Err(ServiceError::Param(msg)) => {
                 assert!(msg.contains("not found"));
             }
             _ => panic!("Expected ParamError for not found"),
@@ -534,7 +534,7 @@ mod tests {
         let result = CParam::get_ipaddr(&params, "zpr_addr");
         assert!(result.is_err());
         match result {
-            Err(VSError::ParamError(msg)) => {
+            Err(ServiceError::Param(msg)) => {
                 assert!(msg.contains("invalid type"));
             }
             _ => panic!("Expected ParamError for invalid type"),
@@ -562,7 +562,7 @@ mod tests {
         let result = CParam::get_string(&params, "hostname");
         assert!(result.is_err());
         match result {
-            Err(VSError::ParamError(msg)) => {
+            Err(ServiceError::Param(msg)) => {
                 assert!(msg.contains("not found"));
             }
             _ => panic!("Expected ParamError for not found"),
@@ -579,7 +579,7 @@ mod tests {
         let result = CParam::get_string(&params, "port");
         assert!(result.is_err());
         match result {
-            Err(VSError::ParamError(msg)) => {
+            Err(ServiceError::Param(msg)) => {
                 assert!(msg.contains("invalid type"));
             }
             _ => panic!("Expected ParamError for invalid type"),

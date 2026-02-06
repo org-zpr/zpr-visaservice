@@ -13,7 +13,7 @@ use zpr::vsapi::v1::DisconnectReason;
 use zpr::vsapi_types::ServiceDescriptor;
 
 use crate::assembly::Assembly;
-use crate::error::VSError;
+use crate::error::ServiceError;
 use crate::logging::targets::EVENT;
 
 pub enum VsEvent {
@@ -34,10 +34,10 @@ impl EventMgr {
         EventMgr { event_queue }
     }
 
-    pub async fn record_event(&self, event: VsEvent) -> Result<(), VSError> {
+    pub async fn record_event(&self, event: VsEvent) -> Result<(), ServiceError> {
         if let Err(e) = self.event_queue.send(event).await {
             error!(target: EVENT, "failed to send to event-queue: {}", e);
-            Err(VSError::QueueFull("event-queue".into()))
+            Err(ServiceError::QueueFull("event-queue".into()))
         } else {
             Ok(())
         }
@@ -64,7 +64,7 @@ pub async fn launch(asm: Arc<Assembly>, mut event_rx: mpsc::Receiver<VsEvent>) {
 }
 
 // Maybe will call into topology routines from here eventually.
-async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(), VSError> {
+async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(), ServiceError> {
     info!(target: EVENT, "actor joined: {}", actor_addr);
     let has_auth_services = match asm
         .actor_mgr
@@ -102,7 +102,7 @@ async fn handle_actor_leaves(
     asm: &Arc<Assembly>,
     actor_addr: IpAddr,
     reason: DisconnectReason,
-) -> Result<(), VSError> {
+) -> Result<(), ServiceError> {
     info!(target: EVENT, "actor left: {}", actor_addr);
 
     let prev_auth_services: HashSet<ServiceDescriptor> = HashSet::from_iter(
@@ -135,7 +135,7 @@ async fn handle_actor_leaves(
 async fn set_services_all_nodes(
     asm: &Arc<Assembly>,
     service_set: &[ServiceDescriptor],
-) -> Result<(), VSError> {
+) -> Result<(), ServiceError> {
     let node_list = asm.actor_mgr.list_node_addrs().await.unwrap_or_default();
 
     // Make RPC calls to the nodes in parallel.

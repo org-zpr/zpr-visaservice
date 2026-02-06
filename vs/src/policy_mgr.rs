@@ -14,21 +14,11 @@
 use arc_swap::ArcSwap;
 use libeval::policy::Policy;
 use std::sync::Arc;
-use thiserror::Error;
 use tracing::debug;
 
 use crate::db;
-use crate::error::DBError;
+use crate::error::StoreError;
 use crate::logging::targets::MAIN;
-
-#[derive(Debug, Error)]
-pub enum PMError {
-    #[error("redis error: {0}")]
-    RedisError(#[from] redis::RedisError),
-
-    #[error("policy database error: {0}")]
-    PolicyDBError(#[from] DBError),
-}
 
 #[allow(dead_code)]
 pub struct PolicyMgr {
@@ -45,7 +35,7 @@ impl PolicyMgr {
     pub async fn new_with_initial_policy(
         mut policy: Policy,
         repo: db::PolicyRepo,
-    ) -> Result<Self, PMError> {
+    ) -> Result<Self, StoreError> {
         debug!(target: MAIN, "initializing policy manager");
         policy.set_vinst(1);
 
@@ -69,7 +59,7 @@ impl PolicyMgr {
     /// TODO: There is a lot of housekeeping that needs to happen around a policy update. None of that
     /// is implemented here. Right now this is just to support unit tests.
     #[allow(dead_code)]
-    pub fn update_policy(&self, new_policy: Policy) -> Result<(), PMError> {
+    pub fn update_policy(&self, new_policy: Policy) -> Result<(), StoreError> {
         let mut np = Arc::new(new_policy);
         self.inner.rcu(move |op| {
             Arc::get_mut(&mut np).unwrap().set_vinst(op.vinst() + 1);

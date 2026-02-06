@@ -11,7 +11,7 @@ use zpr::vsapi_types::ServiceDescriptor;
 
 use crate::assembly::Assembly;
 use crate::db;
-use crate::error::{DBError, VSError};
+use crate::error::{ServiceError, StoreError};
 
 pub struct ActorMgr {
     actor_db: db::ActorRepo,
@@ -27,9 +27,9 @@ impl ActorMgr {
     }
 
     /// TODO: Support for reconnects (where we still have state).
-    pub async fn add_node(&self, actor: &Actor) -> Result<(), VSError> {
+    pub async fn add_node(&self, actor: &Actor) -> Result<(), ServiceError> {
         if !actor.is_node() {
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 "attempt to add non-node actor as node".into(),
             ));
         }
@@ -46,13 +46,17 @@ impl ActorMgr {
 
     /// Use [ActorMgr::remove_actor_by_zpr_addr] to remove actor records which apply to both nodes and adapters.
     /// Use this function here in addition to remove node state.
-    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
+    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         self.node_db.remove_node(node_addr).await?;
         Ok(())
     }
 
     /// Update vss socket for given node in the DB.
-    pub async fn set_node_vss(&self, node_addr: &IpAddr, vss: &SocketAddr) -> Result<(), VSError> {
+    pub async fn set_node_vss(
+        &self,
+        node_addr: &IpAddr,
+        vss: &SocketAddr,
+    ) -> Result<(), ServiceError> {
         self.node_db.set_node_vss(node_addr, vss).await?;
         Ok(())
     }
@@ -61,9 +65,9 @@ impl ActorMgr {
     /// We (the visa service) uses this to connect itself at startup.
     ///
     /// TODO: At some point we need to update our state to reflect that the visa service is docked to a node.
-    pub async fn add_magic_adapter(&self, actor: &Actor) -> Result<(), VSError> {
+    pub async fn add_magic_adapter(&self, actor: &Actor) -> Result<(), ServiceError> {
         if actor.is_node() {
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 "attempt to add node actor as adapter".into(),
             ));
         }
@@ -77,9 +81,9 @@ impl ActorMgr {
         &self,
         actor: &Actor,
         connected_to_node: &IpAddr,
-    ) -> Result<(), VSError> {
+    ) -> Result<(), ServiceError> {
         if actor.is_node() {
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 "attempt to add node actor as adapter".into(),
             ));
         }
@@ -91,16 +95,19 @@ impl ActorMgr {
     }
 
     /// Returns Ok(None) if not found.
-    pub async fn get_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<Option<Actor>, VSError> {
+    pub async fn get_actor_by_zpr_addr(
+        &self,
+        zpra: &IpAddr,
+    ) -> Result<Option<Actor>, ServiceError> {
         match self.actor_db.get_actor_by_zpr_addr(zpra).await {
             Ok(actor) => Ok(Some(actor)),
-            Err(DBError::NotFound(_)) => Ok(None),
-            Err(e) => Err(VSError::from(e)),
+            Err(StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(ServiceError::from(e)),
         }
     }
 
     /// Remove actor state from the database. If removing a node, also call [ActorMgr::remove_node].
-    pub async fn remove_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<(), VSError> {
+    pub async fn remove_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<(), ServiceError> {
         Ok(self.actor_db.rm_actor_by_zpr_addr(zpra).await?)
     }
 
@@ -108,7 +115,7 @@ impl ActorMgr {
     pub async fn get_adapters_connected_to_node(
         &self,
         node_addr: &IpAddr,
-    ) -> Result<Vec<IpAddr>, VSError> {
+    ) -> Result<Vec<IpAddr>, ServiceError> {
         Ok(self
             .node_db
             .get_connected_adapters(node_addr)
@@ -121,7 +128,7 @@ impl ActorMgr {
     pub async fn get_auth_services_list(
         &self,
         asm: Arc<Assembly>,
-    ) -> Result<Vec<ServiceDescriptor>, VSError> {
+    ) -> Result<Vec<ServiceDescriptor>, ServiceError> {
         let mut services = Vec::new();
 
         // From the DB we can get the (service_name, zpr_addr) for each connected service.
@@ -156,12 +163,15 @@ impl ActorMgr {
     }
 
     /// Get the list of connectioned actor CN values, optionally filtered by role.
-    pub async fn list_actor_cns(&self, by_role: Option<db::Role>) -> Result<Vec<String>, VSError> {
+    pub async fn list_actor_cns(
+        &self,
+        by_role: Option<db::Role>,
+    ) -> Result<Vec<String>, ServiceError> {
         let cns = self.actor_db.list_actor_cns(by_role).await?;
         Ok(cns)
     }
 
-    pub async fn list_node_addrs(&self) -> Result<Vec<IpAddr>, VSError> {
+    pub async fn list_node_addrs(&self) -> Result<Vec<IpAddr>, ServiceError> {
         let addrs = self.node_db.list_node_addrs().await?;
         Ok(addrs)
     }
@@ -171,11 +181,11 @@ impl ActorMgr {
         &self,
         asm: Arc<Assembly>,
         actor_zpr_addr: IpAddr,
-    ) -> Result<bool, VSError> {
+    ) -> Result<bool, ServiceError> {
         let services = match self.actor_db.list_services_for_actor(&actor_zpr_addr).await {
             Ok(svcs) => svcs,
-            Err(DBError::NotFound(_)) => return Ok(false),
-            Err(e) => return Err(VSError::from(e)),
+            Err(StoreError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(ServiceError::from(e)),
         };
         if services.is_empty() {
             return Ok(false);
@@ -219,18 +229,18 @@ fn uri_for_service(
     skind: &ServiceType,
     addr: &IpAddr,
     endpoints: &[Scope],
-) -> Result<String, VSError> {
+) -> Result<String, ServiceError> {
     let scheme = match skind {
         ServiceType::Authentication => "zpr-oauthrsa",
         _ => {
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 format!("unsupported service type for auth service URI: {skind:?}").into(),
             ));
         }
     };
 
     if endpoints.len() != 1 {
-        return Err(VSError::InternalError(
+        return Err(ServiceError::Internal(
             format!(
                 "auth service must have exactly one scope endpoint, not {}",
                 endpoints.len()
@@ -246,7 +256,7 @@ fn uri_for_service(
         };
         Ok(url)
     } else {
-        Err(VSError::InternalError(
+        Err(ServiceError::Internal(
             "auth service scope must have a single port defined".into(),
         ))
     }
@@ -318,7 +328,7 @@ mod test {
 
         let err = mgr.add_node(&actor).await.unwrap_err();
         match err {
-            VSError::InternalError(_) => {}
+            ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -381,7 +391,7 @@ mod test {
 
         let err = mgr.set_node_vss(&node_addr, &vss_addr).await.unwrap_err();
         match err {
-            VSError::DBError(DBError::NotFound(_)) => {}
+            ServiceError::Store(StoreError::NotFound(_)) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -413,14 +423,14 @@ mod test {
         // Non-auth service types are not supported for auth service URIs.
         let err = uri_for_service(&ServiceType::Regular, &addr, &endpoints).unwrap_err();
         match err {
-            VSError::InternalError(_) => {}
+            ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
 
         // Auth services must declare exactly one endpoint scope.
         let err = uri_for_service(&ServiceType::Authentication, &addr, &[]).unwrap_err();
         match err {
-            VSError::InternalError(_) => {}
+            ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
 
@@ -434,7 +444,7 @@ mod test {
         let err = uri_for_service(&ServiceType::Authentication, &addr, &endpoints_missing_port)
             .unwrap_err();
         match err {
-            VSError::InternalError(_) => {}
+            ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
