@@ -1,6 +1,4 @@
-use ::zpr::vsapi::v1 as vsapi;
-use libeval::attribute::{Attribute, key};
-
+use chrono::prelude::{DateTime, Utc};
 use ipnet::IpNet;
 use openssl::rand::rand_bytes;
 use rustls::ServerConfig;
@@ -14,8 +12,10 @@ use tokio_rustls::TlsAcceptor;
 use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
+use ::zpr::vsapi::v1 as vsapi;
 use libeval::actor::Actor;
-use zpr::vsapi_types::{PacketDesc, SockAddr, VisaOp};
+use libeval::attribute::{Attribute, key};
+use zpr::vsapi_types::{ConnectRequest, Connection, PacketDesc, SockAddr, VisaOp};
 use zpr::write_to::WriteTo;
 
 use crate::assembly::Assembly;
@@ -24,6 +24,7 @@ use crate::counters::CounterType;
 use crate::cparam;
 use crate::cparam::CParam;
 use crate::error::ServiceError;
+use crate::event_mgr::VsEvent;
 use crate::logging::targets::VSAPI;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
@@ -82,7 +83,7 @@ fn tls_acceptor(listen: SocketAddr) -> Result<TlsAcceptor, Box<dyn std::error::E
     let self_signed_cert = rcgen::generate_simple_self_signed(vec![listen.to_string()])?;
     // Create self signed certificate that does not require client authentication
     let cert_der = self_signed_cert.cert.der();
-    let key_der = self_signed_cert.key_pair.serialize_der();
+    let key_der = self_signed_cert.signing_key.serialize_der();
 
     // Convert the cert into a format the
     let chain = vec![CertificateDer::from(cert_der.clone())];
@@ -410,6 +411,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         Ok(())
     }
 
+    /// Authenticate VSAPI call is also the "authorize_connect" call for a node.
     async fn authenticate(
         self: Rc<Self>,
         params: vsapi::v_s_gate::AuthenticateParams,
@@ -490,7 +492,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                 let mut err_builder = res_builder.init_error();
                 write_error(
                     &mut err_builder,
-                    vsapi::ErrorCode::InvalidOperation, // TODO: New code 'AuthError'
+                    vsapi::ErrorCode::AuthError,
                     format!("authentication failed: {reason}").as_str(),
                 );
                 return Ok(());
@@ -510,33 +512,37 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
         // Sanity check - every node has a CN and a ZPR address.
         // If this fails it means our authentication code is broken.
-        if node_actor.get_cn().is_none() {
-            error!(target: VSAPI, "auth subsystem failed to set a CN on an authenticated node");
-            self.asm.counters.incr(CounterType::NodeConnectionsFailed);
-            let mut err_builder = res_builder.init_error();
-            write_error(
-                &mut err_builder,
-                vsapi::ErrorCode::Internal,
-                "assertion failed (CN)",
-            );
-            return Ok(());
-        }
-        if node_actor.get_zpr_addr().is_none() {
-            error!(target: VSAPI, "auth subsystem failed to set a ZPR address on an authenticated node");
-            self.asm.counters.incr(CounterType::NodeConnectionsFailed);
-            let mut err_builder = res_builder.init_error();
-            write_error(
-                &mut err_builder,
-                vsapi::ErrorCode::Internal,
-                "assertion failed (ADDR)",
-            );
-            return Ok(());
-        }
+        let node_cn = match node_actor.get_cn() {
+            Some(cn) => cn.to_owned(),
+            None => {
+                error!(target: VSAPI, "auth subsystem failed to set a CN on an authenticated node");
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "assertion failed (CN)",
+                );
+                return Ok(());
+            }
+        };
+        let node_zpr_addr = match node_actor.get_zpr_addr() {
+            Some(addr) => addr.clone(),
+            None => {
+                error!(target: VSAPI, "auth subsystem failed to set a ZPR address on an authenticated node");
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "assertion failed (ADDR)",
+                );
+                return Ok(());
+            }
+        };
 
         info!(
             target: VSAPI,
             "successfully authenticated node {:?} from {:?} and assigned ip {:?}",
-            node_actor.get_cn(), self.remote, node_actor.get_zpr_addr()
+            &node_cn, self.remote, &node_zpr_addr
         );
 
         // Ok, we have verified the credentials and checked with policy. Time to
@@ -557,18 +563,12 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
         // Since this is a new node and we do not yet support reconnects, make sure visa
         // table is clean for this node.
-        if let Err(e) = self
-            .asm
-            .visa_mgr
-            .clear_node_state(&node_actor.get_zpr_addr().unwrap())
-            .await
-        {
-            warn!(target: VSAPI, "failed to clear node state for {:?}: {}", node_actor.get_cn(), e);
+        if let Err(e) = self.asm.visa_mgr.clear_node_state(&node_zpr_addr).await {
+            warn!(target: VSAPI, "failed to clear node state for {:?}: {}", &node_cn, e);
         }
 
         if let Err(e) = self.asm.actor_mgr.add_node(&node_actor).await {
-            error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", node_actor.get_cn(), e);
-            self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+            error!(target: VSAPI, "failed to add authenticated node {:?} to actor db: {}", &node_cn, e);
             let mut err_builder = res_builder.init_error();
             write_error(
                 &mut err_builder,
@@ -578,11 +578,16 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             return Ok(());
         }
 
+        let evt = VsEvent::ActorJoins(node_zpr_addr);
+        if let Err(e) = self.asm.event_mgr.record_event(evt).await {
+            warn!(target: VSAPI, "failed to record actor joins event for node {:?}: {}", &node_cn, e);
+        }
         self.asm.counters.incr(CounterType::NodeConnectionsSuccess);
 
         let vs_handle: vsapi::v_s_handle::Client =
             capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
         res_builder.set_ok(vs_handle)?;
+
         Ok(())
     }
 }
@@ -708,16 +713,129 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         Ok(())
     }
 
+    // When an adapter connects to ta node, a node ends up making a call here to authorize
+    // the connection.  If successful the VS returns a ZPR address for the adapter, and an
+    // expiration time.
+    //
+    // The ConnectRequest arg is populated as follows:
+    //       blobs: list of 1 (for now) 'AuthBlob'
+    //       claims: may include 'zpr.addr' if a specific address is requested, must include 'zpr.adapter.cn' to match blob cn.
+    //       substrateAddr: adapter substrate address
+    //       dockinterface: 0
+    //
+    // There are just two ways that an adapter can authenticated and that is reflected in
+    // the AuthBlob presented.
+    //
+    // (1) Adapter uses an RSA key that is shared with policy -- looked up by the adapter CN.
+    //
+    //     Note that the node has already verified that the CN in the blob matches the CN
+    //     presented over the link by the adapter.
+    //
+    //     The AuthBlob is a ZPRSelfSignedBlob
+    //       {
+    //         alg: ChallengeAlg::RsaSha256Pkcs1v15
+    //         challenge: <bytes> - The nodes challend to the adapter. Just opaque bytes to to the visa service.
+    //         cn: adapter CN value
+    //         timestamp: unix timestamp, seconds
+    //         signature: RSA SHA256 PKCS1v15 signature using adapter private key over (ts + cn + challenge)
+    //                    time is big-endian u64.
+    //       }
+    //
+    //     To verify the blob, the visa service looks up the public key in policy by CN,
+    //     and then verifies the signature.
+    //
+    //
+    // (2) It can present a token from an authentication server.
+    //
+    //     The AuthBlob is a AuthCodeBlob
+    //       {
+    //         asaAddr: IpAddr of the auth service
+    //         code: <string>
+    //         pkce: <string>
+    //         clientId: <string>
+    //       }
+    //
+    //     All this is used in the oauth flow between visa service and the auth server to verify
+    //     the adapter identity.
+    //
     async fn authorize_connect(
         self: Rc<Self>,
-        _params: vsapi::v_s_handle::AuthorizeConnectParams,
-        mut _results: vsapi::v_s_handle::AuthorizeConnectResults,
+        params: vsapi::v_s_handle::AuthorizeConnectParams,
+        mut results: vsapi::v_s_handle::AuthorizeConnectResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: VSAPI, "authorize_connect from {:?}", self.node.get_cn());
 
-        Err(capnp::Error::unimplemented(
-            "method v_s_handle::Server::authorize_connect not implemented".to_string(),
-        ))
+        let cr_rdr = params.get()?.get_req()?;
+        let creq = ConnectRequest::try_from(cr_rdr).map_err(|e| {
+            capnp::Error::failed(format!("failed to parse ConnectionRequest: {}", e))
+        })?;
+
+        let connect_via = self.node.get_zpr_addr().unwrap();
+
+        let actor = match self
+            .asm
+            .cc
+            .authenticate_adapter(self.asm.clone(), creq, connect_via)
+            .await
+        {
+            Ok(actor) => actor,
+            Err(e) => {
+                warn!(target: VSAPI, "adapter connection authorization failed for node {:?}: {}", connect_via, e);
+                let mut err_builder = results.get().init_resp().init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::AuthError,
+                    format!("adapter authorization failed: {}", e).as_str(),
+                );
+                return Ok(());
+            }
+        };
+
+        let actor_addr = actor.get_zpr_addr().unwrap().clone(); // MUST have an addr by now.
+
+        // Have an actor. Will have a ZPR address at this point.
+        if let Err(e) = self
+            .asm
+            .actor_mgr
+            .add_adapter_via_node(&actor, &connect_via)
+            .await
+        {
+            error!(target: VSAPI, "failed to add authenticated adapter {:?} to actor db: {}", actor.get_cn(), e);
+
+            if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr).await {
+                warn!(target: VSAPI, "failed to release adapter address {}: {}", actor_addr, e);
+            }
+
+            let mut err_builder = results.get().init_resp().init_error();
+            write_error(
+                &mut err_builder,
+                vsapi::ErrorCode::Internal,
+                "state update failed",
+            );
+            return Ok(());
+        }
+
+        let addr_attr = actor.get_attribute(key::ZPR_ADDR).unwrap();
+        {
+            let expires_utc: DateTime<Utc> = addr_attr.get_expires().into();
+            info!(
+                target: VSAPI,
+                "successfully authorized adapter {:?} with address {} (expires {})",
+                actor.get_cn(),
+                actor_addr,
+                expires_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            );
+        }
+        let zpr_con = Connection::new(actor_addr, addr_attr.get_expires());
+        let mut resp_builder = results.get().init_resp().init_ok();
+        zpr_con.write_to(&mut resp_builder);
+
+        let evt = VsEvent::ActorJoins(actor_addr);
+        if let Err(e) = self.asm.event_mgr.record_event(evt).await {
+            warn!(target: VSAPI, "failed to record actor joins event for adapter {:?}: {}", actor.get_cn(), e);
+        }
+
+        Ok(())
     }
 
     async fn reauthorize(
@@ -768,27 +886,10 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             self.node.get_cn(), zpr_addr, reason
         );
 
-        // The disconnect call updates our state database.
-        match self
-            .asm
-            .cc
-            .disconnect(self.asm.clone(), zpr_addr, reason)
-            .await
-        {
-            Ok(()) => (),
-            Err(e) => {
-                warn!(target: VSAPI, "error processing disconnect of {}: {}", zpr_addr, e);
-                let res_builder = resp.get().init_res();
-                let mut err_builder = res_builder.init_error();
-                write_error(
-                    &mut err_builder,
-                    vsapi::ErrorCode::Internal,
-                    "internal error during disconnect",
-                );
-                return Ok(());
-            }
+        let evt = VsEvent::ActorLeaves(zpr_addr, reason);
+        if let Err(e) = self.asm.event_mgr.record_event(evt).await {
+            warn!(target: VSAPI, "failed to record actor leaves event for {}: {}", zpr_addr, e);
         }
-
         let mut res_builder = resp.get().init_res();
         res_builder.set_ok(());
         Ok(())

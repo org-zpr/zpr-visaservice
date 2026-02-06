@@ -160,6 +160,16 @@ impl ActorRepo {
         Ok(service_entries)
     }
 
+    /// Get a list of services offered by the actor.
+    pub async fn list_services_for_actor(
+        &self,
+        zpr_addr: &IpAddr,
+    ) -> Result<Vec<String>, StoreError> {
+        let services_key = actor_services_key_for(&zpr_addr);
+        let service_names: HashSet<String> = self.db.smembers(&services_key).await?;
+        Ok(service_names.into_iter().collect())
+    }
+
     /// Add an actor record which must only be called after initial authentication (there
     /// will likely be changes to an actor later from trusted services or re-authentication,
     /// but the updates should use a different function.)
@@ -460,5 +470,38 @@ mod test {
 
         let adapter_cns = repo.list_actor_cns(Some(Role::Adapter)).await.unwrap();
         assert_eq!(adapter_cns, vec!["adapter-cn".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_services_for_actor_only_returns_actor_services() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+
+        let node_actor = make_actor_with_services_defexp(
+            ROLE_NODE,
+            "fd5a:5052::30",
+            &["svc:one", "svc%two"],
+            "cn.1",
+        );
+        let adapter_actor =
+            make_actor_with_services_defexp(ROLE_ADAPTER, "fd5a:5052::40", &["svc:three"], "cn.2");
+
+        repo.add_actor(&node_actor).await.unwrap();
+        repo.add_actor(&adapter_actor).await.unwrap();
+
+        let node_addr: IpAddr = "fd5a:5052::30".parse().unwrap();
+        let mut node_services = repo.list_services_for_actor(&node_addr).await.unwrap();
+        node_services.sort();
+
+        assert_eq!(
+            node_services,
+            vec!["svc%two".to_string(), "svc:one".to_string()]
+        );
+
+        let adapter_addr: IpAddr = "fd5a:5052::40".parse().unwrap();
+        let mut adapter_services = repo.list_services_for_actor(&adapter_addr).await.unwrap();
+        adapter_services.sort();
+
+        assert_eq!(adapter_services, vec!["svc:three".to_string()]);
     }
 }

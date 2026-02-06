@@ -100,7 +100,7 @@ impl VisaMgr {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| ServiceError::Internal("system time before UNIX EPOCH".to_string()))?
                 .as_secs();
-            (now + config::DEFAULT_EXPIRATION_SECONDS) * 1000
+            (now + config::DEFAULT_VISA_EXPIRATION.as_secs()) * 1000
         };
 
         let (source_port, dest_port) = match pdesc.five_tuple.l4_protocol {

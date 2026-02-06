@@ -48,6 +48,21 @@ pub enum ServiceError {
 
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+
+    #[error("cryptographic error: {0}")]
+    Crypto(#[from] CryptoError),
+
+    #[error("error queue full: {0}")]
+    QueueFull(String),
+}
+
+#[derive(Debug, Error)]
+pub enum CryptoError {
+    #[error("openssl error: {0}")]
+    OpenSsl(#[from] openssl::error::ErrorStack),
+
+    #[error("base64 decode error: {0}")]
+    Base64(#[from] base64::DecodeError),
 }
 
 #[derive(Debug, Error)]
