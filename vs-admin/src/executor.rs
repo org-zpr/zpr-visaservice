@@ -32,10 +32,7 @@ impl Executor {
         curr: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match id {
-            // GET /admin/policies/{ID}
             Some(id) => self.get_policy(id)?,
-
-            // GET /admin/policies
             None => match curr {
                 true => self.get_curr_policy()?,
                 false => match (version, path) {
@@ -56,12 +53,9 @@ impl Executor {
     ) -> Result<(), Box<dyn std::error::Error>> {
         match id {
             Some(id) => match revoke {
-                // DELETE /admin/visas/{ID}
                 true => self.revoke_visa(id)?,
-                // GET /admin/visas/{ID}
                 false => self.get_visa(id)?,
             },
-            // GET /admin/visas
             None => self.get_visas()?,
         }
         Ok(())
@@ -76,14 +70,10 @@ impl Executor {
     ) -> Result<(), Box<dyn std::error::Error>> {
         match cn {
             Some(cn) => match (revoke, visas) {
-                // DELETE /admin/actors/{CN}
                 (true, _) => self.revoke_actor(&cn)?,
-                // GET /admin/actors/{CN}/visas
                 (_, true) => self.get_related_visas(&cn)?,
-                // GET /admin/actors/{CN}
                 _ => self.get_actor(&cn)?,
             },
-            // GET /admin/actors and GET /admin/actors?role=node
             None => self.get_actors(nodes)?,
         }
 
@@ -92,9 +82,7 @@ impl Executor {
 
     pub fn do_cmd_services(&self, id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
         match id {
-            // GET /admin/services/{ID}
             Some(id) => self.get_service(&id)?,
-            // GET /admin/services
             None => self.get_services()?,
         }
         Ok(())
@@ -135,14 +123,12 @@ impl Executor {
     fn get_policy(&self, id: u64) -> Result<(), Box<dyn std::error::Error>> {
         let entry = self.vs_cli.get_policy(id)?;
         println!("{entry}");
-
         Ok(())
     }
 
     fn get_curr_policy(&self) -> Result<(), Box<dyn std::error::Error>> {
         let entry = self.vs_cli.get_curr_policy()?;
         println!("{entry}");
-
         Ok(())
     }
 
@@ -191,9 +177,7 @@ impl Executor {
         };
 
         let entry: ListEntry = self.vs_cli.install_policy(&bundle)?;
-
         println!("{entry}");
-
         Ok(())
     }
 
@@ -214,7 +198,6 @@ impl Executor {
     fn revoke_visa(&self, id: u64) -> Result<(), Box<dyn std::error::Error>> {
         let revoke = self.vs_cli.revoke_visa(id)?;
         println!("{revoke}");
-
         Ok(())
     }
 
@@ -242,7 +225,6 @@ impl Executor {
     fn revoke_actor(&self, cn: &str) -> Result<(), Box<dyn std::error::Error>> {
         let revoke = self.vs_cli.revoke_actor(cn)?;
         println!("{revoke}");
-
         Ok(())
     }
 
@@ -279,7 +261,6 @@ impl Executor {
     fn get_revoke(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
         let entry = self.vs_cli.get_revoke(id)?;
         println!("{entry}");
-
         Ok(())
     }
 
@@ -288,15 +269,12 @@ impl Executor {
         for (i, entry) in entries.iter().enumerate() {
             println!("{} {entry}", format!("ENTRY {}", i).bold());
         }
-
         Ok(())
     }
 
     fn remove_revoke(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
         let entry = self.vs_cli.remove_revoke(id)?;
-
         println!("{entry}");
-
         Ok(())
     }
 
@@ -305,9 +283,7 @@ impl Executor {
     // the parts we care about via arguments on the command line
     fn add_revoke(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
         let entry = self.vs_cli.add_revoke(id)?;
-
         println!("{entry}");
-
         Ok(())
     }
 }
