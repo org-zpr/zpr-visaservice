@@ -32,7 +32,7 @@ use zpr::vsapi_types::{AuthBlob, ChallengeAlg, Claim, ConnectRequest, SelfSigned
 use crate::assembly::Assembly;
 use crate::auth;
 use crate::config;
-use crate::error::VSError;
+use crate::error::ServiceError;
 use crate::logging::targets::CC;
 
 // TODO: move to libeval
@@ -66,14 +66,14 @@ impl ConnectionControl {
         challenge_response: &[u8],
         remote: SocketAddr,
         node_req_addr: IpAddr,
-    ) -> Result<Actor, VSError> {
-        // Grab policy here.... note that this could get updated while we are working.
+    ) -> Result<Actor, ServiceError> {
+        // We need to be aware that the policy could be updated in the manager at any time.
         let policy = asm.policy_mgr.get_current();
 
         // TODO: Remove this placeholder code once we have keys in policy.
         let bootstrap_key = match policy.get_bootstrap_key_by_cn(cn) {
             Some(k) => k,
-            None => return Err(VSError::AuthenticationFailed("key not found".into())),
+            None => return Err(ServiceError::AuthenticationFailed("key not found".into())),
         };
 
         // The node challenge response is an rsa signature of
@@ -85,7 +85,9 @@ impl ConnectionControl {
             &[&timestamp.to_be_bytes(), cn.as_bytes(), challenge_presented],
         )? {
             info!(target: CC, "signature verification failed for cn {}", cn);
-            return Err(VSError::AuthenticationFailed("invalid signature".into()));
+            return Err(ServiceError::AuthenticationFailed(
+                "invalid signature".into(),
+            ));
         }
 
         // The policy sees everything as a bunch of claims.
@@ -118,7 +120,7 @@ impl ConnectionControl {
                 // Make sure policy verified that the actor is in fact a node.
                 if !actor.is_node() {
                     info!(target: CC, "connection not approved for cn {}: not a node", cn);
-                    return Err(VSError::AuthenticationFailed("not authorized".into()));
+                    return Err(ServiceError::AuthenticationFailed("not authorized".into()));
                 }
                 actor
             }
@@ -138,9 +140,9 @@ impl ConnectionControl {
         asm: Arc<Assembly>,
         req: ConnectRequest,
         connect_via: &IpAddr,
-    ) -> Result<Actor, VSError> {
+    ) -> Result<Actor, ServiceError> {
         if req.blobs.is_empty() || req.blobs.len() > 1 {
-            return Err(VSError::ParamError("expected exactly one auth blob".into()));
+            return Err(ServiceError::Param("expected exactly one auth blob".into()));
         }
         check_adapter_required_claims(&req)?;
         let scrubbed_claims = scrub_adapter_claims(req.claims)?;
@@ -164,7 +166,7 @@ impl ConnectionControl {
                 }
             },
             AuthBlob::AC(_acb) => {
-                return Err(VSError::InternalError(
+                return Err(ServiceError::Internal(
                     "external auth not yet supported".into(),
                 ));
             }
@@ -173,7 +175,7 @@ impl ConnectionControl {
         // Sanity check:
         if !adapter_actor.is_node() {
             warn!(target: CC, "authenticate_adapter returns a node actor: cn {}", adapter_actor.get_cn().unwrap());
-            return Err(VSError::AuthenticationFailed("not an adapter".into()));
+            return Err(ServiceError::AuthenticationFailed("not an adapter".into()));
         }
         Ok(adapter_actor)
     }
@@ -186,7 +188,7 @@ impl ConnectionControl {
         mut unauthd_claims: Vec<Attribute>,
         mut authd_claims: Vec<Attribute>,
         dock_interface: u8,
-    ) -> Result<Actor, VSError> {
+    ) -> Result<Actor, ServiceError> {
         // a) is the auth correct (check policy for CN, check sig.)
         // b) is connection allowed by policy?
         //
@@ -202,7 +204,7 @@ impl ConnectionControl {
 
             if adapter_cn != ssb.cn {
                 warn!(target: CC, "adapter cn mismatch: claim '{}' != blob '{}'", adapter_cn, ssb.cn);
-                return Err(VSError::AuthenticationFailed(
+                return Err(ServiceError::AuthenticationFailed(
                     "cn mismatch between claim and blob".into(),
                 ));
             }
@@ -213,12 +215,14 @@ impl ConnectionControl {
         let policy = asm.policy_mgr.get_current();
 
         let pubkey = policy.get_bootstrap_key_by_cn(&ssb.cn).ok_or_else(|| {
-            VSError::AuthenticationFailed(format!("no key found in policy for cn {}", ssb.cn))
+            ServiceError::AuthenticationFailed(format!("no key found in policy for cn {}", ssb.cn))
         })?;
 
         if !auth::verify_ss_blob_signature(&ssb.cn, ssb, pubkey)? {
             info!(target: CC, "adapter signature verification failed for cn {}", ssb.cn);
-            return Err(VSError::AuthenticationFailed("invalid signature".into()));
+            return Err(ServiceError::AuthenticationFailed(
+                "invalid signature".into(),
+            ));
         }
 
         // In prototype we make a JWT here and use that as an identity attribute.
@@ -260,7 +264,7 @@ impl ConnectionControl {
         unauthd_claims: Vec<Attribute>,
         mut authd_claims: Vec<Attribute>,
         _dock_interface: u8,
-    ) -> Result<Actor, VSError> {
+    ) -> Result<Actor, ServiceError> {
         // TODO: Check with our revocation tables.
         info!(target: CC, "authorize_connection - TODO: check revocation table");
         // Actor may be denied by CN -- we can detect that before calling into policy.
@@ -306,7 +310,7 @@ impl ConnectionControl {
                 }
                 Err(e) => {
                     error!(target: CC, "failed to assign ZPR addr to authorized adapter cn {}: {}", adapter_cn, e);
-                    return Err(VSError::InternalError("address assignment failed".into()));
+                    return Err(ServiceError::Internal("address assignment failed".into()));
                 }
             }
         }
@@ -320,7 +324,7 @@ impl ConnectionControl {
         asm: Arc<Assembly>,
         zpr_addr: IpAddr,
         reason: vsapi::DisconnectReason,
-    ) -> Result<(), VSError> {
+    ) -> Result<(), ServiceError> {
         info!(target: CC, "disconnect actor at {} for reason {:?}", zpr_addr, reason);
 
         let maybe_actor = asm.actor_mgr.get_actor_by_zpr_addr(&zpr_addr).await?;
@@ -395,19 +399,19 @@ impl ConnectionControl {
 /// Check that required claims are present, or return an error.
 ///
 /// Only required claim is CN.
-fn check_adapter_required_claims(req: &ConnectRequest) -> Result<(), VSError> {
+fn check_adapter_required_claims(req: &ConnectRequest) -> Result<(), ServiceError> {
     let mut cn_found = false;
     for c in &req.claims {
         if c.key == key::CN {
             if c.value.is_empty() {
-                return Err(VSError::ParamError("cn claim cannot be empty".into()));
+                return Err(ServiceError::Param("cn claim cannot be empty".into()));
             }
             cn_found = true;
             break;
         }
     }
     if !cn_found {
-        return Err(VSError::ParamError("cn claim is required".into()));
+        return Err(ServiceError::Param("cn claim is required".into()));
     }
     Ok(())
 }
@@ -425,7 +429,7 @@ fn check_adapter_required_claims(req: &ConnectRequest) -> Result<(), VSError> {
 // Note classes are endpoint, user, service (as per ZPL and the compiler).
 //
 // Finally, the incoming VSAPI "Claims" are converted into libeval "Attributes" and returned.
-fn scrub_adapter_claims(claims: Vec<Claim>) -> Result<Vec<Attribute>, VSError> {
+fn scrub_adapter_claims(claims: Vec<Claim>) -> Result<Vec<Attribute>, ServiceError> {
     let mut scrubbed_claims = Vec::new();
     for claim in claims {
         if claim.key == key::ZPR_ADDR {

@@ -23,7 +23,7 @@ use crate::config;
 use crate::counters::CounterType;
 use crate::cparam;
 use crate::cparam::CParam;
-use crate::error::VSError;
+use crate::error::ServiceError;
 use crate::event_mgr::VsEvent;
 use crate::logging::targets::VSAPI;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
@@ -303,12 +303,12 @@ fn ipaddr_from_capnp(addr: vsapi::ip_addr::Reader) -> Result<std::net::IpAddr, c
 impl VisaServiceImpl {
     /// Helper for the connect routine -- returns the two connect params we require: zpr_addr and aaa_prefix,
     /// or errors out.
-    fn parse_my_connect_params(&self, params: &[CParam]) -> Result<(IpAddr, IpNet), VSError> {
+    fn parse_my_connect_params(&self, params: &[CParam]) -> Result<(IpAddr, IpNet), ServiceError> {
         let node_zpr_addr: IpAddr = CParam::get_ipaddr(params, cparam::PARAM_ZPR_ADDR)?;
         let node_aaa_network_str = CParam::get_string(params, cparam::PARAM_AAA_PREFIX)?;
         let node_aaa_net: IpNet = match node_aaa_network_str.parse() {
             Ok(n) => n,
-            Err(_e) => Err(VSError::ParamError(format!(
+            Err(_e) => Err(ServiceError::Param(format!(
                 "invalid ip prefix: {node_aaa_network_str}",
             )))?,
         };
@@ -485,8 +485,8 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             )
             .await
         {
-            Ok(n_actor) => n_actor,
-            Err(VSError::AuthenticationFailed(reason)) => {
+            Ok(node_id) => node_id,
+            Err(ServiceError::AuthenticationFailed(reason)) => {
                 warn!(target: VSAPI, "authentication failed for {}: {}", self.remote_cn, reason);
                 self.asm.counters.incr(CounterType::NodeConnectionsFailed);
                 let mut err_builder = res_builder.init_error();
