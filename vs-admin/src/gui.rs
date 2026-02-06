@@ -12,9 +12,9 @@ use reqwest::tls::Certificate;
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::time::{Duration, Instant};
 
-use admin_api_types::admin_api_types::{
-    HostRecordBrief, ServiceRecord, VisaDescriptor, reason_for,
-};
+use admin_api_types::admin_api_types::{ActorDescriptor, ServiceDescriptor, VisaDescriptor};
+
+use crate::vsclient::{RoleFilter, VsClient};
 
 /// Do not hit the VS ADMIN api more than this often.
 const REFRESH_RATE: Duration = Duration::from_millis(2000);
@@ -23,11 +23,10 @@ const REFRESH_RATE: Duration = Duration::from_millis(2000);
 struct Gui {
     exit: bool,
     err_msg: Option<String>,
-    api_url: String,
     last_updated: Option<Instant>,
-    cert: Certificate,
-    actors: Vec<HostRecordBrief>,
-    services: Vec<ServiceRecord>,
+    vs_cli: VsClient,
+    actors: Vec<ActorDescriptor>,
+    services: Vec<ServiceDescriptor>,
     visas: Vec<VisaDescriptor>,
     table_header_style: Style,
     zpr_addr_style: Style,
@@ -50,8 +49,7 @@ impl Gui {
         Self {
             exit: false,
             err_msg: None,
-            api_url: api_url.to_string(),
-            cert,
+            vs_cli: VsClient::new(api_url.to_string(), cert, true),
             actors: Vec::new(),
             services: Vec::new(),
             visas: Vec::new(),
@@ -100,64 +98,47 @@ impl Gui {
         }
         self.last_updated = Some(Instant::now()); // set first here in case we error out.
         self.err_msg = None;
-        let cb = reqwest::blocking::ClientBuilder::new()
-            .add_root_certificate(self.cert.clone())
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(10));
-        let client = cb.build()?;
 
         {
-            let resp = client
-                .get(format!("{}/admin/actors", &self.api_url))
-                .send()?;
-            if !resp.status().is_success() {
-                return Err(format!(
-                    "error (status {:?}:{}) : {}",
-                    resp.status(),
-                    reason_for(resp.status()),
-                    resp.text()?
-                )
-                .into());
+            let actor_cns = self.vs_cli.get_actors(RoleFilter::All)?;
+            self.actors.clear();
+            for cn in &actor_cns {
+                match self.vs_cli.get_actor(cn) {
+                    Ok(a) => {
+                        self.actors.push(a);
+                    }
+                    Err(_) => (), // silently ignore load errors for now
+                }
             }
-
-            self.actors = resp.json()?;
             self.actors.sort(); // uses Ord trait
         }
         self.last_updated = Some(Instant::now());
 
         {
-            let resp = client
-                .get(format!("{}/admin/services", &self.api_url))
-                .send()?;
-            if !resp.status().is_success() {
-                return Err(format!(
-                    "error (status {:?}:{}) : {}",
-                    resp.status(),
-                    reason_for(resp.status()),
-                    resp.text()?
-                )
-                .into());
+            let service_ids = self.vs_cli.get_services()?;
+            self.services.clear();
+            for sid in &service_ids {
+                match self.vs_cli.get_service(sid) {
+                    Ok(s) => {
+                        self.services.push(s);
+                    }
+                    Err(_) => (), // silently ignore load errors for now
+                }
             }
-
-            self.services = resp.json()?;
-            // self.services.sort(); // uses Ord trait
+            self.services.sort(); // uses Ord trait
         }
 
         {
-            let resp = client
-                .get(format!("{}/admin/visas", &self.api_url))
-                .send()?;
-            if !resp.status().is_success() {
-                return Err(format!(
-                    "error (status {:?}:{}) : {}",
-                    resp.status(),
-                    reason_for(resp.status()),
-                    resp.text()?
-                )
-                .into());
+            let visa_ids = self.vs_cli.get_visas()?;
+            self.visas.clear();
+            for vid in &visa_ids {
+                match self.vs_cli.get_visa(*vid) {
+                    Ok(v) => {
+                        self.visas.push(v);
+                    }
+                    Err(_) => (), // silently ignore load errors for now
+                }
             }
-
-            self.visas = resp.json()?;
             self.visas.sort(); // uses Ord trait
             self.visas.reverse();
         }
@@ -225,39 +206,29 @@ impl Gui {
             .height(1);
         let mut row_max_lens = (0u16, 0u16, 0u16); // (SERVICE_NAME, CN, ZPR_ADDR)
         for srec in &self.services {
-            for svcid in &srec.services {
-                if row_max_lens.0 < svcid.len() as u16 {
-                    row_max_lens.0 = svcid.len() as u16;
-                }
+            if row_max_lens.0 < srec.service_name.len() as u16 {
+                row_max_lens.0 = srec.service_name.len() as u16;
             }
-            if row_max_lens.1 < srec.cn.len() as u16 {
-                row_max_lens.1 = srec.cn.len() as u16;
+            if row_max_lens.1 < srec.actor_cn.len() as u16 {
+                row_max_lens.1 = srec.actor_cn.len() as u16;
             }
             if row_max_lens.2 < srec.zpr_addr.len() as u16 {
                 row_max_lens.2 = srec.zpr_addr.len() as u16;
             }
         }
 
-        let mut rows = Vec::new();
-        for srec in &self.services {
-            let expanded_rows = srec.services.iter().map(|svcid| {
-                let cn = srec.cn.clone();
-                let zpr_addr = srec.zpr_addr.clone();
-                let flag = if srec.node {
-                    "[node]".light_magenta()
-                } else {
-                    "".into()
-                };
-                let cells = [
-                    Cell::from(svcid.clone()),
-                    Cell::from(cn).style(self.cn_style),
-                    Cell::from(zpr_addr).style(self.zpr_addr_style),
-                    Cell::from(flag),
-                ];
-                Row::new(cells)
-            });
-            rows.extend(expanded_rows);
-        }
+        let rows = self.services.iter().map(|srec| {
+            let cn = srec.actor_cn.clone();
+            let zpr_addr = srec.zpr_addr.clone();
+            let flag = "".to_string(); // Used to put "[node]" here
+            let cells = [
+                Cell::from(srec.service_name.clone()),
+                Cell::from(cn).style(self.cn_style),
+                Cell::from(zpr_addr).style(self.zpr_addr_style),
+                Cell::from(flag),
+            ];
+            Row::new(cells)
+        });
 
         let table = Table::new(
             rows,
@@ -304,7 +275,7 @@ impl Gui {
         let rows = self.actors.iter().map(|actor| {
             let cn = actor.cn.clone();
             let zpr_addr = actor.zpr_addr.clone();
-            let ts: DateTime<Utc> = DateTime::from_timestamp(actor.ctime, 0).unwrap();
+            let ts: DateTime<Utc> = DateTime::from_timestamp(actor.ctime as i64, 0).unwrap();
             let join_date = ts.to_rfc3339_opts(SecondsFormat::Secs, true);
             let flag = if actor.node {
                 "[node]".light_magenta()

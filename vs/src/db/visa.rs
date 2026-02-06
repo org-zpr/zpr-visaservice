@@ -35,8 +35,26 @@ pub enum NodeVisaState {
     Revoked,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisaMetadata {
+    pub requesting_node: IpAddr,
+    pub ctime: u64, // unix timestamp millisconds
+}
+
 pub struct VisaRepo {
     db: Arc<dyn DbConnection>,
+}
+
+impl VisaMetadata {
+    pub fn new(requesting_node: IpAddr) -> Self {
+        VisaMetadata {
+            requesting_node,
+            ctime: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
+        }
+    }
 }
 
 impl VisaRepo {
@@ -109,7 +127,8 @@ impl VisaRepo {
         visa: &Visa,
         nstate: NodeVisaState,
     ) -> Result<(), StoreError> {
-        match self.try_store_visa(requesting_node, visa, nstate).await {
+        let metadata = VisaMetadata::new(*requesting_node);
+        match self.try_store_visa(&metadata, visa, nstate).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 warn!(target: REDIS, "failed to store visa: {}, attempting cleanup", visa.issuer_id);
@@ -131,7 +150,7 @@ impl VisaRepo {
     /// want to set it as [NodeVisaState::Installed].
     async fn try_store_visa(
         &self,
-        requesting_node: &IpAddr,
+        metadata: &VisaMetadata,
         visa: &Visa,
         nstate: NodeVisaState,
     ) -> Result<(), StoreError> {
@@ -167,17 +186,10 @@ impl VisaRepo {
 
         //
         // visa:<ID>
-        //       |- requesting_node -> string, zpr address
-        //       |- ctime           -> string, timestamp
+        //       |- JSON(VisaMetadata)
         //
         self.db
-            .hset_multiple(
-                &key_visa,
-                &[
-                    ("requesting_node", requesting_node.to_string().as_str()),
-                    ("ctime", &gen_timestamp()),
-                ],
-            )
+            .set(&key_visa, &serde_json::to_string(&metadata)?)
             .await?;
         self.db.expire(&key_visa, expiration_seconds as i64).await?;
 
@@ -189,7 +201,7 @@ impl VisaRepo {
 
         // TODO: We may want to use a struct here for the whole state entry and just serialize it all
         // as JSON, but for now am leaving open option of just updating fields individually using redis.
-        let key_nodevisa = node_visa_key_for_visa(requesting_node, visa_id);
+        let key_nodevisa = node_visa_key_for_visa(&metadata.requesting_node, visa_id);
         self.db
             .hset_multiple(
                 &key_nodevisa,
@@ -283,6 +295,42 @@ impl VisaRepo {
         Ok(visas)
     }
 
+    /// Get the visa by ID.
+    ///
+    /// ## Errors
+    /// - [DBError::NotFound] if the visa does not exist.
+    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Visa, StoreError> {
+        let blob_key = blob_key_for_visa(visa_id);
+        if !self.db.exists(&blob_key).await? {
+            return Err(StoreError::NotFound(format!(
+                "visa blob not found for ID {}",
+                visa_id
+            )));
+        }
+        let visa_blob = self.db.get_bin(&blob_key).await?;
+        let visa = Visa::from_capnp_bytes(&visa_blob)?;
+        Ok(visa)
+    }
+
+    /// Get the metadata for the visa by ID.
+    ///
+    /// ## Errors
+    /// - [StoreError::NotFound] if the visa metadata does not exist.
+    pub async fn get_visa_metadata_by_id(&self, visa_id: u64) -> Result<VisaMetadata, StoreError> {
+        let visa_key = visa_key_for_visa(visa_id);
+        if !self.db.exists(&visa_key).await? {
+            return Err(StoreError::NotFound(format!(
+                "visa metadata not found for ID {}",
+                visa_id
+            )));
+        }
+        let metadata_str: String = self.db.get(&visa_key).await?.ok_or_else(|| {
+            StoreError::NotFound(format!("visa metadata not found for ID {}", visa_id))
+        })?;
+        let metadata: VisaMetadata = serde_json::from_str(&metadata_str)?;
+        Ok(metadata)
+    }
+
     /// Copy all the visa IDs into a vec.
     pub async fn list_visa_ids(&self) -> Result<Vec<u64>, StoreError> {
         let visa_keys = self.db.scan_match_all(format!("{KEY_VISA}:[0-9]*")).await?;
@@ -332,21 +380,7 @@ mod test {
     use super::*;
     use crate::db::DbConnection;
     use crate::db::db_fake::FakeDb;
-    use std::time::SystemTime;
-    use zpr::vsapi_types::{DockPep, EndpointT, KeySet, TcpUdpPep};
-
-    fn make_visa(visa_id: u64, expires_in: Duration) -> Visa {
-        Visa::new(
-            visa_id,
-            0,
-            SystemTime::now() + expires_in,
-            "fd5a:5052::10".parse().unwrap(),
-            "fd5a:5052::20".parse().unwrap(),
-            DockPep::TCP(TcpUdpPep::new(1234, 443, EndpointT::Server)),
-            KeySet::new(b"ingress", b"egress"),
-            None,
-        )
-    }
+    use crate::test_helpers::make_visa;
 
     #[tokio::test]
     async fn test_store_and_get_visas_by_state() {
@@ -519,5 +553,62 @@ mod test {
         ids.sort_unstable();
 
         assert_eq!(ids, vec![1, 5, 42]);
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_by_id() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+        let node_addr: IpAddr = "fd5a:5052::8".parse().unwrap();
+        let visa = make_visa(77, Duration::from_secs(60));
+
+        repo.store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        let loaded = repo.get_visa_by_id(77).await.unwrap();
+        assert_eq!(loaded.issuer_id, 77);
+        assert_eq!(loaded.source_addr, visa.source_addr);
+        assert_eq!(loaded.dest_addr, visa.dest_addr);
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_by_id_missing() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+
+        let err = repo.get_visa_by_id(1234).await.unwrap_err();
+        match err {
+            StoreError::NotFound(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_metadata_by_id() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+        let node_addr: IpAddr = "fd5a:5052::9".parse().unwrap();
+        let visa = make_visa(88, Duration::from_secs(60));
+
+        repo.store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        let metadata = repo.get_visa_metadata_by_id(88).await.unwrap();
+        assert_eq!(metadata.requesting_node, node_addr);
+        assert!(metadata.ctime > 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_metadata_by_id_missing() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db);
+
+        let err = repo.get_visa_metadata_by_id(999).await.unwrap_err();
+        match err {
+            StoreError::NotFound(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
     }
 }
