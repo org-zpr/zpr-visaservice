@@ -19,7 +19,7 @@ use zpr::vsapi_types::Visa;
 use zpr::write_to::WriteTo;
 
 use crate::db::{DbConnection, DbOp, ZAddr, gen_timestamp};
-use crate::error::DBError;
+use crate::error::StoreError;
 use crate::logging::targets::REDIS;
 
 const KEY_VISA: &str = "visa";
@@ -63,14 +63,14 @@ impl VisaRepo {
         VisaRepo { db }
     }
 
-    pub async fn get_next_visa_id(&self) -> Result<u64, DBError> {
+    pub async fn get_next_visa_id(&self) -> Result<u64, StoreError> {
         let next_id: u64 = self.db.incr(KEY_NEXT_VISA_ID, 1).await?;
         Ok(next_id)
     }
 
     /// Remove references to a visa from the state datbase. Caller must make sure
     /// that any revocation messages or whatever have already been sent.
-    async fn clean_up(&self, visa_id: u64) -> Result<(), DBError> {
+    async fn clean_up(&self, visa_id: u64) -> Result<(), StoreError> {
         let blob_key = blob_key_for_visa(visa_id);
         let visa_id_key = visa_key_for_visa(visa_id);
 
@@ -100,7 +100,7 @@ impl VisaRepo {
     /// TODO: A future version may remove the visa:ID entries so long as they
     /// are not referenced on another node.
     ///
-    pub async fn clear_node_state(&self, node_addr: &IpAddr) -> Result<(), DBError> {
+    pub async fn clear_node_state(&self, node_addr: &IpAddr) -> Result<(), StoreError> {
         let zaddr = ZAddr::from(node_addr);
         let nodevisa_keys = self
             .db
@@ -126,7 +126,7 @@ impl VisaRepo {
         requesting_node: &IpAddr,
         visa: &Visa,
         nstate: NodeVisaState,
-    ) -> Result<(), DBError> {
+    ) -> Result<(), StoreError> {
         let metadata = VisaMetadata::new(*requesting_node);
         match self.try_store_visa(&metadata, visa, nstate).await {
             Ok(_) => Ok(()),
@@ -153,14 +153,14 @@ impl VisaRepo {
         metadata: &VisaMetadata,
         visa: &Visa,
         nstate: NodeVisaState,
-    ) -> Result<(), DBError> {
+    ) -> Result<(), StoreError> {
         // write capnpn version of visa into the store.
 
         let visa_id = visa.issuer_id;
 
         let expiration_seconds = seconds_until(visa.expires);
         if expiration_seconds == 0 {
-            return Err(DBError::InvalidData(
+            return Err(StoreError::InvalidData(
                 "attempt to store already expired visa".into(),
             ));
         }
@@ -225,10 +225,10 @@ impl VisaRepo {
         node_addr: &IpAddr,
         visa_id: u64,
         new_state: NodeVisaState,
-    ) -> Result<(), DBError> {
+    ) -> Result<(), StoreError> {
         let key_nodevisa = node_visa_key_for_visa(node_addr, visa_id);
         if !self.db.exists(&key_nodevisa).await? {
-            return Err(DBError::NotFound(format!(
+            return Err(StoreError::NotFound(format!(
                 "node-visa record not found: {key_nodevisa}"
             )));
         }
@@ -252,7 +252,7 @@ impl VisaRepo {
         &self,
         node_addr: &IpAddr,
         state: NodeVisaState,
-    ) -> Result<Vec<Visa>, DBError> {
+    ) -> Result<Vec<Visa>, StoreError> {
         let zaddr = ZAddr::from(node_addr);
         let mut visas = Vec::new();
 
@@ -272,7 +272,7 @@ impl VisaRepo {
                     continue;
                 }
                 let visa_id: u64 = parts[0].parse().map_err(|_| {
-                    DBError::InvalidData(format!("invalid visa ID in nodevisa key: {}", key))
+                    StoreError::InvalidData(format!("invalid visa ID in nodevisa key: {}", key))
                 })?;
 
                 // Load the visa blob
@@ -282,7 +282,7 @@ impl VisaRepo {
                         let visa = Visa::from_capnp_bytes(&visa_blob)?;
                         visas.push(visa);
                     }
-                    Err(err) if err.kind() == redis::ErrorKind::TypeError => {
+                    Err(err) if err.kind() == redis::ErrorKind::UnexpectedReturnType => {
                         // Missing/expired visa blob. Skip it but keep other visas.
                         warn!(target: REDIS, "visa blob missing for key {}", blob_key);
                         continue;
@@ -299,10 +299,10 @@ impl VisaRepo {
     ///
     /// ## Errors
     /// - [DBError::NotFound] if the visa does not exist.
-    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Visa, DBError> {
+    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Visa, StoreError> {
         let blob_key = blob_key_for_visa(visa_id);
         if !self.db.exists(&blob_key).await? {
-            return Err(DBError::NotFound(format!(
+            return Err(StoreError::NotFound(format!(
                 "visa blob not found for ID {}",
                 visa_id
             )));
@@ -315,24 +315,24 @@ impl VisaRepo {
     /// Get the metadata for the visa by ID.
     ///
     /// ## Errors
-    /// - [DBError::NotFound] if the visa metadata does not exist.
-    pub async fn get_visa_metadata_by_id(&self, visa_id: u64) -> Result<VisaMetadata, DBError> {
+    /// - [StoreError::NotFound] if the visa metadata does not exist.
+    pub async fn get_visa_metadata_by_id(&self, visa_id: u64) -> Result<VisaMetadata, StoreError> {
         let visa_key = visa_key_for_visa(visa_id);
         if !self.db.exists(&visa_key).await? {
-            return Err(DBError::NotFound(format!(
+            return Err(StoreError::NotFound(format!(
                 "visa metadata not found for ID {}",
                 visa_id
             )));
         }
         let metadata_str: String = self.db.get(&visa_key).await?.ok_or_else(|| {
-            DBError::NotFound(format!("visa metadata not found for ID {}", visa_id))
+            StoreError::NotFound(format!("visa metadata not found for ID {}", visa_id))
         })?;
         let metadata: VisaMetadata = serde_json::from_str(&metadata_str)?;
         Ok(metadata)
     }
 
     /// Copy all the visa IDs into a vec.
-    pub async fn list_visa_ids(&self) -> Result<Vec<u64>, DBError> {
+    pub async fn list_visa_ids(&self) -> Result<Vec<u64>, StoreError> {
         let visa_keys = self.db.scan_match_all(format!("{KEY_VISA}:[0-9]*")).await?;
         let mut visa_ids = Vec::new();
         for key in &visa_keys {
@@ -436,7 +436,7 @@ mod test {
             .await
             .unwrap_err();
         match err {
-            DBError::NotFound(_) => {}
+            StoreError::NotFound(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -476,7 +476,7 @@ mod test {
             .await
             .unwrap_err();
         match err {
-            DBError::InvalidData(_) => {}
+            StoreError::InvalidData(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -499,7 +499,7 @@ mod test {
             .await
             .unwrap_err();
         match err {
-            DBError::NotFound(_) => {}
+            StoreError::NotFound(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -579,7 +579,7 @@ mod test {
 
         let err = repo.get_visa_by_id(1234).await.unwrap_err();
         match err {
-            DBError::NotFound(_) => {}
+            StoreError::NotFound(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -607,7 +607,7 @@ mod test {
 
         let err = repo.get_visa_metadata_by_id(999).await.unwrap_err();
         match err {
-            DBError::NotFound(_) => {}
+            StoreError::NotFound(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }

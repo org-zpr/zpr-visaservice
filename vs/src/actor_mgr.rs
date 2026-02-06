@@ -3,7 +3,7 @@
 
 use libeval::actor::Actor;
 use libeval::attribute::key;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -14,7 +14,7 @@ use zpr::vsapi_types::ServiceDescriptor;
 use crate::assembly::Assembly;
 use crate::db;
 use crate::db::ServiceEntry;
-use crate::error::{DBError, VSError};
+use crate::error::{ServiceError, StoreError};
 use crate::logging::targets::AMGR;
 
 pub struct ActorMgr {
@@ -45,9 +45,9 @@ impl ActorMgr {
     }
 
     /// TODO: Support for reconnects (where we still have state).
-    pub async fn add_node(&self, actor: &Actor) -> Result<(), VSError> {
+    pub async fn add_node(&self, actor: &Actor) -> Result<(), ServiceError> {
         if !actor.is_node() {
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 "attempt to add non-node actor as node".into(),
             ));
         }
@@ -64,13 +64,17 @@ impl ActorMgr {
 
     /// Use [ActorMgr::remove_actor_by_zpr_addr] to remove actor records which apply to both nodes and adapters.
     /// Use this function here in addition to remove node state.
-    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
+    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         self.node_db.remove_node(node_addr).await?;
         Ok(())
     }
 
     /// Update vss socket for given node in the DB.
-    pub async fn set_node_vss(&self, node_addr: &IpAddr, vss: &SocketAddr) -> Result<(), VSError> {
+    pub async fn set_node_vss(
+        &self,
+        node_addr: &IpAddr,
+        vss: &SocketAddr,
+    ) -> Result<(), ServiceError> {
         self.node_db.set_node_vss(node_addr, vss).await?;
         Ok(())
     }
@@ -79,9 +83,9 @@ impl ActorMgr {
     /// We (the visa service) uses this to connect itself at startup.
     ///
     /// TODO: At some point we need to update our state to reflect that the visa service is docked to a node.
-    pub async fn add_magic_adapter(&self, actor: &Actor) -> Result<(), VSError> {
+    pub async fn add_magic_adapter(&self, actor: &Actor) -> Result<(), ServiceError> {
         if actor.is_node() {
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 "attempt to add node actor as adapter".into(),
             ));
         }
@@ -95,9 +99,9 @@ impl ActorMgr {
         &self,
         actor: &Actor,
         connected_to_node: &IpAddr,
-    ) -> Result<(), VSError> {
+    ) -> Result<(), ServiceError> {
         if actor.is_node() {
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 "attempt to add node actor as adapter".into(),
             ));
         }
@@ -109,24 +113,27 @@ impl ActorMgr {
     }
 
     /// Returns Ok(None) if not found.
-    pub async fn get_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<Option<Actor>, VSError> {
+    pub async fn get_actor_by_zpr_addr(
+        &self,
+        zpra: &IpAddr,
+    ) -> Result<Option<Actor>, ServiceError> {
         match self.actor_db.get_actor_by_zpr_addr(zpra).await {
             Ok(actor) => Ok(Some(actor)),
-            Err(DBError::NotFound(_)) => Ok(None),
-            Err(e) => Err(VSError::from(e)),
+            Err(StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(ServiceError::from(e)),
         }
     }
 
-    pub async fn get_actor_by_cn(&self, cn: &str) -> Result<Option<Actor>, VSError> {
+    pub async fn get_actor_by_cn(&self, cn: &str) -> Result<Option<Actor>, ServiceError> {
         match self.actor_db.get_actor_by_cn(cn).await {
             Ok(actor) => Ok(Some(actor)),
-            Err(DBError::NotFound(_)) => Ok(None),
-            Err(e) => Err(VSError::from(e)),
+            Err(StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(ServiceError::from(e)),
         }
     }
 
     /// Remove actor state from the database. If removing a node, also call [ActorMgr::remove_node].
-    pub async fn remove_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<(), VSError> {
+    pub async fn remove_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<(), ServiceError> {
         Ok(self.actor_db.rm_actor_by_zpr_addr(zpra).await?)
     }
 
@@ -134,7 +141,7 @@ impl ActorMgr {
     pub async fn get_adapters_connected_to_node(
         &self,
         node_addr: &IpAddr,
-    ) -> Result<Vec<IpAddr>, VSError> {
+    ) -> Result<Vec<IpAddr>, ServiceError> {
         Ok(self
             .node_db
             .get_connected_adapters(node_addr)
@@ -147,7 +154,7 @@ impl ActorMgr {
     pub async fn get_auth_services_list(
         &self,
         asm: Arc<Assembly>,
-    ) -> Result<Vec<ServiceDescriptor>, VSError> {
+    ) -> Result<Vec<ServiceDescriptor>, ServiceError> {
         let mut services = Vec::new();
 
         // From the DB we can get the (service_name, zpr_addr) for each connected service.
@@ -181,13 +188,16 @@ impl ActorMgr {
         Ok(services)
     }
 
-    pub async fn get_services_list(&self) -> Result<Vec<ServiceEntry>, VSError> {
+    pub async fn get_services_list(&self) -> Result<Vec<ServiceEntry>, ServiceError> {
         let services = self.actor_db.list_services().await?;
         Ok(services)
     }
 
     /// Get the list of connectioned actor CN values, optionally filtered by role.
-    pub async fn list_actor_cns(&self, by_role: Option<db::Role>) -> Result<Vec<String>, VSError> {
+    pub async fn list_actor_cns(
+        &self,
+        by_role: Option<db::Role>,
+    ) -> Result<Vec<String>, ServiceError> {
         let cns = self.actor_db.list_actor_cns(by_role).await?;
         Ok(cns)
     }
@@ -196,7 +206,7 @@ impl ActorMgr {
     pub async fn get_service_detail(
         &self,
         service_name: &str,
-    ) -> Result<Option<ServiceDetail>, VSError> {
+    ) -> Result<Option<ServiceDetail>, ServiceError> {
         if let Some(addr) = self.actor_db.get_zpr_addr_for_service(service_name).await? {
             let attrs = self
                 .actor_db
@@ -254,6 +264,41 @@ impl ActorMgr {
             return Ok(None);
         }
     }
+
+    pub async fn list_node_addrs(&self) -> Result<Vec<IpAddr>, ServiceError> {
+        let addrs = self.node_db.list_node_addrs().await?;
+        Ok(addrs)
+    }
+
+    /// Return true if the actor exists and offers at least one authentication service.
+    pub async fn has_auth_services(
+        &self,
+        asm: Arc<Assembly>,
+        actor_zpr_addr: IpAddr,
+    ) -> Result<bool, ServiceError> {
+        let services = match self.actor_db.list_services_for_actor(&actor_zpr_addr).await {
+            Ok(svcs) => svcs,
+            Err(StoreError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(ServiceError::from(e)),
+        };
+        if services.is_empty() {
+            return Ok(false);
+        }
+        let mut offered_map = HashSet::new();
+        for s in services {
+            offered_map.insert(s);
+        }
+
+        // Then we need to consult policy to get the service details.
+        let pol = asm.policy_mgr.get_current();
+        for svc in pol.list_services_by_kind(ServiceType::Authentication) {
+            if offered_map.contains(&svc.id) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
 }
 
 // The auth service URI is of the form: <ZPR_AUTH_SCHEME>://<addr>:<port>/path
@@ -278,18 +323,18 @@ fn uri_for_service(
     skind: &ServiceType,
     addr: &IpAddr,
     endpoints: &[Scope],
-) -> Result<String, VSError> {
+) -> Result<String, ServiceError> {
     let scheme = match skind {
         ServiceType::Authentication => "zpr-oauthrsa",
         _ => {
-            return Err(VSError::InternalError(
+            return Err(ServiceError::Internal(
                 format!("unsupported service type for auth service URI: {skind:?}").into(),
             ));
         }
     };
 
     if endpoints.len() != 1 {
-        return Err(VSError::InternalError(
+        return Err(ServiceError::Internal(
             format!(
                 "auth service must have exactly one scope endpoint, not {}",
                 endpoints.len()
@@ -305,7 +350,7 @@ fn uri_for_service(
         };
         Ok(url)
     } else {
-        Err(VSError::InternalError(
+        Err(ServiceError::Internal(
             "auth service scope must have a single port defined".into(),
         ))
     }
@@ -314,16 +359,46 @@ fn uri_for_service(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::assembly::tests::new_assembly_for_tests;
     use crate::db::{ActorRepo, FakeDb, NodeRepo};
-    use crate::test_helpers::{make_adapter_actor_defexp, make_node_actor_defexp};
+    use crate::test_helpers::{
+        make_actor_with_services_defexp, make_adapter_actor_defexp, make_node_actor_defexp,
+    };
+    use bytes::Bytes;
+    use libeval::attribute::ROLE_ADAPTER;
+    use libeval::policy::Policy;
     use std::net::{IpAddr, SocketAddr};
     use std::sync::Arc;
+    use zpr::policy_types::{JoinPolicy, PFlags, Service};
+    use zpr::write_to::WriteTo;
 
     fn make_mgr() -> ActorMgr {
         let db = Arc::new(FakeDb::new());
         let actor_repo = ActorRepo::new(db.clone());
         let node_repo = NodeRepo::new(db);
         ActorMgr::new(actor_repo, node_repo)
+    }
+
+    fn make_policy_with_services(services: Vec<Service>) -> Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy_bldr = msg.init_root::<zpr::policy::v1::policy::Builder>();
+            policy_bldr.set_created("2024-01-01T00:00:00Z");
+            policy_bldr.set_version(1);
+            policy_bldr.set_metadata("");
+
+            let mut jp_list = policy_bldr.reborrow().init_join_policies(1);
+            let mut jp_bldr = jp_list.reborrow().get(0);
+            let jp = JoinPolicy {
+                conditions: Vec::new(),
+                flags: PFlags::default(),
+                provides: Some(services),
+            };
+            jp.write_to(&mut jp_bldr);
+        }
+        let mut bytes = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        Policy::new_from_policy_bytes(Bytes::copy_from_slice(&bytes)).unwrap()
     }
 
     #[tokio::test]
@@ -347,7 +422,7 @@ mod test {
 
         let err = mgr.add_node(&actor).await.unwrap_err();
         match err {
-            VSError::InternalError(_) => {}
+            ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -410,7 +485,7 @@ mod test {
 
         let err = mgr.set_node_vss(&node_addr, &vss_addr).await.unwrap_err();
         match err {
-            VSError::DBError(DBError::NotFound(_)) => {}
+            ServiceError::Store(StoreError::NotFound(_)) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -439,15 +514,17 @@ mod test {
             port_range: None,
         }];
 
+        // Non-auth service types are not supported for auth service URIs.
         let err = uri_for_service(&ServiceType::Regular, &addr, &endpoints).unwrap_err();
         match err {
-            VSError::InternalError(_) => {}
+            ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
 
+        // Auth services must declare exactly one endpoint scope.
         let err = uri_for_service(&ServiceType::Authentication, &addr, &[]).unwrap_err();
         match err {
-            VSError::InternalError(_) => {}
+            ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
 
@@ -457,11 +534,93 @@ mod test {
             port: None,
             port_range: None,
         }];
+        // Auth service scope must include a concrete port number.
         let err = uri_for_service(&ServiceType::Authentication, &addr, &endpoints_missing_port)
             .unwrap_err();
         match err {
-            VSError::InternalError(_) => {}
+            ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_auth_services_list_filters_and_formats() {
+        let mgr = make_mgr();
+        let actor = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
+            "fd5a:5052::11",
+            &["svc:auth", "svc:regular", "svc:unknown"],
+            "adapter-auth",
+        );
+        mgr.add_magic_adapter(&actor).await.unwrap();
+
+        let auth_service = Service {
+            id: "svc:auth".to_string(),
+            endpoints: vec![Scope {
+                protocol: 0,
+                flag: None,
+                port: Some(4000),
+                port_range: None,
+            }],
+            kind: ServiceType::Authentication,
+        };
+        let regular_service = Service {
+            id: "svc:regular".to_string(),
+            endpoints: vec![Scope {
+                protocol: 0,
+                flag: None,
+                port: Some(8080),
+                port_range: None,
+            }],
+            kind: ServiceType::Regular,
+        };
+        let policy = make_policy_with_services(vec![auth_service, regular_service]);
+
+        let asm = new_assembly_for_tests(None).await;
+        asm.policy_mgr.update_policy(policy).unwrap();
+        let asm = Arc::new(asm);
+
+        let mut services = mgr.get_auth_services_list(asm).await.unwrap();
+        services.sort_by(|a, b| a.service_id.cmp(&b.service_id));
+
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].service_id, "svc:auth");
+        assert_eq!(
+            services[0].service_uri,
+            "zpr-oauthrsa://[fd5a:5052::11]:4000"
+        );
+        let addr: IpAddr = "fd5a:5052::11".parse().unwrap();
+        assert_eq!(services[0].zpr_addr, addr);
+    }
+
+    #[tokio::test]
+    async fn test_get_auth_services_list_returns_empty_without_policy_auth() {
+        let mgr = make_mgr();
+        let actor = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
+            "fd5a:5052::12",
+            &["svc:auth"],
+            "adapter-regular",
+        );
+        mgr.add_magic_adapter(&actor).await.unwrap();
+
+        let regular_service = Service {
+            id: "svc:auth".to_string(),
+            endpoints: vec![Scope {
+                protocol: 0,
+                flag: None,
+                port: Some(8080),
+                port_range: None,
+            }],
+            kind: ServiceType::Regular, // NOT an auth service
+        };
+        let policy = make_policy_with_services(vec![regular_service]);
+
+        let asm = new_assembly_for_tests(None).await;
+        asm.policy_mgr.update_policy(policy).unwrap();
+        let asm = Arc::new(asm);
+
+        let services = mgr.get_auth_services_list(asm).await.unwrap();
+        assert!(services.is_empty());
     }
 }

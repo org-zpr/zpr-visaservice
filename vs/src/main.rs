@@ -13,21 +13,25 @@ use libeval::pio;
 mod actor_mgr;
 mod admin_service;
 mod assembly;
+mod auth;
 mod config;
 mod connection_control;
 mod counters;
 mod cparam;
 mod db;
 mod error;
+mod event_mgr;
 mod logging;
+mod net_mgr;
 mod policy_mgr;
 mod signal_worker;
-#[cfg(test)]
-mod test_helpers;
 mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
 mod vss_mgr;
+
+#[cfg(test)]
+mod test_helpers;
 
 use crate::actor_mgr::ActorMgr;
 use crate::admin_service::start_admin_server;
@@ -35,9 +39,11 @@ use crate::assembly::Assembly;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
 use crate::db::DbConnection;
-use crate::error::VSError;
+use crate::error::ServiceError;
+use crate::event_mgr::EventMgr;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
+use crate::net_mgr::NetMgr;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 use crate::vss_mgr::VssMgr;
@@ -135,6 +141,8 @@ async fn main() -> std::process::ExitCode {
 
     let visa_repo = db::VisaRepo::new(db_handle.clone());
 
+    let (event_tx, event_rx) = mpsc::channel(config::EVENT_QUEUE_DEPTH);
+
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
         counters: Default::default(),
@@ -146,9 +154,12 @@ async fn main() -> std::process::ExitCode {
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(visa_repo),
         vss_mgr: VssMgr::new(),
+        net_mgr: Arc::new(NetMgr::new_v6().await.expect("failed to create NetMgr")),
+        event_mgr: EventMgr::new(event_tx),
     });
 
     js.spawn_local(signal_worker::launch(asm.clone()));
+    js.spawn_local(event_mgr::launch(asm.clone(), event_rx));
 
     js.spawn_local(vsapi_worker::launch(
         asm.clone(),
@@ -195,7 +206,7 @@ async fn main() -> std::process::ExitCode {
 async fn create_actor_mgr(
     dbh: Arc<dyn DbConnection>,
     vs_addr: &IpAddr,
-) -> Result<ActorMgr, VSError> {
+) -> Result<ActorMgr, ServiceError> {
     let adb = db::ActorRepo::new(dbh.clone());
     let ndb = db::NodeRepo::new(dbh);
     let mgr = ActorMgr::new(adb, ndb);

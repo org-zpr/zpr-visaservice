@@ -7,7 +7,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use crate::assembly::Assembly;
 use crate::config;
 use crate::db;
-use crate::error::{DBError, VSError};
+use crate::error::{ServiceError, StoreError};
 use crate::logging::targets::VMGR;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
@@ -33,7 +33,7 @@ impl VisaMgr {
         asm: Arc<Assembly>,
         node_addr: &IpAddr,
         vss_addr: &SocketAddr,
-    ) -> Result<Vec<Visa>, VSError> {
+    ) -> Result<Vec<Visa>, ServiceError> {
         let mut visas = Vec::new();
 
         if let Ok(pendings) = asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
@@ -55,7 +55,7 @@ impl VisaMgr {
         asm: Arc<Assembly>,
         node_addr: &IpAddr,
         vss_port: u16,
-    ) -> Result<Visa, VSError> {
+    ) -> Result<Visa, ServiceError> {
         // TODO: We may have this visa on hand already, if so return it and do not re-generate.
 
         // TODO: PacketDesc should have new_xxx functions that take IpAddr (not just string)
@@ -76,7 +76,7 @@ impl VisaMgr {
         .await
         {
             Ok(VisaDecision::Allow(visa)) => Ok(visa),
-            Ok(VisaDecision::Deny(dcode)) => Err(VSError::VisaDenied(dcode.to_string())),
+            Ok(VisaDecision::Deny(dcode)) => Err(ServiceError::VisaDenied(dcode.to_string())),
             Err(e) => Err(e),
         }
     }
@@ -93,14 +93,14 @@ impl VisaMgr {
         requesting_node: &IpAddr,
         pdesc: &PacketDesc,
         hit: &Hit,
-    ) -> Result<Visa, VSError> {
+    ) -> Result<Visa, ServiceError> {
         // Expiration is millis since UNIX EPOCH
         let expiration = {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| VSError::InternalError("system time before UNIX EPOCH".to_string()))?
+                .map_err(|_| ServiceError::Internal("system time before UNIX EPOCH".to_string()))?
                 .as_secs();
-            (now + config::DEFAULT_EXPIRATION_SECONDS) * 1000
+            (now + config::DEFAULT_VISA_EXPIRATION.as_secs()) * 1000
         };
 
         let (source_port, dest_port) = match pdesc.five_tuple.l4_protocol {
@@ -127,7 +127,7 @@ impl VisaMgr {
                 (pdesc.five_tuple.source_port, pdesc.five_tuple.dest_port)
             }
             _ => {
-                return Err(VSError::InternalError(format!(
+                return Err(ServiceError::Internal(format!(
                     "unsupported protocol for visa: {}",
                     pdesc.five_tuple.l4_protocol
                 )));
@@ -173,7 +173,7 @@ impl VisaMgr {
     pub async fn get_pending_visas_for_node(
         &self,
         node_addr: &IpAddr,
-    ) -> Result<Vec<Visa>, VSError> {
+    ) -> Result<Vec<Visa>, ServiceError> {
         let visas = self
             .repo
             .get_visas_for_node_by_state(node_addr, db::NodeVisaState::PendingInstall)
@@ -182,7 +182,11 @@ impl VisaMgr {
     }
 
     /// Register that visa `visa_id` has been installed on node at ZPR address `node_addr`.
-    pub async fn visa_installed(&self, visa_id: u64, node_addr: &IpAddr) -> Result<(), VSError> {
+    pub async fn visa_installed(
+        &self,
+        visa_id: u64,
+        node_addr: &IpAddr,
+    ) -> Result<(), ServiceError> {
         self.repo
             .update_node_visa_state(node_addr, visa_id, db::NodeVisaState::Installed)
             .await?;
@@ -191,7 +195,7 @@ impl VisaMgr {
 
     /// Designed to be used to setup database in clean state as we prepare for a
     /// fresh node joining.
-    pub async fn clear_node_state(&self, node_addr: &IpAddr) -> Result<(), VSError> {
+    pub async fn clear_node_state(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         self.repo.clear_node_state(node_addr).await?;
         Ok(())
     }
@@ -214,39 +218,42 @@ impl VisaMgr {
     /// The housekeeping job will take care of updating the TODO lists and sending
     /// the revocation messages out to the other nodes.
     ///
-    pub async fn remove_visas_for_node(&self, node_addr: &IpAddr) -> Result<(), VSError> {
+    pub async fn remove_visas_for_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         info!(target: VMGR, "TODO: remove visas for node {node_addr}");
         Ok(())
     }
 
     /// Remove all visas tied to the listed actors, assumes the actors have departed.
-    pub async fn remove_visas_for_actors(&self, _actor_addrs: &[IpAddr]) -> Result<(), VSError> {
+    pub async fn remove_visas_for_actors(
+        &self,
+        _actor_addrs: &[IpAddr],
+    ) -> Result<(), ServiceError> {
         info!(target: VMGR, "TODO: remove visas for actors now removed");
         Ok(())
     }
 
     /// Get all the visa IDs (non-expired).
-    pub async fn list_all_visa_ids(&self) -> Result<Vec<u64>, VSError> {
+    pub async fn list_all_visa_ids(&self) -> Result<Vec<u64>, ServiceError> {
         let visa_ids = self.repo.list_visa_ids().await?;
         Ok(visa_ids)
     }
 
-    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Option<Visa>, VSError> {
+    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Option<Visa>, ServiceError> {
         match self.repo.get_visa_by_id(visa_id).await {
             Ok(visa) => Ok(Some(visa)),
-            Err(DBError::NotFound(_)) => Ok(None),
-            Err(e) => Err(VSError::from(e)),
+            Err(StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(ServiceError::from(e)),
         }
     }
 
     pub async fn get_visa_metadata_by_id(
         &self,
         visa_id: u64,
-    ) -> Result<Option<db::VisaMetadata>, VSError> {
+    ) -> Result<Option<db::VisaMetadata>, ServiceError> {
         match self.repo.get_visa_metadata_by_id(visa_id).await {
             Ok(md) => Ok(Some(md)),
-            Err(DBError::NotFound(_)) => Ok(None),
-            Err(e) => Err(VSError::from(e)),
+            Err(StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(ServiceError::from(e)),
         }
     }
 }

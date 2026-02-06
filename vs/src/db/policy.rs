@@ -14,7 +14,7 @@ use tracing::debug;
 
 use crate::db;
 use crate::db::{DbConnection, DbOp};
-use crate::error::DBError;
+use crate::error::StoreError;
 use crate::logging::targets::REDIS;
 
 const KEY_POLICIES: &str = "policies";
@@ -38,7 +38,7 @@ impl PolicyRepo {
         &self,
         policy: &Policy,
         force_overwrite: bool,
-    ) -> Result<bool, DBError> {
+    ) -> Result<bool, StoreError> {
         let phash = hash_for_policy(policy)?;
         let maybe_curhash: Option<String> = self.db.hget("policy:current", "phash").await?;
         let curhash = maybe_curhash.unwrap_or_default();
@@ -89,17 +89,17 @@ impl PolicyRepo {
     }
 }
 
-fn hash_for_policy(policy: &Policy) -> Result<String, DBError> {
+fn hash_for_policy(policy: &Policy) -> Result<String, StoreError> {
     let mut hasher = Hasher::new(MessageDigest::sha256())?;
     if let Some(ctimestr) = policy.get_created() {
         hasher.update(ctimestr.as_bytes())?;
     } else {
-        return Err(DBError::MissingRequired("created timestamp".to_string()));
+        return Err(StoreError::MissingRequired("created timestamp".to_string()));
     }
     if let Some(version) = policy.get_version() {
         hasher.update(&version.to_be_bytes())?;
     } else {
-        return Err(DBError::MissingRequired("version".to_string()));
+        return Err(StoreError::MissingRequired("version".to_string()));
     }
     if let Some(md) = policy.get_metadata() {
         hasher.update(md.as_bytes())?;
@@ -183,7 +183,7 @@ mod test {
 
         let err = repo.set_current_policy(&policy, false).await.unwrap_err();
         match err {
-            DBError::MissingRequired(_) => {}
+            StoreError::MissingRequired(_) => {}
             other => panic!("unexpected error: {:?}", other),
         }
     }

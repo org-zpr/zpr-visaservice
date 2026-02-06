@@ -23,6 +23,12 @@ pub mod key {
     /// CN value
     pub const CN: &str = "endpoint.zpr.adapter.cn";
 
+    /// "zpr.authority" attribute key
+    pub const AUTHORITY: &str = "zpr.authority";
+
+    /// "zpr.config_id"
+    pub const CONFIG_ID: &str = "zpr.config_id";
+
     /// AAA network in CIDR notation
     pub const AAA_NET: &str = "endpoint.zpr.node.aaa_net";
 
