@@ -12,7 +12,7 @@ hyper = "1.7.0"
 hyper-util = "0.1.17"
 libeval = { path = "../libeval" }
 openssl = "0.10.74"
-redis = { version = "0.32.7", features = ["tokio-comp", "aio", "connection-manager", "safe_iterators"] }
+redis = { version = "1.0.3", features = ["tokio-comp", "aio", "connection-manager"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 thiserror = "2.0.17"
@@ -27,7 +27,7 @@ admin-api-types = { path = "../admin-api-types" }
 tokio-util = { version = "0.7.16", features = ["compat"] }
 tokio-rustls = "0.26.4"
 rustls = "0.23.36"
-rcgen = "0.13.0"
+rcgen = "0.14.7"
 capnp = { version = "0.25.0", features = ["sync_reader"] }
 arc-swap = "1.7.1"
 bytes = "1.10.1"

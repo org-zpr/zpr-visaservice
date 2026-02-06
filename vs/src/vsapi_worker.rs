@@ -82,7 +82,7 @@ fn tls_acceptor(listen: SocketAddr) -> Result<TlsAcceptor, Box<dyn std::error::E
     let self_signed_cert = rcgen::generate_simple_self_signed(vec![listen.to_string()])?;
     // Create self signed certificate that does not require client authentication
     let cert_der = self_signed_cert.cert.der();
-    let key_der = self_signed_cert.key_pair.serialize_der();
+    let key_der = self_signed_cert.signing_key.serialize_der();
 
     // Convert the cert into a format the
     let chain = vec![CertificateDer::from(cert_der.clone())];
