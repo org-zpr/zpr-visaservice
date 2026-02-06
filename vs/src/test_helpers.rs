@@ -5,6 +5,8 @@
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
 use std::time::Duration;
+use std::time::SystemTime;
+use zpr::vsapi_types::{DockPep, EndpointT, KeySet, TcpUdpPep, Visa};
 
 const DEFAULT_EXPIRES: Duration = Duration::from_secs(3600);
 
@@ -21,6 +23,11 @@ pub fn make_actor(attrs: &[(&str, &str)], expires: Duration) -> Actor {
             .unwrap();
     }
     actor
+}
+
+/// Build an [Actor] with the provided attributes using the default expiration.
+pub fn make_actor_defexp(attrs: &[(&str, &str)]) -> Actor {
+    make_actor(attrs, DEFAULT_EXPIRES)
 }
 
 /// Build a node [Actor] with role, CN, ZPR addr and substrate addr.
@@ -98,4 +105,18 @@ pub fn make_actor_with_services_defexp(
     cn: &str,
 ) -> Actor {
     make_actor_with_services(role, zpr_addr, services, cn, DEFAULT_EXPIRES)
+}
+
+/// Build a [Visa] with the provided ID and expiry offset.
+pub fn make_visa(visa_id: u64, expires_in: Duration) -> Visa {
+    Visa::new(
+        visa_id,
+        0,
+        SystemTime::now() + expires_in,
+        "fd5a:5052::10".parse().unwrap(),
+        "fd5a:5052::20".parse().unwrap(),
+        DockPep::TCP(TcpUdpPep::new(1234, 443, EndpointT::Server)),
+        KeySet::new(b"ingress", b"egress"),
+        None,
+    )
 }

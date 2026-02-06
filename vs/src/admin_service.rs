@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use libeval::attribute::{ROLE_NODE, key};
 use tracing::{debug, error, info, warn};
 
 use axum::{
@@ -22,6 +23,8 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
+use zpr::vsapi_types::DockPep;
+
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
 use serde::Deserialize;
@@ -33,7 +36,7 @@ use crate::db::Role;
 use crate::logging::targets::ADMIN;
 
 use admin_api_types::admin_api_types::{
-    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NodeRecordBrief, PolicyBundle,
+    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry, PolicyBundle,
     Revokes, ServiceDescriptor, VisaDescriptor,
 };
 
@@ -167,12 +170,12 @@ fn two_elem_list() -> impl IntoResponse {
 }
 
 async fn get_policies() -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/policies");
+    debug!(target: ADMIN, "GET /admin/policies");
     two_elem_list()
 }
 
 async fn get_policy(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/policies/{}", id);
+    debug!(target: ADMIN, "GET /admin/policies/{}", id);
     let pb = PolicyBundle {
         config_id: 0,
         version: "v".to_string(),
@@ -184,7 +187,7 @@ async fn get_policy(EPath(id): EPath<String>) -> impl IntoResponse {
 }
 
 async fn get_curr_policy() -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/policies/curr");
+    debug!(target: ADMIN, "GET /admin/policies/curr");
     let pb = PolicyBundle {
         config_id: 0,
         version: "v".to_string(),
@@ -196,8 +199,7 @@ async fn get_curr_policy() -> impl IntoResponse {
 }
 
 async fn install_policy(EJson(_body): EJson<PolicyBundle>) -> impl IntoResponse {
-    info!(target: ADMIN, "POST /admin/policies");
-
+    debug!(target: ADMIN, "POST /admin/policies");
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
 }
@@ -225,26 +227,76 @@ async fn get_visas(State(state): State<SharedState>) -> (StatusCode, Json<Vec<Li
     }
 }
 
-async fn get_visa(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/visas/{}", id);
-    let vd = VisaDescriptor {
-        id: 0,
-        expires: 0,
-        created: 0,
-        actor_id: "a".to_string(),
-        policy_id: "p".to_string(),
-        source_addr: "s".to_string(),
-        dest_addr: "d".to_string(),
-        source_port: "s".to_string(),
-        dest_port: "d".to_string(),
-        proto: "p".to_string(),
-    };
+fn system_time_to_unix_milliseconds(st: std::time::SystemTime) -> u64 {
+    match st.duration_since(std::time::UNIX_EPOCH) {
+        Ok(dur) => dur.as_millis() as u64,
+        Err(_) => 0,
+    }
+}
 
-    (StatusCode::OK, Json(vd)).into_response()
+fn ports_from_pep(pep: &DockPep) -> (u16, u16) {
+    match pep {
+        DockPep::TCP(tu_pep) => (tu_pep.source_port, tu_pep.dest_port),
+        DockPep::UDP(tu_pep) => (tu_pep.source_port, tu_pep.dest_port),
+        DockPep::ICMP(icmp_pep) => (icmp_pep.icmp_type as u16, icmp_pep.icmp_code as u16),
+    }
+}
+
+async fn get_visa(
+    State(state): State<SharedState>,
+    EPath(id): EPath<u64>,
+) -> Result<Json<VisaDescriptor>, StatusCode> {
+    debug!(target: ADMIN, "GET /admin/visas/{}", id);
+    let rstate = state.read().await;
+
+    match rstate.asm.visa_mgr.get_visa_by_id(id).await {
+        Err(e) => {
+            error!(target: ADMIN, "error getting visa {}: {}", id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Ok(opt_visa) => match opt_visa {
+            None => Err(StatusCode::NOT_FOUND),
+            Some(visa) => {
+                let (source_port, dest_port) = ports_from_pep(&visa.dock_pep);
+
+                let (ctime, requesting_node) = match rstate
+                    .asm
+                    .visa_mgr
+                    .get_visa_metadata_by_id(visa.issuer_id)
+                    .await
+                {
+                    Ok(metadata) => match metadata {
+                        Some(md) => (md.ctime, md.requesting_node.to_string()),
+                        None => (0, "".to_string()),
+                    },
+                    Err(e) => {
+                        error!(
+                            target: ADMIN,
+                            "error getting visa metadata for visa {}: {}", id, e
+                        );
+                        (0, "".to_string())
+                    }
+                };
+                let vd = VisaDescriptor {
+                    id: visa.issuer_id,
+                    expires: system_time_to_unix_milliseconds(visa.expires),
+                    created: ctime,
+                    requesting_node,
+                    policy_id: "0".into(), // TODO: not tracked yet
+                    source_addr: visa.source_addr.to_string(),
+                    dest_addr: visa.dest_addr.to_string(),
+                    source_port,
+                    dest_port,
+                    proto: "TCP".into(),
+                };
+                return Ok(Json(vd));
+            }
+        },
+    }
 }
 
 async fn revoke_visa(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "DELETE /admin/visas/{}", id);
+    debug!(target: ADMIN, "DELETE /admin/visas/{}", id);
     let r = Revokes {
         id: "i".to_string(),
         revoked: vec![0],
@@ -258,6 +310,7 @@ async fn get_actors(
     State(state): State<SharedState>,
     Query(q): Query<RoleFilter>,
 ) -> (StatusCode, Json<Vec<CnEntry>>) {
+    debug!(target: ADMIN, "GET /admin/actors {:?}", q);
     let db_filter = match q.role {
         Some(ActorRole::Node) => Some(Role::Node),
         Some(ActorRole::Adapter) => Some(Role::Adapter),
@@ -280,29 +333,55 @@ async fn get_actors(
     }
 }
 
-async fn get_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/actors/{}", cn);
-    let nrb = NodeRecordBrief {
-        pending: 0,
-        last_contact: 0,
-        visa_requests: 0,
-        connect_requests: 0,
-        in_sync: false,
-    };
-    let ad = ActorDescriptor {
-        cn: "c".to_string(),
-        ctime: 0,
-        ident: "i".to_string(),
-        node: false,
-        zpr_addr: "z".to_string(),
-        node_details: nrb,
-    };
+async fn get_actor(
+    State(state): State<SharedState>,
+    EPath(cn): EPath<String>,
+) -> Result<Json<ActorDescriptor>, StatusCode> {
+    debug!(target: ADMIN, "GET /admin/actor/{}", cn);
+    let rstate = state.read().await;
 
-    (StatusCode::OK, Json(ad)).into_response()
+    match rstate.asm.actor_mgr.get_actor_by_cn(&cn).await {
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(opt_a) => match opt_a {
+            None => Err(StatusCode::NOT_FOUND),
+            Some(actor) => {
+                let ident = match actor.get_identity() {
+                    Some(id) => id.join("|"),
+                    None => "".to_string(),
+                };
+
+                let is_node = match actor.get_attribute(key::ROLE) {
+                    Some(role_attr) => {
+                        if let Ok(role_val) = role_attr.get_single_value() {
+                            role_val == ROLE_NODE
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                };
+
+                let zpr_addr_str = match actor.get_zpr_addr() {
+                    Some(addr) => addr.to_string(),
+                    None => "".to_string(),
+                };
+
+                let descriptor = ActorDescriptor {
+                    cn: cn.clone(),
+                    ctime: 0, // TODO: Not tracked yet
+                    ident,
+                    node: is_node,
+                    zpr_addr: zpr_addr_str,
+                    node_details: None, // TODO
+                };
+                return Ok(Json(descriptor));
+            }
+        },
+    }
 }
 
 async fn revoke_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "DELETE /admin/actors/{}", cn);
+    debug!(target: ADMIN, "DELETE /admin/actors/{}", cn);
     let r = Revokes {
         id: "i".to_string(),
         revoked: vec![0, 1, 2],
@@ -312,29 +391,63 @@ async fn revoke_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
 }
 
 async fn get_related_visas(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/actors/{}/visas", cn);
+    debug!(target: ADMIN, "GET /admin/actors/{}/visas", cn);
     two_elem_list()
 }
 
-async fn get_services() -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/services");
-    two_elem_list()
+async fn get_services(State(state): State<SharedState>) -> (StatusCode, Json<Vec<NamedListEntry>>) {
+    debug!(target: ADMIN, "GET /admin/services");
+    let rstate = state.read().await;
+
+    match rstate.asm.actor_mgr.get_services_list().await {
+        Err(e) => {
+            error!(target: ADMIN, "error listing services: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Vec::<NamedListEntry>::new()),
+            )
+        }
+        Ok(services) => {
+            let sle_list: Vec<NamedListEntry> = services
+                .into_iter()
+                .map(|se| NamedListEntry { id: se.name })
+                .collect();
+            (StatusCode::OK, Json(sle_list))
+        }
+    }
 }
 
-async fn get_service(EPath(cn): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/services/{}", cn);
-    let sd = ServiceDescriptor { id: 0, actor_id: 0 };
+async fn get_service(
+    State(state): State<SharedState>,
+    EPath(cn): EPath<String>,
+) -> Result<Json<ServiceDescriptor>, StatusCode> {
+    debug!(target: ADMIN, "GET /admin/service CN={}", cn);
+    let rstate = state.read().await;
 
-    (StatusCode::OK, Json(sd)).into_response()
+    if let Some(detail) = rstate.asm.actor_mgr.get_service_detail(&cn).await.unwrap() {
+        let connect_via = match detail.connect_via.as_ref() {
+            Some(cv_addr) => cv_addr.to_string(),
+            None => "".to_string(),
+        };
+        let sd = ServiceDescriptor {
+            service_name: detail.service_name,
+            zpr_addr: detail.zpr_addr.to_string(),
+            actor_cn: detail.actor_cn,
+            dock_zpr_addr: connect_via,
+        };
+        return Ok(Json(sd));
+    }
+
+    Err(StatusCode::NOT_FOUND)
 }
 
 async fn get_revokes() -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/authrevoke");
+    debug!(target: ADMIN, "GET /admin/authrevoke");
     two_elem_list()
 }
 
 async fn get_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "GET /admin/authrevoke/{}", id);
+    debug!(target: ADMIN, "GET /admin/authrevoke/{}", id);
     let ard: AuthRevokeDescriptor = AuthRevokeDescriptor {
         ty: "t".to_string(),
         cn: "c".to_string(),
@@ -344,18 +457,18 @@ async fn get_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
 }
 
 async fn clear_revokes() -> impl IntoResponse {
-    info!(target: ADMIN, "POST /admin/authrevoke/clear");
+    debug!(target: ADMIN, "POST /admin/authrevoke/clear");
     two_elem_list()
 }
 
 async fn remove_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "DELETE /admin/authrevoke/{}", id);
+    debug!(target: ADMIN, "DELETE /admin/authrevoke/{}", id);
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
 }
 
 async fn add_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    info!(target: ADMIN, "POST /admin/authrevoke/{}", id);
+    debug!(target: ADMIN, "POST /admin/authrevoke/{}", id);
 
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()

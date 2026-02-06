@@ -4,12 +4,25 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// List entry is a list with a numeric ID.
 #[derive(Serialize, Deserialize)]
 pub struct ListEntry {
     pub id: u64,
 }
 
 impl fmt::Display for ListEntry {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} {}", format!("{}", "id".dimmed()), self.id,)
+    }
+}
+
+/// NamedListEntry is a list with a string ID.
+#[derive(Serialize, Deserialize)]
+pub struct NamedListEntry {
+    pub id: String,
+}
+
+impl fmt::Display for NamedListEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} {}", format!("{}", "id".dimmed()), self.id,)
     }
@@ -45,12 +58,12 @@ pub struct VisaDescriptor {
     pub id: u64,
     pub expires: u64, // milliseconds since the epoch
     pub created: u64, // milliseconds since the epich
-    pub actor_id: String,
     pub policy_id: String,
-    pub source_addr: String,
-    pub dest_addr: String,
-    pub source_port: String,
-    pub dest_port: String,
+    pub requesting_node: String, // ZPR address
+    pub source_addr: String,     // ZPR address
+    pub dest_addr: String,       // ZPR address
+    pub source_port: u16,
+    pub dest_port: u16,
     pub proto: String,
 }
 
@@ -91,8 +104,8 @@ impl fmt::Display for VisaDescriptor {
             "{} {} {} {} {} {}  {}:{} {} {}:{}  {} {}  {} {}   {} {} {}{}:{:02}:{:02} {}",
             format!("{}", "id".dimmed()),
             self.id,
-            format!("{}", "actor id".dimmed()),
-            self.actor_id,
+            format!("{}", "requesting node".dimmed()),
+            self.requesting_node.yellow(),
             format!("{}", "policy id".dimmed()),
             self.policy_id,
             format!("{}", self.source_addr).yellow(),
@@ -134,14 +147,32 @@ impl fmt::Display for Revokes {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Eq)]
 pub struct ActorDescriptor {
     pub cn: String,
     pub ctime: u64, // milliseconds since the epoch
     pub ident: String,
     pub node: bool,
     pub zpr_addr: String,
-    pub node_details: NodeRecordBrief,
+    pub node_details: Option<NodeRecordBrief>,
+}
+
+impl PartialEq for ActorDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.cn == other.cn
+    }
+}
+
+impl Ord for ActorDescriptor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cn.cmp(&other.cn)
+    }
+}
+
+impl PartialOrd for ActorDescriptor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl fmt::Display for ActorDescriptor {
@@ -159,26 +190,54 @@ impl fmt::Display for ActorDescriptor {
             self.ident,
             "is node: ".dimmed(),
             self.node,
-            self.node_details,
+            if self.node_details.is_some() {
+                "[has node details]".green()
+            } else {
+                "".normal()
+            },
         )
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Eq)]
 pub struct ServiceDescriptor {
-    pub id: u64,
-    pub actor_id: u64,
+    pub service_name: String,
+    pub actor_cn: String,
+    pub zpr_addr: String,
+    pub dock_zpr_addr: String,
+}
+
+impl PartialEq for ServiceDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.service_name == other.service_name
+    }
+}
+
+impl Ord for ServiceDescriptor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.service_name.cmp(&other.service_name)
+    }
+}
+
+impl PartialOrd for ServiceDescriptor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl fmt::Display for ServiceDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{} {} {} {:?}",
-            format!("{}", "id".dimmed()),
-            self.id,
-            format!("{}", "actor id".dimmed()),
-            self.actor_id
+            "{}{} {}{} {}{} {}{}",
+            format!("{}", "name:".dimmed()),
+            self.service_name,
+            format!("{}", "cn:".dimmed()),
+            self.actor_cn,
+            format!("{}", "zpr_addr:".dimmed()),
+            self.zpr_addr,
+            format!("{}", "dock_zpr_addr:".dimmed()),
+            self.dock_zpr_addr,
         )
     }
 }
@@ -231,7 +290,7 @@ impl fmt::Display for HostRecordBrief {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeRecordBrief {
     pub pending: u32,
     pub last_contact: i64, // unix SECONDS
@@ -394,4 +453,10 @@ pub fn reason_for(sc: StatusCode) -> String {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CnEntry {
     pub cn: String,
+}
+
+impl fmt::Display for CnEntry {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} {}", format!("{}", "cn".dimmed()), self.cn)
+    }
 }

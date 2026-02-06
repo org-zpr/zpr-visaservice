@@ -2,20 +2,38 @@
 //!
 
 use libeval::actor::Actor;
+use libeval::attribute::key;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 use zpr::policy_types::{Scope, ServiceType};
 use zpr::vsapi_types::ServiceDescriptor;
 
 use crate::assembly::Assembly;
 use crate::db;
+use crate::db::ServiceEntry;
 use crate::error::{ServiceError, StoreError};
+use crate::logging::targets::ACTOR;
 
 pub struct ActorMgr {
     actor_db: db::ActorRepo,
     node_db: db::NodeRepo,
+}
+
+pub struct ServiceDetail {
+    /// Name/id of the service
+    pub service_name: String,
+
+    /// ZPR address of the actor providing the service.
+    pub zpr_addr: IpAddr,
+
+    /// CN of the actor providing the service.
+    pub actor_cn: String,
+
+    /// Dock through which the actor is connected.
+    pub connect_via: Option<IpAddr>,
 }
 
 impl ActorMgr {
@@ -106,6 +124,14 @@ impl ActorMgr {
         }
     }
 
+    pub async fn get_actor_by_cn(&self, cn: &str) -> Result<Option<Actor>, ServiceError> {
+        match self.actor_db.get_actor_by_cn(cn).await {
+            Ok(actor) => Ok(Some(actor)),
+            Err(StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(ServiceError::from(e)),
+        }
+    }
+
     /// Remove actor state from the database. If removing a node, also call [ActorMgr::remove_node].
     pub async fn remove_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<(), ServiceError> {
         Ok(self.actor_db.rm_actor_by_zpr_addr(zpra).await?)
@@ -162,6 +188,11 @@ impl ActorMgr {
         Ok(services)
     }
 
+    pub async fn get_services_list(&self) -> Result<Vec<ServiceEntry>, ServiceError> {
+        let services = self.actor_db.list_services().await?;
+        Ok(services)
+    }
+
     /// Get the list of connectioned actor CN values, optionally filtered by role.
     pub async fn list_actor_cns(
         &self,
@@ -169,6 +200,69 @@ impl ActorMgr {
     ) -> Result<Vec<String>, ServiceError> {
         let cns = self.actor_db.list_actor_cns(by_role).await?;
         Ok(cns)
+    }
+
+    /// Get the service details for the named service.
+    pub async fn get_service_detail(
+        &self,
+        service_name: &str,
+    ) -> Result<Option<ServiceDetail>, ServiceError> {
+        if let Some(addr) = self.actor_db.get_zpr_addr_for_service(service_name).await? {
+            let attrs = self
+                .actor_db
+                .get_actor_attrs(&addr, &[key::CN, key::CONNECT_VIA])
+                .await?;
+
+            if attrs.is_empty() {
+                warn!(target: ACTOR, "get_service_detail: service '{}': attributes not found", service_name);
+                return Ok(None);
+            }
+
+            //detail.service_name = service_name.to_string();
+            //detail.zpr_addr = addr;
+
+            let mut val_cn = None;
+            let mut val_connect_via = None;
+
+            for attr in attrs {
+                match attr.get_key() {
+                    key::CN => {
+                        val_cn = Some(attr.get_single_value().unwrap_or_default().to_owned());
+                    }
+                    key::CONNECT_VIA => {
+                        val_connect_via = {
+                            let via_str = attr.get_single_value().unwrap_or_default();
+                            if via_str.is_empty() {
+                                continue;
+                            }
+                            match via_str.parse::<IpAddr>() {
+                                Ok(ip) => Some(ip),
+                                Err(_) => {
+                                    warn!(target: ACTOR, "get_service_detail: service '{}': invalid connect_via IP address '{}'", service_name, via_str);
+                                    continue; // skip invalid
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if val_cn.is_none() {
+                warn!(target: ACTOR, "get_service_detail: service '{}': no CN attribute found", service_name);
+                return Ok(None);
+            }
+            let detail = ServiceDetail {
+                service_name: service_name.to_string(),
+                zpr_addr: addr,
+                actor_cn: val_cn.unwrap(),
+                connect_via: val_connect_via,
+            };
+            return Ok(Some(detail));
+        } else {
+            debug!(target: ACTOR, "get_service_detail: service '{}' not found in DB", service_name);
+            return Ok(None);
+        }
     }
 
     pub async fn list_node_addrs(&self) -> Result<Vec<IpAddr>, ServiceError> {
