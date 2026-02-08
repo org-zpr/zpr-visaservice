@@ -30,7 +30,7 @@ use tracing::{debug, info, warn};
 use crate::assembly::Assembly;
 use crate::counters::CounterType;
 use crate::error::ServiceError;
-use crate::logging::targets::VISAREQ;
+use crate::logging::targets::VREQ;
 
 use libeval::actor::Actor;
 use libeval::eval::{EvalContext, EvalDecision};
@@ -164,7 +164,7 @@ impl VisaRequestJob {
     pub fn complete(self, result: VisaRequestResult) {
         if let Err(_) = self.response_chan.send(result) {
             // Means the requester has dropped the receiver.
-            warn!(target: VISAREQ,
+            warn!(target: VREQ,
                 "failed to enqueue visa request result for {:?}",
                 self.requesting_node
             );
@@ -198,7 +198,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
     let decision = match ctx.eval_request(&source_actor, &dest_actor, &job.packet_desc) {
         Ok(decision) => decision,
         Err(e) => {
-            debug!(target: VISAREQ,
+            debug!(target: VREQ,
                 "error evaluating visa request from {:?}: {}",
                 job.requesting_node, e
             );
@@ -209,7 +209,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
 
     match decision {
         EvalDecision::NoMatch(message) => {
-            info!(target: VISAREQ,
+            info!(target: VREQ,
                 "visa request from {:?} denied (no match): {}",
                 job.requesting_node, message
             );
@@ -224,7 +224,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             {
                 Ok(visa) => Ok(VisaDecision::Allow(visa)),
                 Err(e) => {
-                    debug!(target: VISAREQ,
+                    debug!(target: VREQ,
                         "visa_mgr error creating visa for request from {:?}: {}",
                         job.requesting_node, e
                     );
@@ -233,7 +233,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             }
         }
         EvalDecision::Deny(_hits) => {
-            info!(target: VISAREQ,
+            info!(target: VREQ,
                 "visa request from {:?} denied by policy",
                 job.requesting_node
             );
@@ -261,7 +261,7 @@ async fn get_actors(
     {
         Ok(maybe_actor) => maybe_actor,
         Err(e) => {
-            debug!(target: VISAREQ,
+            debug!(target: VREQ,
                 "error retrieving source actor for visa request from {:?}: {e}",
                 job.requesting_node
             );
@@ -278,7 +278,7 @@ async fn get_actors(
     {
         Ok(maybe_actor) => maybe_actor,
         Err(e) => {
-            debug!(target: VISAREQ,
+            debug!(target: VREQ,
                 "error retrieving dest actor for visa request from {:?}: {e}",
                 job.requesting_node
             );

@@ -22,7 +22,7 @@ use tracing::{debug, error, warn};
 
 use crate::db::{DbConnection, DbOp, KeyString, ZAddr, gen_timestamp};
 use crate::error::StoreError;
-use crate::logging::targets::REDIS;
+use crate::logging::targets::DB;
 
 const KEY_ACTOR: &str = "actor";
 const KEY_SERVICE: &str = "service";
@@ -124,12 +124,12 @@ impl ActorRepo {
             }
             Err(e) => {
                 // Attempt to clean up after ourselves...
-                warn!(target: REDIS, "add_actor failed, attempting cleanup");
+                warn!(target: DB, "add_actor failed, attempting cleanup");
                 if let Some(zpraddr) = actor.get_zpr_addr() {
                     match self.clean_up(zpraddr, actor.get_cn()).await {
                         Ok(_) => (),
                         Err(cleanup_err) => {
-                            error!(target: REDIS, "actor insert failed and so did clean up for addr={}: {}", zpraddr, cleanup_err);
+                            error!(target: DB, "actor insert failed and so did clean up for addr={}: {}", zpraddr, cleanup_err);
                         }
                     }
                 }
@@ -176,7 +176,7 @@ impl ActorRepo {
                 }
             } else {
                 // possible corruption?
-                warn!(target: REDIS, "zpr_addr field missing from service entry {}", svc_key);
+                warn!(target: DB, "zpr_addr field missing from service entry {}", svc_key);
             }
         }
         Ok(service_entries)
@@ -293,7 +293,7 @@ impl ActorRepo {
         // This means that each service can have just one entry here which we may want
         // to reasses later -- for example a service may be provided by multiple actors.
         for service_name in actor.services_iter() {
-            debug!(target: REDIS, "adding service for actor: addr={zpraddr} service={service_name}");
+            debug!(target: DB, "adding service for actor: addr={zpraddr} service={service_name}");
             let svc_key_str = service_key_for(&service_name);
             self.db
                 .hset(&svc_key_str, "zpr_addr", &zpraddr.to_string())
@@ -312,7 +312,7 @@ impl ActorRepo {
             self.db.sadd(KEY_ADAPTERS, &zpraddr_str).await?;
         }
 
-        debug!(target: REDIS, "added actor to DB: addr={zpraddr} cn={:?} node?={}", actor.get_cn(), actor.is_node());
+        debug!(target: DB, "added actor to DB: addr={zpraddr} cn={:?} node?={}", actor.get_cn(), actor.is_node());
         Ok(())
     }
 
@@ -334,7 +334,7 @@ impl ActorRepo {
         };
 
         self.clean_up(zpra, opt_cn.as_deref()).await?;
-        debug!(target: REDIS, "removed actor from DB: addr={zpra}");
+        debug!(target: DB, "removed actor from DB: addr={zpra}");
         Ok(())
     }
 
@@ -410,7 +410,7 @@ impl ActorRepo {
                 let addr: IpAddr = match addr_str.parse() {
                     Ok(addr) => addr,
                     Err(err) => {
-                        warn!(target: REDIS, "invalid zpr address in set {}: {} ({})", set_key, addr_str, err);
+                        warn!(target: DB, "invalid zpr address in set {}: {} ({})", set_key, addr_str, err);
                         continue;
                     }
                 };
@@ -424,7 +424,7 @@ impl ActorRepo {
                         Err(_) => cns.push(cn_attr.get_value_as_string()),
                     }
                 } else {
-                    warn!(target: REDIS, "missing CN attribute for actor at key = {a_key}");
+                    warn!(target: DB, "missing CN attribute for actor at key = {a_key}");
                 }
             }
         }

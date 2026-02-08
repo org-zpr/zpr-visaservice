@@ -15,7 +15,7 @@ use crate::assembly::Assembly;
 use crate::db;
 use crate::db::ServiceEntry;
 use crate::error::{ServiceError, StoreError};
-use crate::logging::targets::AMGR;
+use crate::logging::targets::ACTOR;
 
 pub struct ActorMgr {
     actor_db: db::ActorRepo,
@@ -214,7 +214,7 @@ impl ActorMgr {
                 .await?;
 
             if attrs.is_empty() {
-                warn!(target: AMGR, "get_service_detail: service '{}': attributes not found", service_name);
+                warn!(target: ACTOR, "get_service_detail: service '{}': attributes not found", service_name);
                 return Ok(None);
             }
 
@@ -238,7 +238,7 @@ impl ActorMgr {
                             match via_str.parse::<IpAddr>() {
                                 Ok(ip) => Some(ip),
                                 Err(_) => {
-                                    warn!(target: AMGR, "get_service_detail: service '{}': invalid connect_via IP address '{}'", service_name, via_str);
+                                    warn!(target: ACTOR, "get_service_detail: service '{}': invalid connect_via IP address '{}'", service_name, via_str);
                                     continue; // skip invalid
                                 }
                             }
@@ -249,7 +249,7 @@ impl ActorMgr {
             }
 
             if val_cn.is_none() {
-                warn!(target: AMGR, "get_service_detail: service '{}': no CN attribute found", service_name);
+                warn!(target: ACTOR, "get_service_detail: service '{}': no CN attribute found", service_name);
                 return Ok(None);
             }
             let detail = ServiceDetail {
@@ -260,7 +260,7 @@ impl ActorMgr {
             };
             return Ok(Some(detail));
         } else {
-            debug!(target: AMGR, "get_service_detail: service '{}' not found in DB", service_name);
+            debug!(target: ACTOR, "get_service_detail: service '{}' not found in DB", service_name);
             return Ok(None);
         }
     }

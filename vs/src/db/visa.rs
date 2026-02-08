@@ -20,7 +20,7 @@ use zpr::write_to::WriteTo;
 
 use crate::db::{DbConnection, DbOp, ZAddr, gen_timestamp};
 use crate::error::StoreError;
-use crate::logging::targets::REDIS;
+use crate::logging::targets::DB;
 
 const KEY_VISA: &str = "visa";
 const KEY_NEXT_VISA_ID: &str = "visa:next_visa_id";
@@ -131,11 +131,11 @@ impl VisaRepo {
         match self.try_store_visa(&metadata, visa, nstate).await {
             Ok(_) => Ok(()),
             Err(e) => {
-                warn!(target: REDIS, "failed to store visa: {}, attempting cleanup", visa.issuer_id);
+                warn!(target: DB, "failed to store visa: {}, attempting cleanup", visa.issuer_id);
                 match self.clean_up(visa.issuer_id).await {
                     Ok(_) => (),
                     Err(cleanup_err) => {
-                        error!(target: REDIS, "failed to store visa {} and clean up failed too: {}", visa.issuer_id, cleanup_err);
+                        error!(target: DB, "failed to store visa {} and clean up failed too: {}", visa.issuer_id, cleanup_err);
                     }
                 }
                 Err(e)
@@ -215,7 +215,7 @@ impl VisaRepo {
             .expire(&key_nodevisa, expiration_seconds as i64)
             .await?;
 
-        debug!(target: REDIS, "stored visa {visa_id} expires in {expiration_seconds} seconds");
+        debug!(target: DB, "stored visa {visa_id} expires in {expiration_seconds} seconds");
         Ok(())
     }
 
@@ -242,7 +242,7 @@ impl VisaRepo {
             )
             .await?;
 
-        debug!(target: REDIS, "updated nodevisa state node={node_addr} visa={visa_id} -> {new_state:?}");
+        debug!(target: DB, "updated nodevisa state node={node_addr} visa={visa_id} -> {new_state:?}");
         Ok(())
     }
 
@@ -268,7 +268,7 @@ impl VisaRepo {
                 // Extract visa ID from key
                 let parts: Vec<&str> = key.rsplitn(2, ':').collect();
                 if parts.len() != 2 {
-                    warn!(target: REDIS, "malformed nodevisa key: {}", key);
+                    warn!(target: DB, "malformed nodevisa key: {}", key);
                     continue;
                 }
                 let visa_id: u64 = parts[0].parse().map_err(|_| {
@@ -284,7 +284,7 @@ impl VisaRepo {
                     }
                     Err(err) if err.kind() == redis::ErrorKind::UnexpectedReturnType => {
                         // Missing/expired visa blob. Skip it but keep other visas.
-                        warn!(target: REDIS, "visa blob missing for key {}", blob_key);
+                        warn!(target: DB, "visa blob missing for key {}", blob_key);
                         continue;
                     }
                     Err(err) => return Err(err.into()),
@@ -338,13 +338,13 @@ impl VisaRepo {
         for key in &visa_keys {
             let parts: Vec<&str> = key.rsplitn(2, ':').collect();
             if parts.len() != 2 {
-                warn!(target: REDIS, "malformed visa key: {}", key);
+                warn!(target: DB, "malformed visa key: {}", key);
                 continue;
             }
             let visa_id: u64 = match parts[0].parse() {
                 Err(_) => {
                     // TODO: Should we just crash here?
-                    warn!(target: REDIS, "invalid visa ID in visa key: {}, skipping entry", key);
+                    warn!(target: DB, "invalid visa ID in visa key: {}, skipping entry", key);
                     continue;
                 }
                 Ok(id) => id,

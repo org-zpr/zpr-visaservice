@@ -14,7 +14,7 @@ use zpr::vsapi_types::ServiceDescriptor;
 
 use crate::assembly::Assembly;
 use crate::error::ServiceError;
-use crate::logging::targets::EVNTMGR;
+use crate::logging::targets::EVENT;
 
 pub enum VsEvent {
     /// Use _after_ actor has been authenticated and the datastore updated.
@@ -36,7 +36,7 @@ impl EventMgr {
 
     pub async fn record_event(&self, event: VsEvent) -> Result<(), ServiceError> {
         if let Err(e) = self.event_queue.send(event).await {
-            error!(target: EVNTMGR, "failed to send to event-queue: {}", e);
+            error!(target: EVENT, "failed to send to event-queue: {}", e);
             Err(ServiceError::QueueFull("event-queue".into()))
         } else {
             Ok(())
@@ -45,27 +45,27 @@ impl EventMgr {
 }
 
 pub async fn launch(asm: Arc<Assembly>, mut event_rx: mpsc::Receiver<VsEvent>) {
-    info!(target: EVNTMGR, "event manager worker started");
+    info!(target: EVENT, "event manager worker started");
     while let Some(event) = event_rx.recv().await {
         match event {
             VsEvent::ActorJoins(actor) => {
                 if let Err(e) = handle_actor_joins(&asm, actor).await {
-                    error!(target: EVNTMGR, "failed to handle actor join event: {}", e);
+                    error!(target: EVENT, "failed to handle actor join event: {}", e);
                 }
             }
             VsEvent::ActorLeaves(actor, reason) => {
                 if let Err(e) = handle_actor_leaves(&asm, actor, reason).await {
-                    error!(target: EVNTMGR, "failed to handle actor leave event: {}", e);
+                    error!(target: EVENT, "failed to handle actor leave event: {}", e);
                 }
             }
         }
     }
-    info!(target: EVNTMGR, "event manager shutting down");
+    info!(target: EVENT, "event manager shutting down");
 }
 
 // Maybe will call into topology routines from here eventually.
 async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(), ServiceError> {
-    info!(target: EVNTMGR, "actor joined: {}", actor_addr);
+    info!(target: EVENT, "actor joined: {}", actor_addr);
     let has_auth_services = match asm
         .actor_mgr
         .has_auth_services(asm.clone(), actor_addr)
@@ -73,7 +73,7 @@ async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(
     {
         Ok(v) => v,
         Err(e) => {
-            error!(target: EVNTMGR, "actor_mgr.has_auth_services failed: {}", e);
+            error!(target: EVENT, "actor_mgr.has_auth_services failed: {}", e);
             false
         }
     };
@@ -84,7 +84,7 @@ async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(
             Ok(svcs) => set_services_all_nodes(&asm, &svcs).await?,
             Err(e) => {
                 error!(
-                    target: EVNTMGR,
+                    target: EVENT,
                     "actor_mgr.get_auth_services_list failed: {}", e
                 );
             }
@@ -103,7 +103,7 @@ async fn handle_actor_leaves(
     actor_addr: IpAddr,
     reason: DisconnectReason,
 ) -> Result<(), ServiceError> {
-    info!(target: EVNTMGR, "actor left: {}", actor_addr);
+    info!(target: EVENT, "actor left: {}", actor_addr);
 
     let prev_auth_services: HashSet<ServiceDescriptor> = HashSet::from_iter(
         asm.actor_mgr
@@ -146,13 +146,13 @@ async fn set_services_all_nodes(
             let service_list: Vec<ServiceDescriptor> = service_set.to_vec();
             async move {
                 debug!(
-                    target: EVNTMGR,
+                    target: EVENT,
                     "attempting to use VSS to set_services on node {naddr}"
                 );
                 if let Some(vss_h) = asm.vss_mgr.get_handle(&naddr) {
                     if let Err(e) = vss_h.set_services(1, service_list).await {
                         error!(
-                            target: EVNTMGR,
+                            target: EVENT,
                             "failed to set_services on node {}: {}",
                             naddr,
                             e
