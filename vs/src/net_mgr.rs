@@ -40,13 +40,8 @@ struct Addr4Allocator {
 impl NetMgr {
     /// Create a NetMgr backed by IPv6 address pools.
     pub async fn new_v6() -> Result<Self, ServiceError> {
-        let adapter_net: Ipv6Net = config::ADAPTER_BASE_V6NET
-            .parse()
-            .expect("error in net_mgr ADAPTER_BASE_NET constant");
-
-        let node_net: Ipv6Net = config::NODE_BASE_V6NET
-            .parse()
-            .expect("error in net_mgr NODE_BASE_NET constant");
+        let adapter_net = config::ADAPTER_BASE_V6NET;
+        let node_net = config::NODE_BASE_V6NET;
 
         // Do we have state in the DB? If so grab next address info db.
         Ok(NetMgr {
@@ -58,13 +53,8 @@ impl NetMgr {
     /// Create a NetMgr backed by IPv4 address pools.
     #[allow(dead_code)]
     pub async fn new_v4() -> Result<Self, ServiceError> {
-        let adapter_net: Ipv4Net = config::ADAPTER_BASE_V4NET
-            .parse()
-            .expect("error in net_mgr ADAPTER_BASE_NET constant");
-
-        let node_net: Ipv4Net = config::NODE_BASE_V4NET
-            .parse()
-            .expect("error in net_mgr NODE_BASE_NET constant");
+        let adapter_net = config::ADAPTER_BASE_V4NET;
+        let node_net = config::NODE_BASE_V4NET;
 
         // Do we have state in the DB? If so grab next address info db.
         Ok(NetMgr {
@@ -230,8 +220,8 @@ mod tests {
     #[tokio::test]
     async fn v6_allocate_release_adapter_and_node() {
         let mgr = NetMgr::new_v6().await.expect("failed to build v6 NetMgr");
-        let adapter_net = Ipv6Net::from_str(config::ADAPTER_BASE_V6NET).unwrap();
-        let node_net = Ipv6Net::from_str(config::NODE_BASE_V6NET).unwrap();
+        let adapter_net = config::ADAPTER_BASE_V6NET;
+        let node_net = config::NODE_BASE_V6NET;
 
         let adapter_addr = mgr
             .get_next_zpr_addr(Role::Adapter)
@@ -265,8 +255,8 @@ mod tests {
     #[tokio::test]
     async fn v4_allocate_release_adapter_and_node() {
         let mgr = NetMgr::new_v4().await.expect("failed to build v4 NetMgr");
-        let adapter_net = Ipv4Net::from_str(config::ADAPTER_BASE_V4NET).unwrap();
-        let node_net = Ipv4Net::from_str(config::NODE_BASE_V4NET).unwrap();
+        let adapter_net = config::ADAPTER_BASE_V4NET;
+        let node_net = config::NODE_BASE_V4NET;
 
         let adapter_addr = mgr
             .get_next_zpr_addr(Role::Adapter)
