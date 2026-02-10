@@ -234,7 +234,6 @@ async fn vss_worker_loop(
     // Open connect to VSS.
     info!(target: VSS, "connecting to VSS at {}", node_addr);
 
-    // TODO: TLS
     let sock = match tokio::net::TcpStream::connect(node_addr).await {
         Ok(sock) => sock,
         Err(e) => {
