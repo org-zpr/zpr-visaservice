@@ -16,24 +16,59 @@ ZPR visa service implementation (under active development).
   the HTTPS admin api of `vs`.
 - `admin-api-types` - Library crate for data structures used by `vs` and
   `vs-admin`.
-- `integration-test` - Includes a test of the prototype visa service using
-  `vs-confirm`, and a test of the new `libeval` using `zpt`.
+- `integration-test` - Shell-based integration tests. Includes a conformance
+  test of the prototype visa service using `vs-conform`, and evaluation tests
+  of `libeval` using `zpt`.
+- `tools` - Helper scripts, including `zpr-pki` for PKI operations.
 - `core` - **DEPRECATED** - This is the prototype Visa Service written in Go.
 - `vs-conform` - **DEPRECATED** - An old conformance tester for the prototype
   visa service.
 
-Most of the new visa service code depends on the `zpr-common` repository which
+Most of the new visa service code depends on the
+[zpr-common](https://github.com/org-zpr/zpr-common.git) repository, which
 defines data structures used in the NODE-VS API and the policy binary format.
+This dependency is pulled automatically via git in `Cargo.toml` (see e.g.
+`libeval/Cargo.toml`), so no manual setup is required.
+
+
+## Prerequisites
+
+- **Rust** - Edition 2024 (see individual `Cargo.toml` files). Install via
+  [rustup](https://rustup.rs/).
+- **Make** - The build is driven by per-crate Makefiles; there is no root
+  Cargo workspace.
+- **OpenSSL** - Required by `vs` and `libeval` (via the `openssl` crate).
+- **Redis** - Required at runtime by `vs`.
 
 
 ## To build
 
-Run `make build-rs` to build, `make test-rs` to run unit tests.
+Run `make build-rs` to build all Rust crates, or `make test-rs` to run unit
+tests.
+
+Individual crates can be built by running `make` in their subdirectory (e.g.
+`make -C vs all`).
+
+Note: there is no root `Cargo.toml` workspace. Do not run `cargo build` from
+the repository root.
 
 
-## Deprecated Prototype Visa Service
+## Release build
 
-Old documentation for the prototype visa service follows.
+Run `make release` to produce a release tarball. This builds everything (both
+Rust and Go), then packages binaries into `build-release/`.
+
+
+## Admin HTTPS API
+
+The visa service (`vs`) exposes an HTTPS admin API on port 8182 by default.
+The `vs-admin` command line tool consumes this API.
+
+See [admin-http-api.txt](admin-http-api.txt) for full endpoint documentation.
+
+
+<details>
+<summary>Deprecated Prototype Visa Service</summary>
 
 ### To build (prototype vs)
 
@@ -63,19 +98,18 @@ line tool which uses the admin interface.
 
 **API Summary**
 
-| METHOD | PATH                                | EXPLAIN   |
-| ------ | -----                               | -------   |
-| GET    | `/admin/policies`                   | list policies    |
-| POST   | `/admin/policy`                     | install a policy |
-| GET    | `/admin/policy/{configID}/current`  | get the current policy for configuration |
-| GET    | `/admin/visas`                      | list visas       |
-| DELETE | `/admin/visas/{ID}`                 |  revoke a visa by its ID |
-| GET    | `/admin/actors`                     | list connected actors    |
-| DELETE | `/admin/actors/{CN}`                | revoke an actor (and all its visas) by adapter CN |
-| GET    | `/admin/services`                   | a service-oriented list of connected actors |
-| POST   | `/admin/revokes`                    | administer the revocation table |
-| GET    | `/admin/nodes`                      | list nodes |
-
+| METHOD | PATH                               | EXPLAIN                                           |
+| ------ | ---------------------------------- | ------------------------------------------------- |
+| GET    | `/admin/policies`                  | list policies                                     |
+| POST   | `/admin/policy`                    | install a policy                                  |
+| GET    | `/admin/policy/{configID}/current` | get the current policy for configuration          |
+| GET    | `/admin/visas`                     | list visas                                        |
+| DELETE | `/admin/visas/{ID}`                | revoke a visa by its ID                           |
+| GET    | `/admin/actors`                    | list connected actors                             |
+| DELETE | `/admin/actors/{CN}`               | revoke an actor (and all its visas) by adapter CN |
+| GET    | `/admin/services`                  | a service-oriented list of connected actors       |
+| POST   | `/admin/revokes`                   | administer the revocation table                   |
+| GET    | `/admin/nodes`                     | list nodes                                        |
 
 
 ### Visa Service API (prototype vs)
@@ -93,3 +127,5 @@ them you must install:
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 ```
+
+</details>
