@@ -35,7 +35,7 @@ use crate::assembly::Assembly;
 use crate::db::Role;
 use crate::logging::targets::ADMIN;
 
-use admin_api_types::admin_api_types::{
+use admin_api_types::{
     ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry, PolicyBundle,
     Revokes, ServiceDescriptor, VisaDescriptor,
 };

@@ -9,7 +9,7 @@ use std::io::Read;
 use std::io::prelude::*;
 use std::path::Path;
 
-use admin_api_types::admin_api_types::{ListEntry, PolicyBundle};
+use admin_api_types::{ListEntry, PolicyBundle};
 
 use crate::vsclient::{RoleFilter, VsClient};
 
