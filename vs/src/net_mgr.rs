@@ -109,14 +109,6 @@ impl NetMgr {
         Err(ServiceError::Internal(format!(
             "attempted to release address {addr} not managed by any allocator"
         )))
-
-        /*
-        self.adapter_addrs
-            .lock()
-            .unwrap()
-            .release(addr)
-            .or_else(|_| self.node_addrs.lock().unwrap().release(addr))
-            */
     }
 }
 
