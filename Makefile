@@ -43,7 +43,6 @@ release:
 	$(MAKE) build
 	mkdir -p $(RELEASE_DIR)
 	cp core/build/vservice $(RELEASE_DIR)
-	cp vs-admin/target/debug/vs-admin $(RELEASE_DIR)
 	cp vs-conform/build/vs-conform $(RELEASE_DIR)
 	cd $(RELEASE_DIR) && tar zcvf ../$(RELEASE_TGZ) .
 
