@@ -50,6 +50,8 @@ use crate::vss_mgr::VssMgr;
 
 use redis::AsyncCommands;
 
+const DEFAULT_CONFIG_PATH: &str = "vs.toml";
+
 /// vs - ZPR visa service
 #[derive(Parser, Debug)]
 #[command(name = "vs")]
@@ -62,8 +64,8 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Path to the configuration file
-    #[arg(short, long, value_name = "FILE", default_value = "vs.toml")]
+    /// Path to the configuration file. If "vs.toml" is present in the current directory, it will be used by default.
+    #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
 }
 
@@ -72,14 +74,10 @@ async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     enable_logging(cli.verbose);
     info!(target: MAIN, "vs version {}", env!("CARGO_PKG_VERSION"));
-    let config_file = cli.config.unwrap();
-    let cfg = match VSConfig::from_file(&config_file) {
-        Ok(c) => {
-            info!(target: MAIN, "using configuration: {}", config_file.display());
-            c
-        }
+    let cfg = match load_config(cli.config.as_deref()) {
+        Ok(c) => c,
         Err(e) => {
-            error!(target: MAIN, "Failed to load configuration: {}", e);
+            error!(target: MAIN, "failed to load configuration: {}", e);
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -201,6 +199,28 @@ async fn main() -> std::process::ExitCode {
 
     info!(target: MAIN, "exiting");
     std::process::ExitCode::SUCCESS
+}
+
+/// Load configuration from an explicit path, the default path, or fall back to defaults.
+fn load_config(explicit: Option<&std::path::Path>) -> Result<VSConfig, ServiceError> {
+    match explicit {
+        Some(path) => {
+            let cfg = VSConfig::from_file(path)?;
+            info!(target: MAIN, "using configuration: {}", path.display());
+            Ok(cfg)
+        }
+        None => {
+            let default_path = std::path::Path::new(DEFAULT_CONFIG_PATH);
+            if default_path.exists() {
+                let cfg = VSConfig::from_file(default_path)?;
+                info!(target: MAIN, "using configuration: {}", default_path.display());
+                Ok(cfg)
+            } else {
+                info!(target: MAIN, "no configuration file found, using defaults");
+                Ok(VSConfig::default())
+            }
+        }
+    }
 }
 
 async fn create_actor_mgr(

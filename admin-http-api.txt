@@ -1,0 +1,281 @@
+Admin HTTP API  - Current as of 2/5/2026
+----------------------------------------
+
+This document describes the admin HTTPS API implemented by the server and
+consumed by vs-admin. This API is under active development and changes
+frequently.
+
+Base URL
+--------
+  The default admin port for the visa service is 8182. So in a default visa
+  service setup, the base url is "https://[fd5a:5052::1]:8182".
+
+Transport
+---------
+  TLS required. The admin client uses a configured root certificate and also
+  accepts invalid certs.
+
+Content Type
+------------
+  All request and response bodies are JSON.
+
+Notes
+-----
+  - Some endpoints in admin_service return placeholder data or fixed responses
+    (for example: policies, revokes, some deletes).
+  - A few fields are currently hardcoded or not tracked yet; see endpoint notes.
+
+Inconsistencies (timestamps) - Will be addressed soon
+-----------------------------------------------------
+  Milliseconds since epoch:
+    - VisaDescriptor.expires
+    - VisaDescriptor.created
+    - ActorDescriptor.ctime (server currently returns 0)
+  Seconds since epoch:
+    - NodeRecordBrief.last_contact
+    - HostRecordBrief.ctime (type exists but not used by current endpoints)
+    - ServiceRecord.ctime (type exists but not used by current endpoints)
+
+Common Types
+------------
++-----------------+----------------------------------------------------------+
+| Type            | Shape                                                    |
++-----------------+----------------------------------------------------------+
+| ListEntry       | { "id": number }                                         |
+|                 |                                                          |
+| NamedListEntry  | { "id": string }                                         |
+|                 |                                                          |
+| PolicyBundle    | { "config_id": number, "version": string,                |
+|                 |   "format": string, "container": string }                |
+|                 |                                                          |
+| VisaDescriptor  | { "id": number, "expires": number, "created": number,    |
+|                 |   "policy_id": string, "requesting_node": string,        |
+|                 |   "source_addr": string, "dest_addr": string,            |
+|                 |   "source_port": number, "dest_port": number,            |
+|                 |   "proto": string }                                      |
+|                 |                                                          |
+| Revokes         | { "id": string, "revoked": number[] }                    |
+|                 |                                                          |
+| ActorDescriptor | { "cn": string, "ctime": number, "ident": string,        |
+|                 |   "node": boolean, "zpr_addr": string,                   |
+|                 |   "node_details": NodeRecordBrief | null }               |
+|                 |                                                          |
+| NodeRecordBrief | { "pending": number, "last_contact": number,             |
+|                 |   "visa_requests": number, "connect_requests": number,   |
+|                 |   "in_sync": boolean }                                   |
+|                 |                                                          |
+| ServiceDesc     | { "service_name": string, "actor_cn": string,            |
+|                 |   "zpr_addr": string, "dock_zpr_addr": string }          |
+|                 |                                                          |
+| AuthRevokeDesc  | { "ty": string, "cn": string }                           |
+|                 |                                                          |
+| CnEntry         | { "cn": string }                                         |
++-----------------+----------------------------------------------------------+
+
+  Type name notes:
+    - ServiceDesc corresponds to ServiceDescriptor.
+    - AuthRevokeDesc corresponds to AuthRevokeDescriptor.
+
+
+Endpoints
+---------
+GET /admin/actors
+-----------------
+  Summary
+    Returns a list of actor common names.
+  Query
+    role: node | adapter (optional)
+  Request
+    (none)
+  Response
+    200: CnEntry[]
+    500: empty list
+
+GET /admin/actors/{cn}
+----------------------
+  Summary
+    Returns details for a specific actor.
+  Request
+    (none)
+  Response
+    200: ActorDescriptor
+    404: not found
+    500: server error
+  Notes
+    ctime is milliseconds since epoch but is currently 0 (not tracked yet).
+    node_details is currently null (not tracked yet).
+    Note that passed {cn} must be url path encoded.
+
+DELETE /admin/actors/{cn}
+-------------------------
+  Summary
+    Revokes an actor. Currently returns a placeholder response.
+  Request
+    (none)
+  Response
+    200: Revokes
+  Notes
+    Note that passed {cn} must be url path encoded.
+
+GET /admin/actors/{cn}/visas
+----------------------------
+  Summary
+    Returns visa IDs related to the actor. Currently returns a placeholder
+    list.
+  Request
+    (none)
+  Response
+    200: ListEntry[]
+  Notes
+    Note that passed {cn} must be url path encoded.
+
+GET /admin/services
+-------------------
+  Summary
+    Returns a list of service names.
+  Request
+    (none)
+  Response
+    200: NamedListEntry[]
+    500: empty list
+
+GET /admin/services/{name}
+------------------------
+  Summary
+    Returns details for a specific service by name.
+  Request
+    (none)
+  Response
+    200: ServiceDescriptor
+    404: not found
+  Notes
+    Note that passed {name} must be url path encoded.
+
+GET /admin/visas
+----------------
+  Summary
+    Returns a list of all visa IDs (u64).
+  Request
+    (none)
+  Response
+    200: ListEntry[]
+    500: empty list
+
+GET /admin/visas/{id}
+---------------------
+  Summary
+    Returns details for a specific visa.
+  Request
+    (none)
+  Response
+    200: VisaDescriptor
+    404: not found
+    500: server error
+  Notes
+    expires is milliseconds since epoch.
+    created is milliseconds since epoch (from visa metadata).
+    policy_id is currently "0" (not tracked yet).
+    proto is currently "TCP" (fixed in server code).
+
+DELETE /admin/visas/{id}
+------------------------
+  Summary
+    Revokes a visa. Currently returns a placeholder response.
+  Request
+    (none)
+  Response
+    200: Revokes
+
+GET /admin/policies
+-------------------
+  Summary
+    Returns policy IDs. Currently returns placeholder data.
+  Request
+    (none)
+  Response
+    200: ListEntry[]
+
+GET /admin/policies/{id}
+------------------------
+  Summary
+    Returns a policy bundle. Currently returns placeholder data.
+  Request
+    (none)
+  Response
+    200: PolicyBundle
+
+GET /admin/policies/curr
+------------------------
+  Summary
+    Returns the current policy bundle. Currently returns placeholder data.
+  Request
+    (none)
+  Response
+    200: PolicyBundle
+  Notes
+    Will probably rename this to "current".
+
+POST /admin/policies
+--------------------
+  Summary
+    Installs a policy bundle.
+  Request
+    Body: PolicyBundle (server ignores config_id when installing)
+  Response
+    200: ListEntry
+
+GET /admin/authrevoke
+---------------------
+  Summary
+    Returns authorization revokes. Currently returns placeholder data.
+  Request
+    (none)
+  Response
+    200: ListEntry[]
+  Notes
+    Not sure yet what type of thing is returned here. Probably will be a
+    string identifier.
+
+GET /admin/authrevoke/{id}
+--------------------------
+  Summary
+    Returns a specific auth revoke. Currently returns placeholder data.
+  Request
+    (none)
+  Response
+    200: AuthRevokeDescriptor
+  Notes
+    Type of {id} is TBD.
+
+POST /admin/authrevoke/{id}
+---------------------------
+  Summary
+    Adds an auth revoke.
+  Request
+    (none)
+  Response
+    200: ListEntry
+  Notes
+    Type of {id} is TBD.
+
+POST /admin/authrevoke/clear
+----------------------------
+  Summary
+    Clears auth revokes. Currently returns placeholder data.
+  Request
+    (none)
+  Response
+    200: ListEntry[]
+
+DELETE /admin/authrevoke/{id}
+-----------------------------
+  Summary
+    Removes a specific auth revoke.
+  Request
+    (none)
+  Response
+    200: ListEntry
+  Notes
+    Type of {id} is TBD.
+
+

@@ -1,12 +1,79 @@
 # visa service
 
-Started as a copy of the prototype ZPR visa service, but will evolve
-independetly to meet the needs of the reference implementation.
+ZPR visa service implementation (under active development).
+
+
+## Crates / Packages / Libraries
+
+- `vs` - The ZPR Visa Service. Aka "v2vs" -- the "v2" used to differentiate it
+  from the "v1", prototype visa service.
+- `libeval` - The "evaluator" library used by the `vs` and `zpt`. Includes the
+  code that compares a description of network traffic to policy to determine if
+  a visa should be issued.
+- `zpt` - ZPR Policy Tester is a command line tool for testing how `libeval`
+  evaluates policy.
+- `vs-admin` - Bare bones administration client for the visa service. Exercises
+  the HTTPS admin api of `vs`.
+- `admin-api-types` - Library crate for data structures used by `vs` and
+  `vs-admin`.
+- `integration-test` - Shell-based integration tests. Includes a conformance
+  test of the prototype visa service using `vs-conform`, and evaluation tests
+  of `libeval` using `zpt`.
+- `tools` - Helper scripts, including `zpr-pki` for PKI operations.
+- `core` - **DEPRECATED** - This is the prototype Visa Service written in Go.
+- `vs-conform` - **DEPRECATED** - An old conformance tester for the prototype
+  visa service.
+
+Most of the new visa service code depends on the
+[zpr-common](https://github.com/org-zpr/zpr-common.git) repository, which
+defines data structures used in the NODE-VS API and the policy binary format.
+This dependency is pulled automatically via git in `Cargo.toml` (see e.g.
+`libeval/Cargo.toml`), so no manual setup is required.
+
+
+## Prerequisites
+
+- **Rust** - Edition 2024 (see individual `Cargo.toml` files). Install via
+  [rustup](https://rustup.rs/).
+- **Make** - The build is driven by per-crate Makefiles; there is no root
+  Cargo workspace.
+- **OpenSSL** - Required by `vs` and `libeval` (via the `openssl` crate).
+- **Redis** - Required at runtime by `vs`.
 
 
 ## To build
 
-Run `make` to build.  To run the tests do `make test`.
+Run `make build-rs` to build all Rust crates, or `make test-rs` to run unit
+tests.
+
+Individual crates can be built by running `make` in their subdirectory (e.g.
+`make -C vs all`).
+
+Note: there is no root `Cargo.toml` workspace. Do not run `cargo build` from
+the repository root.
+
+
+## Release build (prototype vs only)
+
+Run `make release` to produce a release tarball of the older, prototype visa
+service. This builds everything (both Rust and Go), then packages the old
+vservice and vs-conform binaries into `build-release/`.
+
+
+## Admin HTTPS API
+
+The visa service (`vs`) exposes an HTTPS admin API on port 8182 by default.
+The `vs-admin` command line tool consumes this API.
+
+See [admin-http-api.txt](admin-http-api.txt) for full endpoint documentation.
+
+
+<details>
+<summary>Deprecated Prototype Visa Service</summary>
+
+### To build (prototype vs)
+
+Run `make build-go` to build.  To run the tests do `make test-go`.
 
 After a successful build the `vservice` binary will be found in
 `core/build`.
@@ -15,7 +82,7 @@ When compiler is updated you may need to rebuild the pregenerated policy
 files used for testing.  Do that with: `make ZPLC=/path/to/zplc pregen`.
 
 
-## Visa Service Admin API
+### Visa Service Admin API (prototype vs)
 
 This is an HTTPS API for controlling the visa service designed for network
 administrators. Access is protected by policy. The default port is TCP/8182 (see
@@ -32,232 +99,27 @@ line tool which uses the admin interface.
 
 **API Summary**
 
-| METHOD | PATH                                | EXPLAIN   |
-| ------ | -----                               | -------   |
-| GET    | `/admin/policies`                   | list policies    |
-| POST   | `/admin/policy`                     | install a policy |
-| GET    | `/admin/policy/{configID}/current`  | get the current policy for configuration |
-| GET    | `/admin/visas`                      | list visas       |
-| DELETE | `/admin/visas/{ID}`                 |  revoke a visa by its ID |
-| GET    | `/admin/actors`                     | list connected actors    |
-| DELETE | `/admin/actors/{CN}`                | revoke an actor (and all its visas) by adapter CN |
-| GET    | `/admin/services`                   | a service-oriented list of connected actors |
-| POST   | `/admin/revokes`                    | administer the revocation table |
-| GET    | `/admin/nodes`                      | list nodes |
+| METHOD | PATH                               | EXPLAIN                                           |
+| ------ | ---------------------------------- | ------------------------------------------------- |
+| GET    | `/admin/policies`                  | list policies                                     |
+| POST   | `/admin/policy`                    | install a policy                                  |
+| GET    | `/admin/policy/{configID}/current` | get the current policy for configuration          |
+| GET    | `/admin/visas`                     | list visas                                        |
+| DELETE | `/admin/visas/{ID}`                | revoke a visa by its ID                           |
+| GET    | `/admin/actors`                    | list connected actors                             |
+| DELETE | `/admin/actors/{CN}`               | revoke an actor (and all its visas) by adapter CN |
+| GET    | `/admin/services`                  | a service-oriented list of connected actors       |
+| POST   | `/admin/revokes`                   | administer the revocation table                   |
+| GET    | `/admin/nodes`                     | list nodes                                        |
 
 
-
-
-### List policies `GET /admin/policies`
-
-Returns:
-
-```json
-[
-    {
-        "config_id": 2024070200001,
-        "version": "1712946177+localfile:policy-1n_2ds_1c.yaml:200d09643386decf3b13423cfeb36cd2a8b9a1ebc723e1cd0c292f23bb18201e"
-    }
-]
-```
-
-### Get current policy `GET /admin/policy/<CONFIG_ID>/current`
-
-This takes a the `CONFIG_ID` as a path argument, eg:
-
-```bash
-GET /admin/policy/2024070200001/current
-```
-
-Returns:
-
-```json
-{
-    "config_id": 2024070200001,
-    "container": "H4sIAAAAAAAA/8 ..... (more base64 data omitted) ....QAA"
-    "format": "base64;zip;0.4.1",
-    "version": "1712946177"
-}
-```
-
-
-### Install a policy `POST /admin/policy`
-
-Takes a JSON encoded `PolicyBundle` struct (see `core/pkg/vservice/admin.go`)
-filled in as follows:
-
-```json
-{
-    "config_id": "",
-    "version": "",
-    "format": "base64;zip;0.4.1",
-    "container": ".... (base 64, compressed, serialzed polio.PolicyBundle) ...",
-}
-```
-
-Note that the `0.4.1` in the `format` field should be the compiler version number.
-
-If you do set `version` then the admin service will ensure that the current
-(running) policy matches the value before attempting to install the new policy.
-
-
-Returns the config ID and version:
-
-```json
-{
-    "config_id": 2024070200001,
-    "version": "171294623+92310299"
-}
-```
-
-### List visas `GET /admin/visas`
-
-Returns a brief summary of each live visa. Note that unlike all other time values in the API which are
-seconds since the epoch, the expiration value on visas is **milliseconds** since the epoch.
-
-
-Returns:
-
-```json
-[
-    {
-        "dest": "127.0.0.1",
-        "expires": 1738991722149,
-        "id": 8,
-        "source": "fd5a:5052:90de::1"
-    },
-    {
-        "dest": "fd5a:5052:90de::1",
-        "expires": 1738991842150,
-        "id": 9,
-        "source": "127.0.0.1"
-    }
-]
-```
-
-
-### List actors `GET /admin/actors`
-
-Get a brief summary of connected actors.
-
-
-Returns:
-
-```json
-[
-    {
-        "cn": "vs.zpr",
-        "ctime": 1738948830,
-        "ident": "bee171ebaf1741b2c9879c730ed4abe0873ff42a25b116e74be6ef71be7322ee",
-        "node": false,
-        "zpr_addr": "127.0.0.1"
-    },
-    {
-        "cn": "node.zpr.org",
-        "ctime": 1738948942,
-        "ident": "36e16f0a83c9a3274ce991f7561b1b445910de5c8cbb16b1e7f9de166f34342d",
-        "node": true,
-        "zpr_addr": "fd5a:5052:90de::1"
-    }
-]
-```
-
-
-### List nodes `GET /admin/nodes`
-
-Get a brief summary of connected nodes.
-
-
-Returns:
-
-```json
-[
-    {
-        "cn": "node.zpr.org",
-        "connect_requests": 0,
-        "ctime": 1738948942,
-        "in_sync": true,
-        "last_contact": 1738949250,
-        "pending": 0,
-        "visa_requests": 0,
-        "zpr_addr": "fd5a:5052:90de::1"
-    }
-]
-```
-
-
-### Revoke visas by ID `DELETE /admin/visas/{ID}`
-
-Send a delete request to revoke a visa by its issuer ID.
-
-```bash
-DELETE /admin/visas/22
-```
-
-Returns:
-
-```json
-{
-    "revoked": "22",
-    "count": 1
-}
-```
-
-### Revoke CN access and associated visas `DELETE /admin/actors/{CN}`
-
-Sends a delete request to revoke access to an adapter by its CN. Also revokes
-any visas associatd with the adapter.
-
-```bash
-DELETE /admin/actors/foo.zpr.org
-```
-
-Returns:
-
-```jason
-{
-    "revoked": "foo.zor.org",
-    "count": 8,
-}
-```
-
-Where `count` is the number of visas that were revoked.
-
-
-### Clear the revocations table `/admin/revokes`
-
-The visa service keeps track of recovations when they are made on adapter CNs or
-authtication keys.  To clear the revocation table you can post a message to
-`/admin/revokes`.
-
-The JSON object to send looks like:
-
-```json
-{
-    "clear_all": true
-}
-
-```
-
-The return value includes the number of entries removed from the revocation table, for example:
-
-```json
-{
-    "clear_count": 10
-}
-```
-
-
-## Visa Service API
+### Visa Service API (prototype vs)
 
 The main visa service api (for requesting visas and connection control) is a
 THRIFT API. This runs on TCP/5002 by default. See `vs.thrift` in the
 zpr-vsapi repo for documentation.
 
-
-
-
-## Protocol Buffers
+### Protocol Buffers (prototype vs)
 
 The compiled protocol buffers are included in source, but if you need to rebuild
 them you must install:
@@ -266,3 +128,5 @@ them you must install:
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 ```
+
+</details>
