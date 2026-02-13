@@ -53,10 +53,11 @@ Note: there is no root `Cargo.toml` workspace. Do not run `cargo build` from
 the repository root.
 
 
-## Release build
+## Release build (prototype vs only)
 
-Run `make release` to produce a release tarball. This builds everything (both
-Rust and Go), then packages binaries into `build-release/`.
+Run `make release` to produce a release tarball of the older, prototype visa
+service. This builds everything (both Rust and Go), then packages the old
+vservice and vs-conform binaries into `build-release/`.
 
 
 ## Admin HTTPS API
