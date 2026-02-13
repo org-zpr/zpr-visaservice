@@ -12,7 +12,7 @@ use reqwest::tls::Certificate;
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::time::{Duration, Instant};
 
-use admin_api_types::admin_api_types::{ActorDescriptor, ServiceDescriptor, VisaDescriptor};
+use admin_api_types::{ActorDescriptor, ServiceDescriptor, VisaDescriptor};
 
 use crate::vsclient::{RoleFilter, VsClient};
 

@@ -4,11 +4,10 @@ use colored::Colorize;
 use reqwest;
 use reqwest::tls::Certificate;
 
-use admin_api_types::admin_api_types::reason_for;
-use admin_api_types::admin_api_types::{
+use admin_api_types::{
     ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry, PolicyBundle,
-    Revokes, ServiceDescriptor, VisaDescriptor,
-}; // TODO: get rid of this repetition of 'admin_api_types'
+    Revokes, ServiceDescriptor, VisaDescriptor, reason_for,
+};
 
 use crate::error::VsaError;
 
