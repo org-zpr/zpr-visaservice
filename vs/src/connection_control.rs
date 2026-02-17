@@ -173,7 +173,7 @@ impl ConnectionControl {
         };
 
         // Sanity check:
-        if !adapter_actor.is_node() {
+        if adapter_actor.is_node() {
             warn!(target: CC, "authenticate_adapter returns a node actor: cn {}", adapter_actor.get_cn().unwrap());
             return Err(ServiceError::AuthenticationFailed("not an adapter".into()));
         }

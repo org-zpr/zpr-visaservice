@@ -23,6 +23,7 @@ pub struct NetMgr {
 trait AddrAllocator {
     fn allocate(&mut self) -> Option<IpAddr>;
     fn release(&mut self, addr: IpAddr) -> Result<(), ServiceError>;
+    fn contains(&self, addr: IpAddr) -> bool;
 }
 
 struct Addr6Allocator {
@@ -93,11 +94,21 @@ impl NetMgr {
 
     /// Release a previously allocated address.
     pub async fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), ServiceError> {
-        self.adapter_addrs
-            .lock()
-            .unwrap()
-            .release(addr)
-            .or_else(|_| self.node_addrs.lock().unwrap().release(addr))
+        {
+            let mut allocator = self.adapter_addrs.lock().unwrap();
+            if allocator.contains(addr) {
+                return allocator.release(addr);
+            }
+        }
+        {
+            let mut allocator = self.node_addrs.lock().unwrap();
+            if allocator.contains(addr) {
+                return allocator.release(addr);
+            }
+        }
+        Err(ServiceError::Internal(format!(
+            "attempted to release address {addr} not managed by any allocator"
+        )))
     }
 }
 
@@ -116,6 +127,14 @@ impl Addr6Allocator {
 }
 
 impl AddrAllocator for Addr6Allocator {
+    fn contains(&self, addr: IpAddr) -> bool {
+        if let IpAddr::V6(v6addr) = addr {
+            self.net.contains(&v6addr)
+        } else {
+            false
+        }
+    }
+
     /// Allocate a random unused IPv6 address from the subnet.
     fn allocate(&mut self) -> Option<IpAddr> {
         for _ in 0..10_000 {
@@ -133,7 +152,8 @@ impl AddrAllocator for Addr6Allocator {
         if let IpAddr::V6(v6addr) = addr {
             if !self.net.contains(&v6addr) {
                 return Err(ServiceError::Internal(format!(
-                    "attempted to release IPv6 address outside allocator net: {addr}"
+                    "attempted to release IPv6 address {addr} outside allocator net: {}",
+                    self.net
                 )));
             }
             let n = u128::from(v6addr) - u128::from(self.net.network());
@@ -164,6 +184,14 @@ impl Addr4Allocator {
 }
 
 impl AddrAllocator for Addr4Allocator {
+    fn contains(&self, addr: IpAddr) -> bool {
+        if let IpAddr::V4(v4addr) = addr {
+            self.net.contains(&v4addr)
+        } else {
+            false
+        }
+    }
+
     /// Allocate a random unused IPv4 address from the subnet.
     fn allocate(&mut self) -> Option<IpAddr> {
         let host_bits = 32 - self.net.prefix_len();
@@ -184,7 +212,8 @@ impl AddrAllocator for Addr4Allocator {
         if let IpAddr::V4(v4addr) = addr {
             if !self.net.contains(&v4addr) {
                 return Err(ServiceError::Internal(format!(
-                    "attempted to release IPv4 address outside allocator net: {addr}"
+                    "attempted to release IPv4 address {addr} outside allocator net: {}",
+                    self.net
                 )));
             }
             let n = u32::from(v4addr) - u32::from(self.net.network());
@@ -354,5 +383,23 @@ mod tests {
         for addr in &addrs {
             alloc.release(*addr).expect("failed to release /30 address");
         }
+    }
+
+    #[tokio::test]
+    async fn v6_allocate_release_unallocated() {
+        let mgr = NetMgr::new_v6().await.expect("failed to build v6 NetMgr");
+        let adapter_net = config::ADAPTER_BASE_V6NET;
+
+        let adapter_addr: IpAddr = "fd5a:5052:adda:1:7c51:12d4:f89e:8d90"
+            .parse()
+            .expect("failed to parse adapter v6 addr");
+
+        match adapter_addr {
+            IpAddr::V6(addr) => assert!(adapter_net.contains(&addr)),
+            _ => panic!("expected v6 adapter address"),
+        }
+
+        // Should return an error since it is not allocated
+        assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
     }
 }
