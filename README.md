@@ -43,7 +43,7 @@ This dependency is pulled automatically via git in `Cargo.toml` (see e.g.
 
 ## To build
 
-Run `make build-rs` to build all Rust crates, or `make test-rs` to run unit
+Run `make` to build all Rust crates, or `make test` to run unit
 tests.
 
 Individual crates can be built by running `make` in their subdirectory (e.g.
@@ -55,9 +55,9 @@ the repository root.
 
 ## Release build (prototype vs only)
 
-Run `make release` to produce a release tarball of the older, prototype visa
-service. This builds everything (both Rust and Go), then packages the old
-vservice and vs-conform binaries into `build-release/`.
+Run `make release` to produce a release tarball of the visa service tools. This
+builds everything, then packages the `vs`, `vs-admin`, and `zpt` binaries into
+`build-release/`.
 
 
 ## Admin HTTPS API
