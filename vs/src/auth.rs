@@ -1,4 +1,3 @@
-use base64::prelude::*;
 use openssl::hash::MessageDigest;
 use openssl::pkey::{PKey, Public};
 use openssl::sign::Verifier;
@@ -13,7 +12,7 @@ pub fn verify_ss_blob_signature(
     ssb: &SelfSignedBlob,
     pubkey: PKey<Public>,
 ) -> Result<bool, CryptoError> {
-    let input_signature = BASE64_STANDARD.decode(&ssb.signature)?;
+    let input_signature = &ssb.signature;
     let content = [
         &ssb.timestamp.to_be_bytes()[..],
         cn.as_bytes(),

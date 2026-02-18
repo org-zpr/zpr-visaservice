@@ -854,8 +854,8 @@ dependencies = [
 
 [[package]]
 name = "zpr"
-version = "0.7.1"
-source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.7.1#acd350c8331a0c028b2226a2577ab7cfaae9de25"
+version = "0.7.2"
+source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.7.2#7602d3ea396110449829ef81b0ce6d95735874b9"
 dependencies = [
  "capnp",
  "capnpc",
