@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+usage() {
+    echo "Usage: $0 <VERSION>"
+    echo "  VERSION: git tag to set for the zpr dependency, e.g. v0.8.0"
+    exit 1
+}
+
+[[ $# -ne 1 ]] && usage
+
+VERSION="$1"
+
+CARGO_TOMLS=(
+    "$ROOT/vs/Cargo.toml"
+    "$ROOT/libeval/Cargo.toml"
+    "$ROOT/zpt/Cargo.toml"
+    "$ROOT/vs-admin/Cargo.toml"
+)
+
+for toml in "${CARGO_TOMLS[@]}"; do
+    sed -i -E "s|(zpr = \{ git = \"[^\"]+\", tag = \")([^\"]+)(\")|\1${VERSION}\3|" "$toml"
+    if ! grep -qE "zpr = \{ git = \"[^\"]+\", tag = \"${VERSION}\"" "$toml"; then
+        echo "ERROR: failed to update zpr tag in $toml" >&2
+        exit 1
+    fi
+    echo "Updated $toml"
+done
+
+echo "Done. zpr dependency tag set to ${VERSION} in all crates."
