@@ -5,10 +5,14 @@ on:
     branches: [ "main" ]
     paths:
       - 'vs-admin/**'
+      - 'admin-api-types/**'
+      - 'libeval/**'
       - '.github/workflows/vs-tools.yml'
   pull_request:
     paths:
       - 'vs-admin/**'
+      - 'admin-api-types/**'
+      - 'libeval/**'
       - '.github/workflows/vs-tools.yml'
 
 concurrency:
@@ -23,7 +27,7 @@ jobs:
     name: ${{ matrix.target }}
     strategy:
       matrix:
-        target: [vs-admin]
+        target: [vs-admin, admin-api-types, libeval]
     uses: org-zpr/zpr-dev-tools/.github/workflows/rust-containerized-build-test.yml@v1.2
     with:
       name: ${{ matrix.target }}
