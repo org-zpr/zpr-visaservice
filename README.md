@@ -16,8 +16,7 @@ ZPR visa service implementation (under active development).
   the HTTPS admin api of `vs`.
 - `admin-api-types` - Library crate for data structures used by `vs` and
   `vs-admin`.
-- `integration-test` - Shell-based integration tests. Includes a conformance
-  test of the prototype visa service using `vs-conform`, and evaluation tests
+- `integration-test` - Shell-based integration tests. Includes evaluation tests
   of `libeval` using `zpt`.
 - `tools` - Helper scripts, including `zpr-pki` for PKI operations.
 
