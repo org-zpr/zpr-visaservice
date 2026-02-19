@@ -20,11 +20,8 @@ ZPR visa service implementation (under active development).
   test of the prototype visa service using `vs-conform`, and evaluation tests
   of `libeval` using `zpt`.
 - `tools` - Helper scripts, including `zpr-pki` for PKI operations.
-- `core` - **DEPRECATED** - This is the prototype Visa Service written in Go.
-- `vs-conform` - **DEPRECATED** - An old conformance tester for the prototype
-  visa service.
 
-Most of the new visa service code depends on the
+Most of the visa service code depends on the
 [zpr-common](https://github.com/org-zpr/zpr-common.git) repository, which
 defines data structures used in the NODE-VS API and the policy binary format.
 This dependency is pulled automatically via git in `Cargo.toml` (see e.g.
@@ -38,7 +35,7 @@ This dependency is pulled automatically via git in `Cargo.toml` (see e.g.
 - **Make** - The build is driven by per-crate Makefiles; there is no root
   Cargo workspace.
 - **OpenSSL** - Required by `vs` and `libeval` (via the `openssl` crate).
-- **Redis** - Required at runtime by `vs`.
+- **Redis/Valkey** - Required at runtime by `vs`.
 
 
 ## To build
