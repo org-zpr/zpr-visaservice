@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== Build System Information ==="
+echo
+
+echo "-- Host --"
+echo "Hostname:     $(hostname)"
+echo "Date:         $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+echo
+
+echo "-- OS --"
+if [[ -f /etc/os-release ]]; then
+	# shellcheck source=/dev/null
+	source /etc/os-release
+	echo "Name:         ${PRETTY_NAME:-${NAME:-unknown}}"
+	echo "ID:           ${ID:-unknown}"
+	echo "Version:      ${VERSION_ID:-unknown}"
+fi
+echo "Kernel:       $(uname -sr)"
+echo
+
+echo "-- Hardware --"
+echo "Architecture: $(uname -m)"
+echo "CPUs:         $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
+MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || true)
+if [[ -n "$MEM_KB" ]]; then
+	echo "Memory:       $(( MEM_KB / 1024 )) MiB"
+fi
+echo
+
+echo "-- Rust toolchain --"
+if command -v rustc &>/dev/null; then
+	echo "rustc:        $(rustc --version)"
+else
+	echo "rustc:        not found"
+fi
+if command -v cargo &>/dev/null; then
+	echo "cargo:        $(cargo --version)"
+else
+	echo "cargo:        not found"
+fi
+if command -v rustup &>/dev/null; then
+	ACTIVE=$(rustup show active-toolchain 2>/dev/null | awk '{print $1}' || true)
+	[[ -n "$ACTIVE" ]] && echo "toolchain:    $ACTIVE"
+fi
+echo
+
+echo "-- Key tools --"
+tool_version() {
+	local tool=$1 flag=${2:---version}
+	if command -v "$tool" &>/dev/null; then
+		# Use awk to take only the first line; suppress pipefail-triggered errors
+		# from SIGPIPE reaching the version command.
+		local ver
+		ver=$({ "$tool" $flag 2>&1 || true; } | awk 'NR==1{print;exit}')
+		printf "%-14s%s\n" "${tool}:" "$ver"
+	fi
+}
+
+tool_version cc
+tool_version ld
+tool_version make
+tool_version openssl version   # openssl uses 'version' subcommand
+tool_version git
+
+exit 0
