@@ -5,10 +5,14 @@ on:
     branches: [ "main" ]
     paths:
       - 'vs/**'
+      - 'libeval/**'
+      - 'admin-api-types/**'
       - '.github/workflows/vs2'
   pull_request:
     paths:
       - 'vs/**'
+      - 'libeval/**'
+      - 'admin-api-types/**'
       - '.github/workflows/vs2'
 
 concurrency:
