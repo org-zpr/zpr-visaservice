@@ -39,6 +39,6 @@ pregen:
 sysinfo:
 	tools/sysinfo
 
-.PHONY: all all-rs all-go test clean build build-go build-rs test-go test-rs release pregen sysinfo
+.PHONY: all clean build test release pregen sysinfo
 
 .DEFAULT_GOAL := build
