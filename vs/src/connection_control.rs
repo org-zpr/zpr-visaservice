@@ -296,20 +296,26 @@ impl ConnectionControl {
         // Use AUTHORITY as one of the identity keys if present.
         let _ = authd_actor.add_identity_key(usize::MAX, key::AUTHORITY);
 
-        if let Some(addr) = authd_actor.get_zpr_addr() {
-            info!(target: CC, "authorized adapter cn {} with ZPR addr {}", adapter_cn, addr);
+        let actor_role = if authd_actor.is_node() {
+            Role::Node
         } else {
-            match asm.net_mgr.get_next_zpr_addr(Role::Adapter).await {
+            Role::Adapter
+        };
+
+        if let Some(addr) = authd_actor.get_zpr_addr() {
+            info!(target: CC, "authorized adapter/{actor_role:?} cn {} with ZPR addr {}", adapter_cn, addr);
+        } else {
+            match asm.net_mgr.get_next_zpr_addr(&actor_role).await {
                 Ok(addr) => {
                     authd_actor.add_attribute(
                         Attribute::builder(key::ZPR_ADDR)
                             .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
                             .value(addr.to_string()),
                     )?;
-                    info!(target: CC, "authorized adapter cn {} assigned ZPR addr {}", adapter_cn, addr);
+                    info!(target: CC, "authorized adapter/{actor_role:?} cn {} assigned ZPR addr {}", adapter_cn, addr);
                 }
                 Err(e) => {
-                    error!(target: CC, "failed to assign ZPR addr to authorized adapter cn {}: {}", adapter_cn, e);
+                    error!(target: CC, "failed to assign ZPR addr to authorized adapter/{actor_role:?} cn {}: {}", adapter_cn, e);
                     return Err(ServiceError::Internal("address assignment failed".into()));
                 }
             }
@@ -373,8 +379,10 @@ impl ConnectionControl {
                             error!(target: CC, "failed to remove disconnected adapter with addr {adapter_addr} from actor db: {}", e);
                         }
                     };
-                    if let Err(s) = asm.net_mgr.release_zpr_addr(adapter_addr).await {
-                        error!(target: CC, "failed to release ZPR addr {adapter_addr} for orphaned adapter: {}", s);
+                    if asm.net_mgr.is_managed_address(&adapter_addr) {
+                        if let Err(s) = asm.net_mgr.release_zpr_addr(adapter_addr).await {
+                            error!(target: CC, "failed to release ZPR addr {adapter_addr} for orphaned adapter: {}", s);
+                        }
                     }
                 }
                 asm.actor_mgr.remove_node(&zpr_addr).await?;
@@ -390,8 +398,9 @@ impl ConnectionControl {
             error!(target: CC, "failed to remove visas for disconnected actor at addr {zpr_addr}: {}", e);
         }
 
-        asm.net_mgr.release_zpr_addr(zpr_addr).await?;
-
+        if asm.net_mgr.is_managed_address(&zpr_addr) {
+            asm.net_mgr.release_zpr_addr(zpr_addr).await?;
+        }
         Ok(())
     }
 }
