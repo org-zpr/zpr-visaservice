@@ -65,7 +65,7 @@ impl NetMgr {
     }
 
     /// Return an unused, random address in our network space.
-    pub async fn get_next_zpr_addr(&self, role: Role) -> Result<IpAddr, ServiceError> {
+    pub async fn get_next_zpr_addr(&self, role: &Role) -> Result<IpAddr, ServiceError> {
         let addr = match role {
             Role::Adapter => {
                 self.adapter_addrs
@@ -92,7 +92,8 @@ impl NetMgr {
         Ok(addr)
     }
 
-    /// Release a previously allocated address.
+    /// Release a previously allocated address, returns an error if the address
+    /// was not allocated by this manager.
     pub async fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), ServiceError> {
         {
             let mut allocator = self.adapter_addrs.lock().unwrap();
@@ -109,6 +110,19 @@ impl NetMgr {
         Err(ServiceError::Internal(format!(
             "attempted to release address {addr} not managed by any allocator"
         )))
+    }
+
+    /// True if the address is within one of our managed networks.
+    /// Note that address may or may not be currently allocated.
+    pub fn is_managed_address(&self, addr: &IpAddr) -> bool {
+        match addr {
+            IpAddr::V4(ip4) => {
+                config::ADAPTER_BASE_V4NET.contains(ip4) || config::NODE_BASE_V4NET.contains(ip4)
+            }
+            IpAddr::V6(ip6) => {
+                config::ADAPTER_BASE_V6NET.contains(ip6) || config::NODE_BASE_V6NET.contains(ip6)
+            }
+        }
     }
 }
 
@@ -253,11 +267,11 @@ mod tests {
         let node_net = config::NODE_BASE_V6NET;
 
         let adapter_addr = mgr
-            .get_next_zpr_addr(Role::Adapter)
+            .get_next_zpr_addr(&Role::Adapter)
             .await
             .expect("failed to allocate adapter v6 addr");
         let node_addr = mgr
-            .get_next_zpr_addr(Role::Node)
+            .get_next_zpr_addr(&Role::Node)
             .await
             .expect("failed to allocate node v6 addr");
 
@@ -288,11 +302,11 @@ mod tests {
         let node_net = config::NODE_BASE_V4NET;
 
         let adapter_addr = mgr
-            .get_next_zpr_addr(Role::Adapter)
+            .get_next_zpr_addr(&Role::Adapter)
             .await
             .expect("failed to allocate adapter v4 addr");
         let node_addr = mgr
-            .get_next_zpr_addr(Role::Node)
+            .get_next_zpr_addr(&Role::Node)
             .await
             .expect("failed to allocate node v4 addr");
 
