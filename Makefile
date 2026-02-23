@@ -12,6 +12,7 @@ check:
 	cargo fmt --check
 	$(MAKE) -C admin-api-types $@
 	$(MAKE) -C vs $@
+	$(MAKE) -C libeval $@
 	$(MAKE) -C vs-admin $@
 	$(MAKE) -C zpt $@
 
