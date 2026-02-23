@@ -1,4 +1,4 @@
-.PHONY: all build test clean check
+.PHONY: all build test check
 
 all: build
 
@@ -10,8 +10,5 @@ test: build
 
 check:
 	cargo fmt --check && cargo rustc --lib -- -D warnings
-
-clean:
-	cargo clean
 
 .DEFAULT_GOAL := all

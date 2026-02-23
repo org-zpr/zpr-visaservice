@@ -1,0 +1,12 @@
+# zpr-visaservice
+[workspace]
+resolver = "3"
+members = ["vs", "libeval", "zpt", "vs-admin", "admin-api-types"]
+
+[workspace.dependencies]
+zpr = { git = "https://github.com/org-zpr/zpr-common.git", tag = "v0.8.0", features = ["vsapi", "policy"]}
+capnp-rpc = "0.25.0"
+capnp = { version = "0.25.0", features = ["sync_reader"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+

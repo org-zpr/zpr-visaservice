@@ -6,14 +6,14 @@ license = "Apache-2.0"
 description = "Packet/Actor evaluator library; a component of the ZPR visa service"
 
 [dependencies]
+capnp.workspace = true
+zpr.workspace = true
+serde.workspace = true
 bytes = "1.10.1"
-capnp = { version = "0.25.0", features = ["sync_reader"] }
 enumset = "1.1.10"
 openssl = "0.10.74"
-serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.16"
 tracing = "0.1.41"
-zpr = { git = "https://github.com/org-zpr/zpr-common.git", tag = "v0.7.2", features = ["vsapi", "policy"]}
 
 [dev-dependencies]
 tracing-subscriber = "0.3.20"

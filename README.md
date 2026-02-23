@@ -39,14 +39,10 @@ This dependency is pulled automatically via git in `Cargo.toml` (see e.g.
 
 ## To build
 
-Run `make` to build all Rust crates, or `make test` to run unit
-tests.
+Run `make` or `cargo build` in this top-level directory.
 
-Individual crates can be built by running `make` in their subdirectory (e.g.
-`make -C vs all`).
-
-Note: there is no root `Cargo.toml` workspace. Do not run `cargo build` from
-the repository root.
+Run `make test` or `cargo test` in this top-level directory to run all
+the unit tests.
 
 
 ## Release build (prototype vs only)
