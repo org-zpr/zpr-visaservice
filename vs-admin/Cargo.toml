@@ -4,22 +4,22 @@ version = "0.7.0"
 edition = "2024"
 
 [dependencies]
-zpr.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+admin-api-types = { path = "../admin-api-types" }
 base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
-colored = "3.0.0"
+clap_complete = { version = "4.5.57", optional = true}
+colored.workspace = true
 crossterm = "0.29.0"
 flate2 = "1.0.34"
 futures-io = "0.3.31"
 ratatui = "0.29.0"
 reqwest = { version = "0.12.8", features = ["json", "blocking"] }
-admin-api-types = { path = "../admin-api-types" }
-clap_complete = { version = "4.5.57", optional = true}
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 url = "2.5.8"
+zpr.workspace = true
 
 [features]
 complete = ["clap_complete"]
