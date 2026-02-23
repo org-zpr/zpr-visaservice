@@ -9,11 +9,11 @@ description = "Packet/Actor evaluator library; a component of the ZPR visa servi
 capnp.workspace = true
 zpr.workspace = true
 serde.workspace = true
-bytes = "1.10.1"
+bytes.workspace = true
 enumset = "1.1.10"
-openssl = "0.10.74"
-thiserror = "2.0.16"
-tracing = "0.1.41"
+openssl.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-tracing-subscriber = "0.3.20"
+tracing-subscriber.workspace = true
