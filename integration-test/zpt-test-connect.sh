@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ZPT_BIN=$(realpath "$(dirname $0)/../zpt/target/debug/zpt")
+ZPT_BIN=$(realpath "$(dirname $0)/../target/debug/zpt")
 INPUT=$(realpath "$(dirname $0)/pregen/zpt-test-connect.zpt")
 
 PROG_CMD=("$ZPT_BIN" -i "$INPUT" --json)

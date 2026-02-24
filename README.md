@@ -23,30 +23,24 @@ ZPR visa service implementation (under active development).
 Most of the visa service code depends on the
 [zpr-common](https://github.com/org-zpr/zpr-common.git) repository, which
 defines data structures used in the NODE-VS API and the policy binary format.
-This dependency is pulled automatically via git in `Cargo.toml` (see e.g.
-`libeval/Cargo.toml`), so no manual setup is required.
+This dependency is pulled automatically via git in `Cargo.toml`, so no manual 
+setup is required.
 
 
 ## Prerequisites
 
-- **Rust** - Edition 2024 (see individual `Cargo.toml` files). Install via
-  [rustup](https://rustup.rs/).
-- **Make** - The build is driven by per-crate Makefiles; there is no root
-  Cargo workspace.
-- **OpenSSL** - Required by `vs` and `libeval` (via the `openssl` crate).
+- **Rust** - Edition 2024. Install via [rustup](https://rustup.rs/).
+- **Make** - The build is driven by a root Cargo workspace.
+- **OpenSSL** - Via the `openssl` crate.
 - **Redis/Valkey** - Required at runtime by `vs`.
 
 
 ## To build
 
-Run `make` to build all Rust crates, or `make test` to run unit
-tests.
+Run `make` or `cargo build` in this top-level directory.
 
-Individual crates can be built by running `make` in their subdirectory (e.g.
-`make -C vs all`).
-
-Note: there is no root `Cargo.toml` workspace. Do not run `cargo build` from
-the repository root.
+Run `make test` or `cargo test` in this top-level directory to run all
+the unit tests.
 
 
 ## Release build (prototype vs only)

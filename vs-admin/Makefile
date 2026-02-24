@@ -1,5 +1,5 @@
 
-.PHONY: all build test clean check completions clean-completions
+.PHONY: all build test check completions clean-completions
 
 all: build
 
@@ -11,9 +11,6 @@ test: build
 
 check:
 	cargo fmt --check && cargo rustc --bins -- -D warnings
-
-clean:
-	cargo clean
 
 # Create the completion scripts for the CLI
 TARGET_DIR = completions
