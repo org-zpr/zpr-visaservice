@@ -79,20 +79,6 @@ impl ActorMgr {
         Ok(())
     }
 
-    /// Add an adatpter called "magic" since it is not connected to any node.
-    /// We (the visa service) uses this to connect itself at startup.
-    ///
-    /// TODO: At some point we need to update our state to reflect that the visa service is docked to a node.
-    pub async fn add_magic_adapter(&self, actor: &Actor) -> Result<(), ServiceError> {
-        if actor.is_node() {
-            return Err(ServiceError::Internal(
-                "attempt to add node actor as adapter".into(),
-            ));
-        }
-        self.actor_db.add_actor(actor).await?;
-        Ok(())
-    }
-
     /// Add an adapter that is connected to a node.
     #[allow(dead_code)]
     pub async fn add_adapter_via_node(
@@ -109,6 +95,19 @@ impl ActorMgr {
         self.node_db
             .add_connected_adater(connected_to_node, &actor.get_zpr_addr().unwrap())
             .await?;
+        Ok(())
+    }
+
+    /// This is probably temporary: we use this to add the phantom visa service adapter.
+    /// We don't know what node it is attached to yet.
+    #[allow(dead_code)]
+    pub async fn add_adapter_no_node(&self, actor: &Actor) -> Result<(), ServiceError> {
+        if actor.is_node() {
+            return Err(ServiceError::Internal(
+                "attempt to add node actor as adapter".into(),
+            ));
+        }
+        self.actor_db.add_actor(actor).await?;
         Ok(())
     }
 
@@ -552,7 +551,7 @@ mod test {
             &["svc:auth", "svc:regular", "svc:unknown"],
             "adapter-auth",
         );
-        mgr.add_magic_adapter(&actor).await.unwrap();
+        mgr.add_adapter_no_node(&actor).await.unwrap();
 
         let auth_service = Service {
             id: "svc:auth".to_string(),
@@ -602,7 +601,7 @@ mod test {
             &["svc:auth"],
             "adapter-regular",
         );
-        mgr.add_magic_adapter(&actor).await.unwrap();
+        mgr.add_adapter_no_node(&actor).await.unwrap();
 
         let regular_service = Service {
             id: "svc:auth".to_string(),
