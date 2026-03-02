@@ -4,10 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use libeval::actor::Actor;
-use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
+use libeval::attribute::{ROLE_ADAPTER, key};
 use libeval::pio;
 
 mod actor_mgr;
@@ -41,12 +40,14 @@ use crate::connection_control::ConnectionControl;
 use crate::db::DbConnection;
 use crate::error::ServiceError;
 use crate::event_mgr::EventMgr;
+use crate::event_mgr::VsEvent;
 use crate::logging::enable_logging;
 use crate::logging::targets::MAIN;
 use crate::net_mgr::NetMgr;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 use crate::vss_mgr::VssMgr;
+use zpr::vsapi_types::Claim;
 
 use redis::AsyncCommands;
 
@@ -118,7 +119,7 @@ async fn main() -> std::process::ExitCode {
     let (vreq_tx, vreq_rx) =
         mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
 
-    let actor_mgr = match create_actor_mgr(db_handle.clone(), &cfg.get_vs_addr()).await {
+    let actor_mgr = match create_actor_mgr(db_handle.clone()).await {
         Ok(adb) => adb,
         Err(e) => {
             error!(target: MAIN, "failed to instantiate actor database: {}", e);
@@ -186,6 +187,12 @@ async fn main() -> std::process::ExitCode {
         config::MAX_VISA_REQUEST_WORKERS,
     ));
 
+    // perform initial self-authorization
+    if let Err(e) = self_authorize(asm.clone(), &cfg.get_vs_addr()).await {
+        error!(target: MAIN, "self-authorization failed: {}", e);
+        return std::process::ExitCode::FAILURE;
+    }
+
     // TODO: Setup/launch the workers for the visa service. Those that will do the actual work
     // of generating visas, and all the housekeeping.
 
@@ -223,27 +230,39 @@ fn load_config(explicit: Option<&std::path::Path>) -> Result<VSConfig, ServiceEr
     }
 }
 
-async fn create_actor_mgr(
-    dbh: Arc<dyn DbConnection>,
-    vs_addr: &IpAddr,
-) -> Result<ActorMgr, ServiceError> {
+async fn create_actor_mgr(dbh: Arc<dyn DbConnection>) -> Result<ActorMgr, ServiceError> {
     let adb = db::ActorRepo::new(dbh.clone());
     let ndb = db::NodeRepo::new(dbh);
     let mgr = ActorMgr::new(adb, ndb);
-    // We are the visa service. As we say so it shall be.
-    // The odd thing here is that we do not know what node we are connected to yet.
-    let vs_actor = {
-        let mut vsa = Actor::new();
-        vsa.add_attribute(Attribute::builder(key::ZPR_ADDR).value(vs_addr.to_string()))?;
-        vsa.add_attribute(Attribute::builder(key::CN).value(config::VS_CN))?;
-        vsa.add_attribute(Attribute::builder(key::ROLE).value(ROLE_ADAPTER))?;
-        vsa.add_attribute(
-            Attribute::builder(key::SERVICES)
-                .values(vec!["/zpr/visaservice", "/zpr/visaservice/admin"]),
-        )?;
-        vsa.add_identity_key(0, key::CN)?;
-        vsa
-    };
-    mgr.add_magic_adapter(&vs_actor).await?;
     Ok(mgr)
+}
+
+// TODO: This belongs somewhere else. Must be run every time we load a new policy.
+//
+// Also this "authorizes" the visa service actor by fiat, but we do not yet know what
+// node the vs adapter is docked to.  We also have no way at the moment to tell the
+// vs what node it is docked to.
+//
+// One idea is to query our local ph (via ph-cli) and get the substrate address of
+// the docking node.  We can use that to find the node record.
+//
+async fn self_authorize(asm: Arc<Assembly>, vs_addr: &IpAddr) -> Result<(), ServiceError> {
+    let mut claims = Vec::new();
+    claims.push(Claim::new(key::ZPR_ADDR.into(), vs_addr.to_string()));
+    claims.push(Claim::new(key::CN.into(), config::VS_CN.into()));
+    claims.push(Claim::new(key::ROLE.into(), ROLE_ADAPTER.into()));
+
+    let actor = asm
+        .cc
+        .authenticate_visa_service(asm.clone(), claims)
+        .await?;
+
+    asm.actor_mgr.add_adapter_no_node(&actor).await?;
+
+    let evt = VsEvent::ActorJoins(vs_addr.clone());
+    if let Err(e) = asm.event_mgr.record_event(evt).await {
+        warn!(target: MAIN, "failed to record actor joins event for adapter {:?}: {}", actor.get_cn(), e);
+    }
+
+    Ok(())
 }

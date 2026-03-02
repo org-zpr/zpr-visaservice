@@ -180,6 +180,32 @@ impl ConnectionControl {
         Ok(adapter_actor)
     }
 
+    pub async fn authenticate_visa_service(
+        &self,
+        asm: Arc<Assembly>,
+        claims: Vec<Claim>,
+    ) -> Result<Actor, ServiceError> {
+        let mut authd_claims = Vec::new();
+
+        authd_claims.push(
+            Attribute::builder(key::AUTHORITY)
+                .value(format!("fake_jwt_token:adapter:{}", config::VS_CN)),
+        );
+
+        for claim in claims {
+            authd_claims.push(Attribute::builder(claim.key).value(claim.value));
+        }
+
+        let policy = asm.policy_mgr.get_current();
+
+        // Ok checks out -- now run through policy.
+        let vs_actor = self
+            .authorize_connection(asm, &policy, &config::VS_CN, Vec::new(), authd_claims, 0)
+            .await?;
+
+        Ok(vs_actor)
+    }
+
     /// Preform authentication of the adapter credentials, then run through policy.
     async fn authenticate_adapter_rsa(
         &self,
