@@ -150,7 +150,7 @@ async fn set_services_all_nodes(
                     "attempting to use VSS to set_services on node {naddr}"
                 );
                 if let Some(vss_h) = asm.vss_mgr.get_handle(&naddr) {
-                    if let Err(e) = vss_h.set_services(1, service_list).await {
+                    if let Err(e) = vss_h.set_services(service_list).await {
                         error!(
                             target: EVENT,
                             "failed to set_services on node {}: {}",

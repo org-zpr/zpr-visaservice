@@ -16,7 +16,6 @@ mod auth;
 mod config;
 mod connection_control;
 mod counters;
-mod cparam;
 mod db;
 mod error;
 mod event_mgr;

@@ -54,6 +54,9 @@ pub enum ServiceError {
 
     #[error("error queue full: {0}")]
     QueueFull(String),
+
+    #[error("vsapi error: {0}")]
+    VsapiType(#[from] VsapiTypeError),
 }
 
 #[derive(Debug, Error)]

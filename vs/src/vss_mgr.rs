@@ -58,7 +58,6 @@ enum VssCmd {
     RevokeVisasById(Vec<u64>, oneshot::Sender<VssPushResponse>),
     RevokeAuthsByZprAddr(Vec<IpAddr>, oneshot::Sender<VssRevokeAuthResponse>),
     SetServices(
-        u64,
         Vec<ServiceDescriptor>,
         oneshot::Sender<VssSetServicesResponse>,
     ), // (version, services-descriptor-list, channel)
@@ -186,13 +185,9 @@ impl VssHandle {
 
     /// Tell the node about authentication services connected to the ZPRnet.
     #[allow(dead_code)]
-    pub async fn set_services(
-        &self,
-        version: u64,
-        services: Vec<ServiceDescriptor>,
-    ) -> Result<(), VssSyncError> {
+    pub async fn set_services(&self, services: Vec<ServiceDescriptor>) -> Result<(), VssSyncError> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        let cmd = VssCmd::SetServices(version, services, resp_tx);
+        let cmd = VssCmd::SetServices(services, resp_tx);
         self.send_command(cmd).await?;
         resp_rx.await.map_err(|_| VssSyncError::ConnClosed)?
     }
@@ -289,10 +284,12 @@ async fn vss_worker_loop(
 
     info!(target: VSS, "connected to VSS at {}", node_addr);
 
+    // TODO: Set the configuration params.
+
     match asm.actor_mgr.get_auth_services_list(asm.clone()).await {
         Ok(services) => {
             debug!(target: VSS, "sending initial auth services list to VSS at {}", node_addr);
-            if let Err(e) = do_set_services(&vss_handle, 1, services).await {
+            if let Err(e) = do_set_services(&vss_handle, services).await {
                 error!(target: VSS, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
                 asm.counters.incr(CounterType::VssErrors);
             } else {
@@ -332,8 +329,8 @@ async fn vss_worker_loop(
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
-                    VssCmd::SetServices(_version, _services, resp_tx) => {
-                        if let Err(e) = resp_tx.send(do_set_services(&vss_handle, _version, _services).await) {
+                    VssCmd::SetServices(_services, resp_tx) => {
+                        if let Err(e) = resp_tx.send(do_set_services(&vss_handle, _services).await) {
                             error!(target: VSS, "failed to send response for set-services command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
@@ -437,17 +434,10 @@ fn tls_connect() -> TlsConnector {
 
 async fn do_set_services(
     vss_handle: &v1::v_s_s_handle::Client,
-    version: u64,
     services: Vec<ServiceDescriptor>,
 ) -> Result<(), VssSyncError> {
-    // The API calls for a "version" to be returned, but that is rather complicated
-    // to manage here. So for now we just send version=1 always and leave it up to the node
-    // to check the list and decide if anything has changed.
-    // TODO: update the VSS API to use a different scheme here.
-
     let mut req = vss_handle.set_services_request();
-    let mut req_builder = req.get();
-    req_builder.set_version(version);
+    let req_builder = req.get();
 
     let mut svc_list_builder = req_builder.init_svcs(services.len() as u32);
     for (i, svc) in services.iter().enumerate() {
