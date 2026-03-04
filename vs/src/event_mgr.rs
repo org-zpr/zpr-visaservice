@@ -68,7 +68,7 @@ async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(
     info!(target: EVENT, "actor joined: {}", actor_addr);
     let has_auth_services = match asm
         .actor_mgr
-        .has_auth_services(asm.clone(), actor_addr)
+        .has_auth_services(asm.clone(), &actor_addr)
         .await
     {
         Ok(v) => v,

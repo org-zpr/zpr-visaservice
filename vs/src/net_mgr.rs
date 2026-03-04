@@ -1,11 +1,11 @@
 //! Manage network type stuff like IP addresses and, maybe later, topology info.
 
-use ipnet::{Ipv4Net, Ipv6Net};
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use libeval::actor::Role;
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 
 use crate::config;
@@ -14,6 +14,13 @@ use crate::error::ServiceError;
 /// Minimum prefix length at which IPv4 `hosts()` includes the network address
 /// (RFC 3021 point-to-point links and /32 host routes).
 const IPV4_POINT_TO_POINT_PREFIX_LEN: u8 = 31;
+
+/// Each node gets a /88 for AAA addresses.
+const NODE_AAA_PREFIX_LEN: u8 = 88;
+
+/// ZPRnet AAA network is a /64.
+pub const AAA_NET: Ipv6Net =
+    Ipv6Net::new_assert(Ipv6Addr::new(0xfd5a, 0x5052, 0, 0x0aaa, 0, 0, 0, 0), 64);
 
 pub struct NetMgr {
     node_addrs: Arc<Mutex<dyn AddrAllocator + Send>>,
@@ -36,6 +43,37 @@ struct Addr4Allocator {
     net: Ipv4Net,
     rng: SmallRng,
     used: HashSet<u32>,
+}
+
+/// Each AAA network is of the form:
+///
+///     fd5a:5052:0000:0aaa : NNNN:NNxx:xxxx:xxxx
+///
+/// Where NNNN:NN are based on a computed "node id".
+/// And xx:xxxx:xxxx is up to the node to hand out.
+///
+/// For the ZPRnet the AAA network is a /64.
+/// For each node the AAA network is a /88.
+///
+pub fn aaa_network_for_node(node_zpr_addr: &IpAddr) -> IpNet {
+    let node_id = match node_zpr_addr {
+        IpAddr::V4(addr) => u32::from_be_bytes(addr.octets()) & 0x00FFFFFF,
+        IpAddr::V6(addr) => {
+            u32::from_be_bytes(addr.octets()[12..16].try_into().unwrap()) & 0x00FFFFFF
+        }
+    };
+
+    let aaa_net_addr = AAA_NET.addr();
+
+    let mut net_bytes = [0u16; 8];
+    net_bytes[..8].copy_from_slice(&aaa_net_addr.segments());
+
+    // Use bottom 24 bits of node ID.
+    net_bytes[4] = (node_id >> 8) as u16;
+    net_bytes[5] = (node_id << 8) as u16;
+
+    let new_net_addr = IpAddr::V6(Ipv6Addr::from(net_bytes));
+    IpNet::new(new_net_addr, NODE_AAA_PREFIX_LEN).unwrap()
 }
 
 impl NetMgr {
@@ -415,5 +453,27 @@ mod tests {
 
         // Should return an error since it is not allocated
         assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
+    }
+
+    #[test]
+    fn aaa_network_for_node_uses_low_24_bits_of_node_id() {
+        let v4_node = IpAddr::from([10, 11, 12, 13]); // low 24 bits => 0x0b0c0d
+        let v6_node = IpAddr::V6(Ipv6Addr::new(
+            0x2001, 0xdb8, 0, 1, 0xaaaa, 0xbbbb, 0xcccc, 0x0c0d,
+        )); // low 24 bits => 0xbbcc0c0d & 0x00ffffff => 0xcc0c0d
+
+        let v4_net = aaa_network_for_node(&v4_node);
+        let v6_net = aaa_network_for_node(&v6_node);
+
+        assert_eq!(v4_net.prefix_len(), NODE_AAA_PREFIX_LEN);
+        assert_eq!(v6_net.prefix_len(), NODE_AAA_PREFIX_LEN);
+        assert_eq!(
+            v4_net,
+            IpNet::from_str("fd5a:5052:0:aaa:0b0c:0d00::/88").expect("parse expected v4 net"),
+        );
+        assert_eq!(
+            v6_net,
+            IpNet::from_str("fd5a:5052:0:aaa:cc0c:0d00::/88").expect("parse expected v6 net"),
+        );
     }
 }

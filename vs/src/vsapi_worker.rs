@@ -1,5 +1,4 @@
 use chrono::prelude::{DateTime, Utc};
-use ipnet::IpNet;
 use openssl::rand::rand_bytes;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -27,6 +26,7 @@ use crate::error::ServiceError;
 use crate::event_mgr::VsEvent;
 use crate::logging::targets::API;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
+use crate::net_mgr;
 
 pub async fn launch_capnp(
     asm: Arc<Assembly>,
@@ -108,7 +108,6 @@ struct VSGateImpl {
     remote: SocketAddr,
     remote_cn: String,
     req_zpr_addr: IpAddr,
-    req_aaa_net: IpNet,
 
     // This is set in `challenge` call and read in the `authenticate` call.
     // Safe to use here since the capn proto rpc is confined to a single thread.
@@ -128,7 +127,6 @@ impl VSGateImpl {
         remote: SocketAddr,
         remote_cn: String,
         req_zpr_addr: IpAddr,
-        req_aaa_net: IpNet,
     ) -> Self {
         VSGateImpl {
             asm,
@@ -136,7 +134,6 @@ impl VSGateImpl {
             remote_cn,
             challenge_data: Cell::new([0u8; 32]),
             req_zpr_addr,
-            req_aaa_net,
         }
     }
 }
@@ -301,11 +298,13 @@ fn ipaddr_from_capnp(addr: vsapi::ip_addr::Reader) -> Result<std::net::IpAddr, c
 }
 
 impl VisaServiceImpl {
-    /// Helper for the connect routine -- returns the two connect params we require: zpr_addr and aaa_prefix,
-    /// or errors out.
-    fn parse_my_connect_params(&self, params: &[Param]) -> Result<(IpAddr, IpNet), ServiceError> {
+    /// Helper for the connect routine -- returns the one connect param we require: zpr_addr.
+    /// Older code used to pass in the AAA_PREFIX here but now we send that over the
+    /// VSS.
+    ///
+    /// During this transition period we will error out if node passes use AAA_PREFIX.
+    fn parse_my_connect_params(&self, params: &[Param]) -> Result<IpAddr, ServiceError> {
         let mut node_zpr_addr = None;
-        let mut node_aaa_network_str = None;
 
         for pp in params {
             match pp.name.as_str() {
@@ -319,36 +318,21 @@ impl VisaServiceImpl {
                     }
                 },
 
-                pname::AAA_PREFIX => match &pp.value {
-                    ParamValue::StrParam(s) => {
-                        node_aaa_network_str = Some(s.clone());
-                    }
-                    _ => {
-                        return Err(ServiceError::Param(format!(
-                            "param {} has invalid type",
-                            pname::AAA_PREFIX
-                        )));
-                    }
-                },
+                pname::AAA_PREFIX => {
+                    return Err(ServiceError::Param(format!(
+                        "param {} must not be sent to VS",
+                        pname::AAA_PREFIX
+                    )));
+                }
 
-                _ => (),
+                name => info!(target: API, "ignored connect param {}", name),
             }
         }
 
         if node_zpr_addr.is_none() {
             return Err(ServiceError::Param("ZPR_ADDR param missing".into()));
         }
-        if node_aaa_network_str.is_none() {
-            return Err(ServiceError::Param("AAA_PREFIX param missing".into()));
-        }
-        let node_aaa_network_str = node_aaa_network_str.unwrap();
-        let node_aaa_net: IpNet = match node_aaa_network_str.parse() {
-            Ok(n) => n,
-            Err(_e) => Err(ServiceError::Param(format!(
-                "invalid AAA prefix value: {node_aaa_network_str}",
-            )))?,
-        };
-        Ok((node_zpr_addr.unwrap(), node_aaa_net))
+        Ok(node_zpr_addr.unwrap())
     }
 }
 
@@ -385,8 +369,8 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
 
         // TODO: In next version of vsapi the AAA_PREFIX is going away and will instead be handed to the
         // node by the visa service.
-        let (node_zpr_addr, node_aaa_network) = match self.parse_my_connect_params(&parsed_params) {
-            Ok((addr, cidr)) => (addr, cidr),
+        let node_zpr_addr = match self.parse_my_connect_params(&parsed_params) {
+            Ok(addr) => addr,
             Err(e) => {
                 let res_builder = results.get().init_resp();
                 let mut err_builder = res_builder.init_error();
@@ -400,7 +384,6 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         };
 
         info!(target: API, "node {} requests zpr addr {}", req_cn, node_zpr_addr);
-        info!(target: API, "node {} requests aaa network {}", req_cn, node_aaa_network);
 
         match req_type {
             vsapi::VSConnT::Reset => {}
@@ -423,7 +406,6 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
             self.remote,
             req_cn,
             node_zpr_addr,
-            node_aaa_network,
         ));
 
         //res_builder.reborrow().set_ok(vs_gate)?;
@@ -577,18 +559,21 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             }
         };
 
+        let node_aaa_net = net_mgr::aaa_network_for_node(&node_zpr_addr);
+
         info!(
             target: API,
-            "successfully authenticated node {:?} from {:?} and assigned ip {:?}",
-            &node_cn, self.remote, &node_zpr_addr
+            "successfully authenticated node {node_cn} from {:?} and assigned ip {node_zpr_addr} and AAA net {node_aaa_net}",
+            self.remote, 
         );
 
         // Ok, we have verified the credentials and checked with policy. Time to
         // update our state and return success.
 
-        // TODO: aaa_prefix is going to be set by visa service.
         node_actor
-            .add_attribute(Attribute::builder(key::AAA_NET).value(self.req_aaa_net.to_string()))
+            .add_attribute(
+                Attribute::builder(key::AAA_NET).value(node_aaa_net.to_string()),
+            )
             .unwrap();
 
         // TODO: The policy may have changed since started the authentication. Once we add the node
@@ -737,7 +722,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                 error!(target: API, "failed to set VSS for node {:?}: {}", self.node.get_cn(), e);
             });
 
-        // As we return we kick off the vss worker for this node which will send list of services.
+        // As we return we kick off the vss worker for this node which will send config and list of services.
         // but will not work until visas are installed... So start it with small delay.
         if let Err(e) =
             self.asm
@@ -751,7 +736,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         Ok(())
     }
 
-    // When an adapter connects to ta node, a node ends up making a call here to authorize
+    // When an adapter connects to a node, a node ends up making a call here to authorize
     // the connection.  If successful the VS returns a ZPR address for the adapter, and an
     // expiration time.
     //

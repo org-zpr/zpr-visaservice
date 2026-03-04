@@ -47,6 +47,10 @@ pub const DEFAULT_VISA_EXPIRATION: Duration = Duration::from_secs(4 * 60 * 60); 
 
 pub const DEFAULT_AUTH_EXPIRATION: Duration = Duration::from_secs(4 * 60 * 60); // 4 hours
 
+/// When an actor is using an AAA address to do an exchange with an auth
+/// service, the credentials it is using last this long.
+pub const DEFAULT_ANON_AUTH_EXPIRATION: Duration = Duration::from_secs(5 * 60); // 5 minutes
+
 /// How long to wait after getting the VSS addr from the node and opening a connection back to it.
 /// This delay allows time for the node to install the visa before we try to use it.
 pub const VSS_START_DELAY: std::time::Duration = std::time::Duration::from_secs(3);

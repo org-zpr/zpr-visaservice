@@ -273,9 +273,9 @@ impl ActorMgr {
     pub async fn has_auth_services(
         &self,
         asm: Arc<Assembly>,
-        actor_zpr_addr: IpAddr,
+        actor_zpr_addr: &IpAddr,
     ) -> Result<bool, ServiceError> {
-        let services = match self.actor_db.list_services_for_actor(&actor_zpr_addr).await {
+        let services = match self.actor_db.list_services_for_actor(actor_zpr_addr).await {
             Ok(svcs) => svcs,
             Err(StoreError::NotFound(_)) => return Ok(false),
             Err(e) => return Err(ServiceError::from(e)),
