@@ -23,12 +23,12 @@ use std::time::{Duration, SystemTime};
 
 use futures::StreamExt;
 use futures::future::FutureExt;
-use libeval::attribute::{ROLE_ADAPTER, Attribute, key};
+use libeval::actor::Actor;
+use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
+use libeval::eval::{EvalContext, EvalDecision};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
-use libeval::actor::Actor;
-use libeval::eval::{EvalContext, EvalDecision};
 use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
 use crate::assembly::Assembly;
@@ -36,7 +36,6 @@ use crate::counters::CounterType;
 use crate::error::ServiceError;
 use crate::logging::targets::VREQ;
 use crate::{config, net_mgr};
-
 
 pub enum VisaDecision {
     Allow(Visa),
@@ -226,33 +225,53 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         }
 
         // The candidate actor must be an installed authentication service.
-        match asm.actor_mgr.has_auth_services(asm.clone(), candidate_addr).await {
+        match asm
+            .actor_mgr
+            .has_auth_services(asm.clone(), candidate_addr)
+            .await
+        {
             Ok(true) => (),
             Ok(false) => {
                 warn!(target: VREQ, "visa denied: actor using AAA addr attempting to contact non-authentication service at {candidate_addr}");
-                return Ok(VisaDecision::Deny(DenyCode::DestNotFound))
+                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
             }
             Err(e) => {
                 debug!(target: VREQ, "visa denied: error checking authentication services for actor at {candidate_addr}: {}", e);
-                return Ok(VisaDecision::Deny(DenyCode::DestNotFound))                
+                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
             }
         };
 
         // Confirmed actor is trying to access a valid authentication service. To proceed, we fabricate
-        // a phantom actor for this request.    
-        let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;                
+        // a phantom actor for this request.
+        let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;
         let mut anon_actor = Actor::new();
-        let _ = anon_actor.add_attribute(Attribute::builder(key::ZPR_ADDR).expires(expiration).value(anon_addr.to_string()));
-        let _ = anon_actor.add_attribute(Attribute::builder(key::AUTHORITY).expires(expiration).value("vs_hack_anon_to_auth"));        
-        let _ = anon_actor.add_attribute(Attribute::builder(key::ROLE).expires(expiration).value(ROLE_ADAPTER));
-        let _ = anon_actor.add_attribute(Attribute::builder(key::CN).expires(expiration).value(format!("hack.{}.zpr", anon_addr)));        
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::ZPR_ADDR)
+                .expires(expiration)
+                .value(anon_addr.to_string()),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::AUTHORITY)
+                .expires(expiration)
+                .value("vs_hack_anon_to_auth"),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::ROLE)
+                .expires(expiration)
+                .value(ROLE_ADAPTER),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::CN)
+                .expires(expiration)
+                .value(format!("hack.{}.zpr", anon_addr)),
+        );
         let _ = anon_actor.add_identity_key(0, key::CN);
-        
+
         if missing_source {
             debug!(target: VREQ, "fabricated phantom actor for anonymous AAA request: {:?} -> {candidate_addr}", anon_actor);
             source_actor = Some(anon_actor);
         } else {
-            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA response: {candidate_addr} -> {:?}", anon_actor);            
+            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA response: {candidate_addr} -> {:?}", anon_actor);
             dest_actor = Some(anon_actor);
         }
     }

@@ -25,8 +25,8 @@ use crate::counters::CounterType;
 use crate::error::ServiceError;
 use crate::event_mgr::VsEvent;
 use crate::logging::targets::API;
-use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 use crate::net_mgr;
+use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 pub async fn launch_capnp(
     asm: Arc<Assembly>,
@@ -564,16 +564,14 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         info!(
             target: API,
             "successfully authenticated node {node_cn} from {:?} and assigned ip {node_zpr_addr} and AAA net {node_aaa_net}",
-            self.remote, 
+            self.remote,
         );
 
         // Ok, we have verified the credentials and checked with policy. Time to
         // update our state and return success.
 
         node_actor
-            .add_attribute(
-                Attribute::builder(key::AAA_NET).value(node_aaa_net.to_string()),
-            )
+            .add_attribute(Attribute::builder(key::AAA_NET).value(node_aaa_net.to_string()))
             .unwrap();
 
         // TODO: The policy may have changed since started the authentication. Once we add the node

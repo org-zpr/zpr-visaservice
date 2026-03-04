@@ -13,15 +13,15 @@ use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
 use zpr::vsapi::v1;
-use zpr::vsapi_types::{ApiResponseError, ServiceDescriptor, Visa, Param, pname};
+use zpr::vsapi_types::{ApiResponseError, Param, ServiceDescriptor, Visa, pname};
 use zpr::write_to::WriteTo;
 
 use crate::assembly::Assembly;
 use crate::config;
-use crate::net_mgr;
 use crate::counters::CounterType;
 use crate::error::VssSyncError;
 use crate::logging::targets::VSS;
+use crate::net_mgr;
 
 pub struct VssMgr {
     // Each node has an entry here, handle is a thread monitoring the nodes VSS.
@@ -358,19 +358,22 @@ async fn vss_worker_loop(
     // Call ping in a loop periodically.  If this fails raise an alarm.
 }
 
-
 /// When the vss worker starts up the node expects a couple of calls immediately.
 /// 1. to the configure endpoint to set the params (only AAA prefix for now).
 /// 2. to the setServices endpoing to tell node about the available auth services.
-async fn do_vss_initialization(asm: &Arc<Assembly>, node_addr: &IpAddr, vss_handle: &v1::v_s_s_handle::Client) {
-    
-    // The AAA net is stored in the actor properties, but it is statically tied to 
+async fn do_vss_initialization(
+    asm: &Arc<Assembly>,
+    node_addr: &IpAddr,
+    vss_handle: &v1::v_s_s_handle::Client,
+) {
+    // The AAA net is stored in the actor properties, but it is statically tied to
     // the node ZPR address so we just recompute it here.
     let aaa_net = net_mgr::aaa_network_for_node(node_addr);
-    let params = vec![
-        Param::new_str(pname::AAA_PREFIX.into(), aaa_net.to_string()),
-    ];
-    debug!(target: VSS, "sending configure to VSS at {node_addr}");    
+    let params = vec![Param::new_str(
+        pname::AAA_PREFIX.into(),
+        aaa_net.to_string(),
+    )];
+    debug!(target: VSS, "sending configure to VSS at {node_addr}");
     match do_configure(vss_handle, params).await {
         Ok(_) => {
             debug!(target: VSS, "{node_addr} configured successfully");
@@ -396,7 +399,6 @@ async fn do_vss_initialization(asm: &Arc<Assembly>, node_addr: &IpAddr, vss_hand
         }
     }
 }
-
 
 #[derive(Debug)]
 struct NoVerification;
@@ -511,7 +513,12 @@ async fn do_configure(
 
     let configure_response_ok_or_err = configure_response_rdr.get()?;
 
-    match configure_response_ok_or_err.get_res().unwrap().which().unwrap() {
+    match configure_response_ok_or_err
+        .get_res()
+        .unwrap()
+        .which()
+        .unwrap()
+    {
         v1::ok_or_error::Which::Ok(_) => Ok(()),
         v1::ok_or_error::Which::Error(err_rdr) => {
             let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
