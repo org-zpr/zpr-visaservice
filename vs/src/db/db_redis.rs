@@ -148,4 +148,10 @@ impl DbConnection for RedisDb {
 
         Ok(results)
     }
+
+    async fn clear_state(&self) -> DbResult<()> {
+        let mut conn = self.mgr.clone();
+        let _: () = conn.flushdb().await?;
+        Ok(())
+    }
 }
