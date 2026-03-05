@@ -824,7 +824,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             error!(target: API, "failed to add authenticated adapter {:?} to actor db: {}", actor.get_cn(), e);
 
             if self.asm.net_mgr.is_managed_address(&actor_addr) {
-                if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr).await {
+                if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr) {
                     warn!(target: API, "failed to release adapter address {}: {}", actor_addr, e);
                 }
             }

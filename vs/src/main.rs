@@ -152,7 +152,7 @@ async fn main() -> std::process::ExitCode {
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(visa_repo),
         vss_mgr: VssMgr::new(),
-        net_mgr: Arc::new(NetMgr::new_v6().await.expect("failed to create NetMgr")),
+        net_mgr: Arc::new(NetMgr::new_v6().expect("failed to create NetMgr")),
         event_mgr: EventMgr::new(event_tx),
     });
 

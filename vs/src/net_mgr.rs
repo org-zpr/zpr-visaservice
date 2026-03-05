@@ -78,7 +78,7 @@ pub fn aaa_network_for_node(node_zpr_addr: &IpAddr) -> IpNet {
 
 impl NetMgr {
     /// Create a NetMgr backed by IPv6 address pools.
-    pub async fn new_v6() -> Result<Self, ServiceError> {
+    pub fn new_v6() -> Result<Self, ServiceError> {
         let adapter_net = config::ADAPTER_BASE_V6NET;
         let node_net = config::NODE_BASE_V6NET;
 
@@ -91,7 +91,7 @@ impl NetMgr {
 
     /// Create a NetMgr backed by IPv4 address pools.
     #[allow(dead_code)]
-    pub async fn new_v4() -> Result<Self, ServiceError> {
+    pub fn new_v4() -> Result<Self, ServiceError> {
         let adapter_net = config::ADAPTER_BASE_V4NET;
         let node_net = config::NODE_BASE_V4NET;
 
@@ -103,7 +103,7 @@ impl NetMgr {
     }
 
     /// Return an unused, random address in our network space.
-    pub async fn get_next_zpr_addr(&self, role: &Role) -> Result<IpAddr, ServiceError> {
+    pub fn get_next_zpr_addr(&self, role: &Role) -> Result<IpAddr, ServiceError> {
         let addr = match role {
             Role::Adapter => {
                 self.adapter_addrs
@@ -132,7 +132,7 @@ impl NetMgr {
 
     /// Release a previously allocated address, returns an error if the address
     /// was not allocated by this manager.
-    pub async fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), ServiceError> {
+    pub fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), ServiceError> {
         {
             let mut allocator = self.adapter_addrs.lock().unwrap();
             if allocator.contains(addr) {
@@ -300,17 +300,15 @@ mod tests {
 
     #[tokio::test]
     async fn v6_allocate_release_adapter_and_node() {
-        let mgr = NetMgr::new_v6().await.expect("failed to build v6 NetMgr");
+        let mgr = NetMgr::new_v6().expect("failed to build v6 NetMgr");
         let adapter_net = config::ADAPTER_BASE_V6NET;
         let node_net = config::NODE_BASE_V6NET;
 
         let adapter_addr = mgr
             .get_next_zpr_addr(&Role::Adapter)
-            .await
             .expect("failed to allocate adapter v6 addr");
         let node_addr = mgr
             .get_next_zpr_addr(&Role::Node)
-            .await
             .expect("failed to allocate node v6 addr");
 
         match adapter_addr {
@@ -323,29 +321,25 @@ mod tests {
         }
 
         mgr.release_zpr_addr(adapter_addr)
-            .await
             .expect("failed to release adapter v6 addr");
         mgr.release_zpr_addr(node_addr)
-            .await
             .expect("failed to release node v6 addr");
 
-        assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
-        assert!(mgr.release_zpr_addr(node_addr).await.is_err());
+        assert!(mgr.release_zpr_addr(adapter_addr).is_err());
+        assert!(mgr.release_zpr_addr(node_addr).is_err());
     }
 
     #[tokio::test]
     async fn v4_allocate_release_adapter_and_node() {
-        let mgr = NetMgr::new_v4().await.expect("failed to build v4 NetMgr");
+        let mgr = NetMgr::new_v4().expect("failed to build v4 NetMgr");
         let adapter_net = config::ADAPTER_BASE_V4NET;
         let node_net = config::NODE_BASE_V4NET;
 
         let adapter_addr = mgr
             .get_next_zpr_addr(&Role::Adapter)
-            .await
             .expect("failed to allocate adapter v4 addr");
         let node_addr = mgr
             .get_next_zpr_addr(&Role::Node)
-            .await
             .expect("failed to allocate node v4 addr");
 
         match adapter_addr {
@@ -358,14 +352,12 @@ mod tests {
         }
 
         mgr.release_zpr_addr(adapter_addr)
-            .await
             .expect("failed to release adapter v4 addr");
         mgr.release_zpr_addr(node_addr)
-            .await
             .expect("failed to release node v4 addr");
 
-        assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
-        assert!(mgr.release_zpr_addr(node_addr).await.is_err());
+        assert!(mgr.release_zpr_addr(adapter_addr).is_err());
+        assert!(mgr.release_zpr_addr(node_addr).is_err());
     }
 
     #[test]
@@ -437,9 +429,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn v6_allocate_release_unallocated() {
-        let mgr = NetMgr::new_v6().await.expect("failed to build v6 NetMgr");
+    #[test]
+    fn v6_allocate_release_unallocated() {
+        let mgr = NetMgr::new_v6().expect("failed to build v6 NetMgr");
         let adapter_net = config::ADAPTER_BASE_V6NET;
 
         let adapter_addr: IpAddr = "fd5a:5052:adda:1:7c51:12d4:f89e:8d90"
@@ -452,7 +444,7 @@ mod tests {
         }
 
         // Should return an error since it is not allocated
-        assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
+        assert!(mgr.release_zpr_addr(adapter_addr).is_err());
     }
 
     #[test]

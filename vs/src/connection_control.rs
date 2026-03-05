@@ -331,7 +331,7 @@ impl ConnectionControl {
         if let Some(addr) = authd_actor.get_zpr_addr() {
             info!(target: CC, "authorized adapter/{actor_role:?} cn {} with ZPR addr {}", adapter_cn, addr);
         } else {
-            match asm.net_mgr.get_next_zpr_addr(&actor_role).await {
+            match asm.net_mgr.get_next_zpr_addr(&actor_role) {
                 Ok(addr) => {
                     authd_actor.add_attribute(
                         Attribute::builder(key::ZPR_ADDR)
@@ -406,7 +406,7 @@ impl ConnectionControl {
                         }
                     };
                     if asm.net_mgr.is_managed_address(&adapter_addr) {
-                        if let Err(s) = asm.net_mgr.release_zpr_addr(adapter_addr).await {
+                        if let Err(s) = asm.net_mgr.release_zpr_addr(adapter_addr) {
                             error!(target: CC, "failed to release ZPR addr {adapter_addr} for orphaned adapter: {}", s);
                         }
                     }
@@ -425,7 +425,7 @@ impl ConnectionControl {
         }
 
         if asm.net_mgr.is_managed_address(&zpr_addr) {
-            asm.net_mgr.release_zpr_addr(zpr_addr).await?;
+            asm.net_mgr.release_zpr_addr(zpr_addr)?;
         }
         Ok(())
     }
