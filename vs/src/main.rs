@@ -66,6 +66,10 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
+    /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS.
+    #[arg(long)]
+    clear_state: bool,
+
     /// Path to the configuration file. If "vs.toml" is present in the current directory, it will be used by default.
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
@@ -122,6 +126,14 @@ async fn main() -> std::process::ExitCode {
     info!(target: MAIN, "connected to ValKey at {vk_uri}, ping response: {}", res);
 
     let db_handle = Arc::new(db::RedisDb::new(vk_conn));
+
+    if cli.clear_state {
+        if let Err(e) = db_handle.clear_state().await {
+            error!(target: MAIN, "failed to clear state in the database: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+        info!(target: MAIN, "database state cleared successfully");
+    }
 
     let mut js = JoinSet::new();
 

@@ -31,8 +31,6 @@ pub type DbResult<T> = redis::RedisResult<T>;
 pub trait DbConnection: Send + Sync {
     async fn exists(&self, key: &str) -> DbResult<bool>;
     async fn set(&self, key: &str, value: &str) -> DbResult<()>;
-
-    #[allow(dead_code)]
     async fn get(&self, key: &str) -> DbResult<Option<String>>;
 
     async fn set_bin(&self, key: &str, value: &[u8]) -> DbResult<()>;
@@ -52,6 +50,9 @@ pub trait DbConnection: Send + Sync {
     async fn atomic_pipeline(&self, ops: &[DbOp]) -> DbResult<()>;
 
     async fn scan_match_all(&self, pattern: String) -> DbResult<Vec<String>>;
+
+    /// Remove all data from the database.
+    async fn clear_state(&self) -> DbResult<()>;
 }
 
 pub enum DbOp {
