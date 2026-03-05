@@ -6,5 +6,5 @@ edition = "2024"
 [dependencies]
 chrono.workspace = true
 colored.workspace = true
-reqwest = "0.13.1"
+reqwest.workspace = true
 serde.workspace = true
