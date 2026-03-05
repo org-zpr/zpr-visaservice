@@ -45,7 +45,7 @@ impl EventMgr {
 }
 
 pub async fn launch(asm: Arc<Assembly>, mut event_rx: mpsc::Receiver<VsEvent>) {
-    info!(target: EVENT, "event manager worker started");
+    debug!(target: EVENT, "event manager worker started");
     while let Some(event) = event_rx.recv().await {
         match event {
             VsEvent::ActorJoins(actor) => {

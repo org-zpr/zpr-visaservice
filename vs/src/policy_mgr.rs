@@ -14,7 +14,7 @@
 use arc_swap::ArcSwap;
 use libeval::policy::Policy;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::db;
 use crate::error::StoreError;
@@ -41,6 +41,20 @@ impl PolicyMgr {
 
         let _db_updated = repo.set_current_policy(&policy, false).await?;
 
+        debug!(target: MAIN, "policy manager initialized successfully");
+        Ok(PolicyMgr {
+            inner: ArcSwap::from_pointee(policy),
+            repo,
+        })
+    }
+
+    /// Create a new policy manager, initializing it with the current policy in the database. If there is no
+    /// policy in the database, this will return an error.
+    pub async fn new_from_state(repo: db::PolicyRepo) -> Result<Self, StoreError> {
+        debug!(target: MAIN, "initializing policy manager from state");
+        let policy = repo.get_current_policy().await?;
+        info!(target: MAIN, "loaded policy from state version:{}, created:{}", policy.get_version().unwrap_or(0), 
+            policy.get_created().unwrap_or("unknown").to_string());
         debug!(target: MAIN, "policy manager initialized successfully");
         Ok(PolicyMgr {
             inner: ArcSwap::from_pointee(policy),
