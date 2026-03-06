@@ -427,6 +427,12 @@ impl DbConnection for FakeDb {
         }
         Ok(results)
     }
+
+    async fn clear_state(&self) -> DbResult<()> {
+        let _wlock = self.lock.write().await;
+        self.store.clear();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -539,6 +545,22 @@ mod test {
         let mut results = db.scan_match_all("svc:*".to_string()).await.unwrap();
         results.sort();
         assert_eq!(results, vec!["svc:one".to_string(), "svc:two".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_fake_db_clear_state() {
+        let db = FakeDb::new();
+        db.set("key1", "value1").await.unwrap();
+        db.sadd("set:key", "a").await.unwrap();
+        db.hset("hash:key", "field", "value").await.unwrap();
+
+        db.clear_state().await.unwrap();
+
+        assert!(!db.exists("key1").await.unwrap());
+        assert!(!db.exists("set:key").await.unwrap());
+        assert!(!db.exists("hash:key").await.unwrap());
+        let keys = db.scan_match_all("*".to_string()).await.unwrap();
+        assert!(keys.is_empty());
     }
 
     #[tokio::test]
