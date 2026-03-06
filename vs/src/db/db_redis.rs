@@ -22,8 +22,10 @@ impl RedisDb {
 #[async_trait::async_trait]
 impl DbConnection for RedisDb {
     async fn shutdown_cleanup(&self) -> DbResult<()> {
-        for lock in self.locks.iter() {
-            let _ = self.release_lock(&lock).await;
+        // Get a copy of the locks so we don't hold a DashSet lock...
+        let locks: Vec<LockDescriptor> = self.locks.iter().map(|r| r.clone()).collect();
+        for lock in &locks {
+            let _ = self.release_lock(lock).await;
         }
         self.locks.clear();
         Ok(())
