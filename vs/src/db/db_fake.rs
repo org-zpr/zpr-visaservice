@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tokio::time::Instant;
 
-use crate::db::{DbConnection, DbOp, DbResult, ServiceLock};
+use crate::db::{DbConnection, DbOp, DbResult, LockDescriptor};
 
 #[allow(dead_code)]
 pub struct FakeDb {
@@ -117,6 +117,10 @@ impl FakeDb {
 
 #[async_trait::async_trait]
 impl DbConnection for FakeDb {
+    async fn shutdown_cleanup(&self) -> DbResult<()> {
+        Ok(())
+    }
+
     /// True if the key exists (and not expired).  As a side effect this removes the
     /// key if it is expired before returning false.
     async fn exists(&self, key: &str) -> DbResult<bool> {
@@ -434,13 +438,62 @@ impl DbConnection for FakeDb {
         Ok(())
     }
 
-    async fn acquire_vs_lock(
-        &self,
-        instance_id: &str,
-        timeout_secs: u64,
-    ) -> DbResult<Box<dyn ServiceLock>> {
-        let lock = FakeDbServiceLock::new(instance_id.to_string(), timeout_secs);
-        Ok(Box::new(lock))
+    async fn acquire_or_renew_lock(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        let _rlock = self.lock.read().await;
+        if let Some(mut entry) = self.store.get_mut(&desc.key) {
+            if entry.exp < Instant::now() {
+                // Lock expired, so we  can take it.
+                entry.exp = Instant::now() + desc.timeout;
+                entry.value = FakeDbValue::Str(desc.ident.clone());
+                return Ok(true);
+            } else {
+                // Not expired. Is it ours?
+                match &entry.value {
+                    FakeDbValue::Str(s) => {
+                        if s == &desc.ident {
+                            // It's our lock, we can renew it.
+                            entry.exp = Instant::now() + desc.timeout;
+                            return Ok(true);
+                        } else {
+                            // Not our lock and not expired, can't take it.
+                            return Ok(false);
+                        }
+                    }
+                    _ => panic!("found a lock value that is not a string"),
+                }
+            }
+        } else {
+            // Not in the store, add it.
+            self.store.insert(
+                desc.key.clone(),
+                Entry::new_ex(FakeDbValue::Str(desc.ident.clone()), desc.timeout.as_secs()),
+            );
+            return Ok(true);
+        }
+    }
+
+    async fn release_lock(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        let _rlock = self.lock.read().await;
+        if let Some(entry) = self.store.get(&desc.key) {
+            if entry.exp >= Instant::now() {
+                // Not expired. Is it ours?
+                match &entry.value {
+                    FakeDbValue::Str(s) => {
+                        if s != &desc.ident {
+                            // Not our lock.
+                            return Ok(false);
+                        }
+                    }
+                    _ => panic!("found a lock value that is not a string"),
+                }
+            }
+        } else {
+            // not there
+            return Ok(true);
+        }
+        // Either expired or ours, we can delete it.
+        self.store.remove(&desc.key);
+        Ok(true)
     }
 }
 

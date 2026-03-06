@@ -1,21 +1,34 @@
+use dashmap::DashSet;
 use redis::AsyncCommands;
+use redis::Script;
 use std::collections::{HashMap, HashSet};
 
-use crate::db::{DbConnection, DbOp, DbResult, ServiceLock};
+use crate::db::{DbConnection, DbOp, DbResult, LockDescriptor};
 
-#[derive(Clone)]
 pub struct RedisDb {
     mgr: redis::aio::ConnectionManager,
+    locks: DashSet<LockDescriptor>,
 }
 
 impl RedisDb {
     pub fn new(mgr: redis::aio::ConnectionManager) -> Self {
-        RedisDb { mgr }
+        RedisDb {
+            mgr,
+            locks: DashSet::new(),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl DbConnection for RedisDb {
+    async fn shutdown_cleanup(&self) -> DbResult<()> {
+        for lock in self.locks.iter() {
+            let _ = self.release_lock(&lock).await;
+        }
+        self.locks.clear();
+        Ok(())
+    }
+
     async fn exists(&self, key: &str) -> DbResult<bool> {
         let mut conn = self.mgr.clone();
         let foo: bool = conn.exists(key).await?;
@@ -155,12 +168,59 @@ impl DbConnection for RedisDb {
         Ok(())
     }
 
-    async fn acquire_vs_lock(
-        &self,
-        instance_id: &str,
-        timeout_secs: u64,
-    ) -> DbResult<Box<dyn ServiceLock>> {
-        let lock = RedisServiceLock::new(instance_id.to_string(), timeout_secs);
-        Ok(Box::new(lock))
+    async fn acquire_or_renew_lock(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        let mut conn = self.mgr.clone();
+        let script = Script::new(
+            r"
+                local current = redis.call('GET', KEYS[1])
+                if current == false then
+                    -- Key doesn't exist, acquire it
+                    redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+                    return 1
+                elseif current == ARGV[1] then
+                    -- We hold the lock, reset the TTL
+                    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+                    return 1
+                else
+                    -- Someone else holds it
+                    return 0
+                end
+            ",
+        );
+
+        let res: i64 = script
+            .key(&desc.key)
+            .arg(&desc.ident)
+            .arg(desc.timeout.as_millis() as u64)
+            .invoke_async(&mut conn)
+            .await?;
+
+        if res == 1 {
+            self.locks.insert(desc.clone());
+        }
+        Ok(res == 1)
+    }
+
+    async fn release_lock(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        let mut conn = self.mgr.clone();
+        let script = Script::new(
+            r"
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                return redis.call('DEL', KEYS[1])
+            else
+                return 0
+            end
+        ",
+        );
+        let res: i64 = script
+            .key(&desc.key)
+            .arg(&desc.ident)
+            .invoke_async(&mut conn)
+            .await?;
+
+        if res == 1 {
+            self.locks.remove(desc);
+        }
+        Ok(res == 1)
     }
 }

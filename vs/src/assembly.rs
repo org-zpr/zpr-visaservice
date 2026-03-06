@@ -1,6 +1,6 @@
 use std::sync::Arc;
-
 use tokio::sync::mpsc;
+use tracing::error;
 
 use crate::actor_mgr::ActorMgr;
 use crate::config::VSConfig;
@@ -36,7 +36,11 @@ impl Assembly {
     }
 
     /// Graceful shutdown routine.  Not guaranteed to be called
-    pub async fn shutdown(self: &Arc<Self>) {}
+    pub async fn shutdown(self: &Arc<Self>) {
+        if let Err(e) = self.state_db.shutdown_cleanup().await {
+            error!("Error during DB shutdown cleanup: {e}");
+        }
+    }
 }
 
 // Note this is "pub" so other tests can use it.

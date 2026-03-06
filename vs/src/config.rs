@@ -37,10 +37,10 @@ pub const ADMIN_HTTPS_PORT: u16 = 8182;
 pub const VALKEY_URI: &str = "redis://127.0.0.1:6379";
 
 /// Every THIS often we re-acquire the DB lock.
-pub const VALKEY_LOCK_REFRESH_SECS: u64 = 60;
+pub const VALKEY_LOCK_REFRESH_SECS: Duration = Duration::from_secs(60);
 
 /// We set the DB lock to expire after THIS long.
-pub const VALKEY_LOCK_TIMEOUT_SECS: u64 = 90;
+pub const VALKEY_LOCK_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Default VS ZPR address - must be in sync with compiler.
 pub const VS_ZPR_ADDR: Ipv6Addr = Ipv6Addr::new(

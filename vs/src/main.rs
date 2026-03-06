@@ -38,7 +38,7 @@ use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
-use crate::db::DbConnection;
+use crate::db::{DbConnection, LockDescriptor, LockType};
 use crate::error::ServiceError;
 use crate::event_mgr::EventMgr;
 use crate::event_mgr::VsEvent;
@@ -160,11 +160,21 @@ async fn main() -> std::process::ExitCode {
 
     let db_handle = Arc::new(db::RedisDb::new(vk_conn));
 
-    let dblock = match db_handle
-        .acquire_vs_lock(&identity, config::VALKEY_LOCK_TIMEOUT_SECS)
-        .await
-    {
-        Ok(lock) => lock,
+    let vslock_desc = LockDescriptor::new(
+        LockType::VsInstance,
+        identity.clone(),
+        config::VALKEY_LOCK_TIMEOUT,
+    );
+
+    match db_handle.acquire_or_renew_lock(&vslock_desc).await {
+        Ok(acquired) => {
+            if acquired {
+                info!(target: MAIN, "acquired visa service lock in the database, starting up");
+            } else {
+                error!(target: MAIN, "visa service lock is currently held by another instance, exiting");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
         Err(e) => {
             error!(target: MAIN, "failed to acquire visa service lock on the database: {}", e);
             return std::process::ExitCode::FAILURE;
