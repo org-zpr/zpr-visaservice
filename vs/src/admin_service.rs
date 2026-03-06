@@ -68,7 +68,7 @@ pub async fn start_admin_server(
     listen: SocketAddr,
     asm: &Arc<Assembly>,
 ) {
-    info!(target: ADMIN, "admin service starting");
+    debug!(target: ADMIN, "admin service starting");
     let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
     serve(
         rustls_tls_acceptor(key_file, cert_file),

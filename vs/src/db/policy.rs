@@ -87,6 +87,22 @@ impl PolicyRepo {
 
         Ok(updated)
     }
+
+    /// Load the current policy stored in the database. This will return an error if there is no current policy set, or if the
+    /// current policy blob cannot be deserialized into a Policy struct.
+    pub async fn get_current_policy(&self) -> Result<Policy, StoreError> {
+        let maybe_curhash: Option<String> = self.db.hget("policy:current", "phash").await?;
+        let curhash =
+            maybe_curhash.ok_or_else(|| StoreError::NotFound("no current policy set".into()))?;
+        let blob_key = format!("{KEY_POLICIES}:{curhash}:blob");
+        let pbytes = self.db.get_bin(&blob_key).await?;
+        match Policy::new_from_policy_bytes(pbytes.into()) {
+            Ok(p) => Ok(p),
+            Err(e) => Err(StoreError::InvalidData(format!(
+                "failed to de-serialize policy: {e}"
+            ))),
+        }
+    }
 }
 
 fn hash_for_policy(policy: &Policy) -> Result<String, StoreError> {
