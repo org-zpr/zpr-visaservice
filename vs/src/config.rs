@@ -42,6 +42,9 @@ pub const VALKEY_LOCK_REFRESH_SECS: Duration = Duration::from_secs(60);
 /// We set the DB lock to expire after THIS long.
 pub const VALKEY_LOCK_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// On renewal failure, retry at this faster cadence.
+pub const VALKEY_LOCK_RETRY_SECS: Duration = Duration::from_secs(5);
+
 /// Default VS ZPR address - must be in sync with compiler.
 pub const VS_ZPR_ADDR: Ipv6Addr = Ipv6Addr::new(
     0xfd5a, 0x5052, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001, // fd5a:5052::1
