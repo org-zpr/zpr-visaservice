@@ -19,6 +19,7 @@ mod connection_control;
 mod counters;
 mod cparam;
 mod db;
+mod db_worker;
 mod error;
 mod event_mgr;
 mod logging;
@@ -67,7 +68,7 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS.
+    /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS INCLUDING LOCK.    
     #[arg(long)]
     clear_state: bool,
 
@@ -166,6 +167,14 @@ async fn main() -> std::process::ExitCode {
         config::VALKEY_LOCK_TIMEOUT,
     );
 
+    if cli.clear_state {
+        if let Err(e) = db_handle.clear_state().await {
+            error!(target: MAIN, "failed to clear state in the database: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+        info!(target: MAIN, "database state cleared successfully");
+    }
+
     match db_handle.acquire_or_renew_lock(&vslock_desc).await {
         Ok(acquired) => {
             if acquired {
@@ -180,14 +189,6 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-
-    if cli.clear_state {
-        if let Err(e) = db_handle.clear_state().await {
-            error!(target: MAIN, "failed to clear state in the database: {}", e);
-            return std::process::ExitCode::FAILURE;
-        }
-        info!(target: MAIN, "database state cleared successfully");
-    }
 
     let mut js = JoinSet::new();
 
@@ -236,6 +237,7 @@ async fn main() -> std::process::ExitCode {
     });
 
     js.spawn_local(signal_worker::launch(asm.clone()));
+    js.spawn_local(db_worker::launch(asm.clone(), vslock_desc));
     js.spawn_local(event_mgr::launch(asm.clone(), event_rx));
 
     js.spawn_local(vsapi_worker::launch(
