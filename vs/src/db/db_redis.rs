@@ -1,7 +1,7 @@
 use redis::AsyncCommands;
 use std::collections::{HashMap, HashSet};
 
-use crate::db::{DbConnection, DbOp, DbResult};
+use crate::db::{DbConnection, DbOp, DbResult, ServiceLock};
 
 #[derive(Clone)]
 pub struct RedisDb {
@@ -153,5 +153,14 @@ impl DbConnection for RedisDb {
         let mut conn = self.mgr.clone();
         let _: () = conn.flushdb().await?;
         Ok(())
+    }
+
+    async fn acquire_vs_lock(
+        &self,
+        instance_id: &str,
+        timeout_secs: u64,
+    ) -> DbResult<Box<dyn ServiceLock>> {
+        let lock = RedisServiceLock::new(instance_id.to_string(), timeout_secs);
+        Ok(Box::new(lock))
     }
 }

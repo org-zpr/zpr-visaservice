@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tokio::time::Instant;
 
-use crate::db::{DbConnection, DbOp, DbResult};
+use crate::db::{DbConnection, DbOp, DbResult, ServiceLock};
 
 #[allow(dead_code)]
 pub struct FakeDb {
@@ -432,6 +432,15 @@ impl DbConnection for FakeDb {
         let _wlock = self.lock.write().await;
         self.store.clear();
         Ok(())
+    }
+
+    async fn acquire_vs_lock(
+        &self,
+        instance_id: &str,
+        timeout_secs: u64,
+    ) -> DbResult<Box<dyn ServiceLock>> {
+        let lock = FakeDbServiceLock::new(instance_id.to_string(), timeout_secs);
+        Ok(Box::new(lock))
     }
 }
 

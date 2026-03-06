@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,14 +71,37 @@ struct Cli {
     #[arg(long)]
     clear_state: bool,
 
+    /// Force a regeneration of  the visa service identity UUID.
+    #[arg(long)]
+    regen_identity: bool,
+
     /// Path to the configuration file. If "vs.toml" is present in the current directory, it will be used by default.
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
+
+    /// Emit a default configuration file and exit.
+    #[arg(long)]
+    gen_config: bool,
 }
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+
+    if cli.gen_config {
+        let default_cfg = VSConfig::default();
+        match toml::to_string_pretty(&default_cfg) {
+            Ok(toml_str) => {
+                println!("{}", toml_str);
+                return std::process::ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                error!(target: MAIN, "failed to generate default configuration: {}", e);
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    }
+
     enable_logging(cli.verbose);
     info!(target: MAIN, "vs version {}", env!("CARGO_PKG_VERSION"));
     let cfg = match load_config(cli.config.as_deref()) {
@@ -87,6 +111,15 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+
+    let identity = match initialize_identity(&cfg.core.identity, &cli.regen_identity) {
+        Ok(id) => id,
+        Err(e) => {
+            error!(target: MAIN, "failed to initialize identity: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    info!("visa service identity: {}", identity);
 
     // If a policy path was provided, attempt to load it here. If not provided, we set this None
     // and then later the policy_mgr will attempt to load the current policy from the database.
@@ -126,6 +159,17 @@ async fn main() -> std::process::ExitCode {
     info!(target: MAIN, "connected to ValKey at {vk_uri}, ping response: {}", res);
 
     let db_handle = Arc::new(db::RedisDb::new(vk_conn));
+
+    let dblock = match db_handle
+        .acquire_vs_lock(&identity, config::VALKEY_LOCK_TIMEOUT_SECS)
+        .await
+    {
+        Ok(lock) => lock,
+        Err(e) => {
+            error!(target: MAIN, "failed to acquire visa service lock on the database: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     if cli.clear_state {
         if let Err(e) = db_handle.clear_state().await {
@@ -289,4 +333,36 @@ async fn self_authorize(asm: Arc<Assembly>, vs_addr: &IpAddr) -> Result<(), Serv
     }
 
     Ok(())
+}
+
+fn initialize_identity(
+    config_identity: &Option<String>,
+    regen_identity: &bool,
+) -> Result<String, ServiceError> {
+    // If user has supplied a non-empty identity string, use it and ignore any stored
+    // identity file.
+    if let Some(id) = config_identity {
+        if !id.trim().is_empty() {
+            return Ok(id.clone());
+        }
+    }
+
+    // If we have an identity stored locally, use that -- unless user wants a regen.
+    let mut id_path = config::get_data_home();
+    id_path.push("vs_identity.txt");
+    if id_path.exists() && !regen_identity {
+        let contents = fs::read_to_string(&id_path)?;
+        let id_str = contents.trim();
+        if !id_str.is_empty() {
+            debug!(target: MAIN, "loaded existing identity from {}", id_path.display());
+            return Ok(id_str.to_string());
+        }
+    }
+
+    // Else create a new identity, store it, and return it.
+    let new_identity = uuid::Uuid::new_v4().to_string();
+    fs::create_dir_all(config::get_data_home())?;
+    fs::write(&id_path, &new_identity)?;
+    debug!(target: MAIN, "created new identity file at {}", id_path.display());
+    Ok(new_identity)
 }

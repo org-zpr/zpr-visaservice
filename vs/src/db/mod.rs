@@ -53,6 +53,24 @@ pub trait DbConnection: Send + Sync {
 
     /// Remove all data from the database.
     async fn clear_state(&self) -> DbResult<()>;
+
+    /// Acquire a lock on the database that will be automatically released after `timeout_secs` seconds.  
+    /// This is used to ensure that only one instance of the visa service is active at a time.  
+    /// Caller should call this periodically to refresh the lock before it expires.
+    ///
+    /// This fails if the lock is currently held by another instance, or if there is an error
+    /// communicating with the database.
+    async fn acquire_vs_lock(
+        &self,
+        instance_id: &str,
+        timeout_secs: u64,
+    ) -> DbResult<Box<dyn ServiceLock>>;
+}
+
+#[async_trait::async_trait]
+pub trait ServiceLock: Send + Sync {
+    async fn acquire_or_renew(&self, db_handle: &dyn DbConnection) -> DbResult<bool>;
+    async fn release(&self, db_handle: &dyn DbConnection) -> DbResult<bool>;
 }
 
 pub enum DbOp {
