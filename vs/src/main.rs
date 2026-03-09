@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use libeval::attribute::{ROLE_ADAPTER, key};
 use libeval::pio;
@@ -57,12 +57,17 @@ const DEFAULT_CONFIG_PATH: &str = "vs.toml";
 #[command(name = "vs")]
 #[command(version, verbatim_doc_comment)]
 struct Cli {
-    /// Initial policy file (.bin2 format)
-    policy: PathBuf,
+    /// Initial policy file (.bin2 format). If not specified we will load the current policy set in the database.  
+    /// If there is no policy in the database the visa service will fail to start.
+    policy: Option<PathBuf>,
 
     /// Enable verbose debug output
     #[arg(short, long)]
     verbose: bool,
+
+    /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS.
+    #[arg(long)]
+    clear_state: bool,
 
     /// Path to the configuration file. If "vs.toml" is present in the current directory, it will be used by default.
     #[arg(short, long, value_name = "FILE")]
@@ -82,18 +87,26 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    let initial_policy = match pio::load_policy(
-        &cli.policy,
-        pio::Version(
-            config::POLICY_MIN_COMPILER_MAJOR,
-            config::POLICY_MIN_COMPILER_MINOR,
-            config::POLICY_MIN_COMPILER_PATCH,
-        ),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            error!(target: MAIN, "failed to load initial policy from {}: {}", cli.policy.display(), e);
-            return std::process::ExitCode::FAILURE;
+    // If a policy path was provided, attempt to load it here. If not provided, we set this None
+    // and then later the policy_mgr will attempt to load the current policy from the database.
+    let initial_policy = {
+        if let Some(ref policy_path) = cli.policy {
+            match pio::load_policy(
+                policy_path,
+                pio::Version(
+                    config::POLICY_MIN_COMPILER_MAJOR,
+                    config::POLICY_MIN_COMPILER_MINOR,
+                    config::POLICY_MIN_COMPILER_PATCH,
+                ),
+            ) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    error!(target: MAIN, "failed to load initial policy from {}: {}", policy_path.display(), e);
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+        } else {
+            None
         }
     };
 
@@ -102,7 +115,7 @@ async fn main() -> std::process::ExitCode {
 
     let vk_uri = cfg.core.vk_uri.as_deref().unwrap_or(config::VALKEY_URI);
     let vk_client = redis::Client::open(vk_uri).expect("failed to create ValKey redis client");
-    info!(target: MAIN, "connecting to ValKey at {}...", vk_uri);
+    debug!(target: MAIN, "connecting to ValKey at {}...", vk_uri);
 
     let mut vk_conn = redis::aio::ConnectionManager::new(vk_client)
         .await
@@ -112,6 +125,14 @@ async fn main() -> std::process::ExitCode {
     info!(target: MAIN, "connected to ValKey at {vk_uri}, ping response: {}", res);
 
     let db_handle = Arc::new(db::RedisDb::new(vk_conn));
+
+    if cli.clear_state {
+        if let Err(e) = db_handle.clear_state().await {
+            error!(target: MAIN, "failed to clear state in the database: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+        info!(target: MAIN, "database state cleared successfully");
+    }
 
     let mut js = JoinSet::new();
 
@@ -126,9 +147,12 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    let policy_mgr_res =
-        PolicyMgr::new_with_initial_policy(initial_policy, db::PolicyRepo::new(db_handle.clone()))
-            .await;
+    let policy_mgr_res = match initial_policy {
+        Some(p) => {
+            PolicyMgr::new_with_initial_policy(p, db::PolicyRepo::new(db_handle.clone())).await
+        }
+        None => PolicyMgr::new_from_state(db::PolicyRepo::new(db_handle.clone())).await,
+    };
     let policy_mgr = match policy_mgr_res {
         Ok(pm) => pm,
         Err(e) => {
