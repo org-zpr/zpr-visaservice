@@ -207,11 +207,14 @@ impl DbConnection for RedisDb {
         let mut conn = self.mgr.clone();
         let script = Script::new(
             r"
-            if redis.call('GET', KEYS[1]) == ARGV[1] then
-                return redis.call('DEL', KEYS[1])
-            else
-                return 0
-            end
+                local current = redis.call('GET', KEYS[1])
+                if current == false then
+                    return 2
+                elseif current == ARGV[1] then
+                    return redis.call('DEL', KEYS[1])
+                else
+                    return 0
+                end
         ",
         );
         let res: i64 = script
@@ -223,6 +226,7 @@ impl DbConnection for RedisDb {
         if res == 1 {
             self.locks.remove(desc);
         }
-        Ok(res == 1)
+        // Note: LUA script returns '2' when lock doesn't exist to begin with.
+        Ok(res >= 1)
     }
 }

@@ -67,7 +67,8 @@ pub trait DbConnection: Send + Sync {
     /// Whent the lock is acquired or renewed the TTL will be extended by the timeout specified in the descriptor.
     async fn acquire_or_renew_lock(&self, desc: &LockDescriptor) -> DbResult<bool>;
 
-    /// Returns TRUE if we were able to release a lock specified by the descriptor.
+    /// Returns TRUE if we were able to release a lock specified by the descriptor, or if no lock exists.
+    /// Returns FALSE only if the lock exists but is not "ours".
     async fn release_lock(&self, desc: &LockDescriptor) -> DbResult<bool>;
 }
 
