@@ -1,5 +1,6 @@
 use std::process;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::time::Instant;
 use tracing::{error, trace, warn};
 
@@ -29,7 +30,9 @@ pub async fn launch(asm: Arc<Assembly>, vslock: LockDescriptor) {
                 // If the next retry attempt could arrive after the lock has already
                 // expired, shut down now rather than risk another instance taking
                 // the lock while we are still running.
-                if age + config::VALKEY_LOCK_RETRY_SECS >= config::VALKEY_LOCK_TIMEOUT {
+                if age + config::VALKEY_LOCK_RETRY_SECS
+                    >= config::VALKEY_LOCK_TIMEOUT + Duration::from_secs(1)
+                {
                     error!(
                         "vs db lock renewal failing for {:?}, lock expiry imminent, shutting down: {:?}",
                         age, e
