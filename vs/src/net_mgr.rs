@@ -56,13 +56,7 @@ struct Addr4Allocator {
 /// For each node the AAA network is a /88.
 ///
 pub fn aaa_network_for_node(node_zpr_addr: &IpAddr) -> IpNet {
-    let node_id = match node_zpr_addr {
-        IpAddr::V4(addr) => u32::from_be_bytes(addr.octets()) & 0x00FFFFFF,
-        IpAddr::V6(addr) => {
-            u32::from_be_bytes(addr.octets()[12..16].try_into().unwrap()) & 0x00FFFFFF
-        }
-    };
-
+    let node_id = node_id_for_node(node_zpr_addr);
     let aaa_net_addr = AAA_NET.addr();
 
     let mut net_bytes = [0u16; 8];
@@ -74,6 +68,24 @@ pub fn aaa_network_for_node(node_zpr_addr: &IpAddr) -> IpNet {
 
     let new_net_addr = IpAddr::V6(Ipv6Addr::from(net_bytes));
     IpNet::new(new_net_addr, NODE_AAA_PREFIX_LEN).unwrap()
+}
+
+/// Three bytes of the AAA address must be unique to the ZPRnet and ideally stable for a
+/// given node.  For now we simply pull the low 24 bits of the node's ZPRnet address.
+///
+/// TODO: Is it a good idea to tie this value to the node ZPR address? That means that if
+/// the ZPR address changes the AAA address set changes for the node.  Probably not a huge
+/// issue since AAA addresses are only used during authentication and are handed out
+/// on demand (I think).
+///
+/// TODO: Come up with better scheme.
+pub fn node_id_for_node(node_zpr_addr: &IpAddr) -> u32 {
+    match node_zpr_addr {
+        IpAddr::V4(addr) => u32::from_be_bytes(addr.octets()) & 0x00FFFFFF,
+        IpAddr::V6(addr) => {
+            u32::from_be_bytes(addr.octets()[12..16].try_into().unwrap()) & 0x00FFFFFF
+        }
+    }
 }
 
 impl NetMgr {
