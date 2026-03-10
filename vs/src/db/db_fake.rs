@@ -1,12 +1,13 @@
 //! Fake database backend for testing.
 
+use dashmap::mapref::entry::Entry as DashEntry;
 use dashmap::{DashMap, DashSet};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tokio::time::Instant;
 
-use crate::db::{DbConnection, DbOp, DbResult};
+use crate::db::{DbConnection, DbOp, DbResult, LockDescriptor};
 
 #[allow(dead_code)]
 pub struct FakeDb {
@@ -117,6 +118,10 @@ impl FakeDb {
 
 #[async_trait::async_trait]
 impl DbConnection for FakeDb {
+    async fn shutdown_cleanup(&self) -> DbResult<()> {
+        Ok(())
+    }
+
     /// True if the key exists (and not expired).  As a side effect this removes the
     /// key if it is expired before returning false.
     async fn exists(&self, key: &str) -> DbResult<bool> {
@@ -433,6 +438,68 @@ impl DbConnection for FakeDb {
         self.store.clear();
         Ok(())
     }
+
+    async fn acquire_or_renew_lock(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        let _rlock = self.lock.read().await;
+        match self.store.entry(desc.key.clone()) {
+            DashEntry::Occupied(mut occ) => {
+                let entry = occ.get_mut();
+                if entry.exp < Instant::now() {
+                    // Lock expired, so we can take it.
+                    entry.exp = Instant::now() + desc.timeout;
+                    entry.value = FakeDbValue::Str(desc.ident.clone());
+                    Ok(true)
+                } else {
+                    // Not expired. Is it ours?
+                    match &entry.value {
+                        FakeDbValue::Str(s) => {
+                            if s == &desc.ident {
+                                // It's our lock, we can renew it.
+                                entry.exp = Instant::now() + desc.timeout;
+                                Ok(true)
+                            } else {
+                                // Not our lock and not expired, can't take it.
+                                Ok(false)
+                            }
+                        }
+                        _ => panic!("found a lock value that is not a string"),
+                    }
+                }
+            }
+            DashEntry::Vacant(vac) => {
+                // Key absent: insert atomically under the shard lock.
+                vac.insert(Entry::new_ex(
+                    FakeDbValue::Str(desc.ident.clone()),
+                    desc.timeout.as_secs(),
+                ));
+                Ok(true)
+            }
+        }
+    }
+
+    async fn release_lock(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        let _rlock = self.lock.read().await;
+        if let Some(entry) = self.store.get(&desc.key) {
+            if entry.exp >= Instant::now() {
+                // Not expired. Is it ours?
+                match &entry.value {
+                    FakeDbValue::Str(s) => {
+                        if s != &desc.ident {
+                            // Not our lock.
+                            return Ok(false);
+                        }
+                    }
+                    _ => panic!("found a lock value that is not a string"),
+                }
+            }
+        } else {
+            // not there
+            return Ok(true);
+        }
+        // Either expired or ours, we can delete it.
+        self.store.remove(&desc.key);
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -573,5 +640,92 @@ mod test {
 
         let err = db.smembers("string:key").await.unwrap_err();
         assert_eq!(err.kind(), redis::ErrorKind::UnexpectedReturnType);
+    }
+
+    fn make_lock(ident: &str) -> LockDescriptor {
+        LockDescriptor::new(
+            crate::db::LockType::VsInstance,
+            ident.to_string(),
+            Duration::from_secs(60),
+        )
+    }
+
+    // --- acquire_or_renew_lock ---
+
+    #[tokio::test]
+    async fn test_lock_acquire_fresh() {
+        let db = FakeDb::new();
+        let lock = make_lock("owner-a");
+        let acquired = db.acquire_or_renew_lock(&lock).await.unwrap();
+        assert!(acquired);
+    }
+
+    #[tokio::test]
+    async fn test_lock_renew_own_lock() {
+        let db = FakeDb::new();
+        let lock = make_lock("owner-a");
+        db.acquire_or_renew_lock(&lock).await.unwrap();
+        // Second call by the same owner should succeed (renew).
+        let renewed = db.acquire_or_renew_lock(&lock).await.unwrap();
+        assert!(renewed);
+    }
+
+    #[tokio::test]
+    async fn test_lock_blocked_by_other_owner() {
+        let db = FakeDb::new();
+        let lock_a = make_lock("owner-a");
+        let lock_b = make_lock("owner-b");
+        db.acquire_or_renew_lock(&lock_a).await.unwrap();
+        let acquired = db.acquire_or_renew_lock(&lock_b).await.unwrap();
+        assert!(!acquired);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_lock_takeover_after_expiry() {
+        let db = FakeDb::new();
+        let lock_a = make_lock("owner-a");
+        let lock_b = make_lock("owner-b");
+        db.acquire_or_renew_lock(&lock_a).await.unwrap();
+        // Advance past the 60-second TTL.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let acquired = db.acquire_or_renew_lock(&lock_b).await.unwrap();
+        assert!(acquired);
+    }
+
+    // --- release_lock ---
+
+    #[tokio::test]
+    async fn test_lock_release_own_lock() {
+        let db = FakeDb::new();
+        let lock = make_lock("owner-a");
+        db.acquire_or_renew_lock(&lock).await.unwrap();
+        let released = db.release_lock(&lock).await.unwrap();
+        assert!(released);
+        // After release, another owner should be able to acquire.
+        let lock_b = make_lock("owner-b");
+        let acquired = db.acquire_or_renew_lock(&lock_b).await.unwrap();
+        assert!(acquired);
+    }
+
+    #[tokio::test]
+    async fn test_lock_release_not_owner() {
+        let db = FakeDb::new();
+        let lock_a = make_lock("owner-a");
+        let lock_b = make_lock("owner-b");
+        db.acquire_or_renew_lock(&lock_a).await.unwrap();
+        let released = db.release_lock(&lock_b).await.unwrap();
+        assert!(!released);
+        // Lock should still be held by owner-a.
+        let still_blocked = db.acquire_or_renew_lock(&lock_b).await.unwrap();
+        assert!(!still_blocked);
+    }
+
+    #[tokio::test]
+    async fn test_lock_release_nonexistent() {
+        let db = FakeDb::new();
+        let lock = make_lock("owner-a");
+        // Releasing a lock that was never acquired should succeed (idempotent).
+        let released = db.release_lock(&lock).await.unwrap();
+        assert!(released);
     }
 }
