@@ -1,16 +1,51 @@
 use redis::AsyncCommands;
+use redis::Script;
 use std::collections::{HashMap, HashSet};
+use tokio::sync::Mutex;
 
-use crate::db::{DbConnection, DbOp, DbResult};
+use crate::db::{DbConnection, DbOp, DbResult, LockDescriptor};
 
-#[derive(Clone)]
 pub struct RedisDb {
     mgr: redis::aio::ConnectionManager,
+    locks: Mutex<HashSet<LockDescriptor>>,
 }
 
 impl RedisDb {
     pub fn new(mgr: redis::aio::ConnectionManager) -> Self {
-        RedisDb { mgr }
+        RedisDb {
+            mgr,
+            locks: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// Clear a lock from redis.
+    /// Returns TRUE if we were able to release a lock specified by the descriptor, or if no lock exists.
+    /// Returns FALSE only if the lock exists and is not "ours".
+    async fn release_lock_in_redis(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        let mut conn = self.mgr.clone();
+        let script = Script::new(
+            r"
+                local current = redis.call('GET', KEYS[1])
+                if current == false then
+                    return 2
+                elseif current == ARGV[1] then
+                    return redis.call('DEL', KEYS[1])
+                else
+                    return 0
+                end
+        ",
+        );
+        // Script returns:
+        //   0 if lock exists but is not ours
+        //   1 if lock existed, was ours and was deleted
+        //   2 if lock didn't exist to begin with
+
+        let res: i64 = script
+            .key(&desc.key)
+            .arg(&desc.ident)
+            .invoke_async(&mut conn)
+            .await?;
+        Ok(res >= 1)
     }
 }
 
@@ -153,5 +188,65 @@ impl DbConnection for RedisDb {
         let mut conn = self.mgr.clone();
         let _: () = conn.flushdb().await?;
         Ok(())
+    }
+
+    async fn shutdown_cleanup(&self) -> DbResult<()> {
+        // Note that this holds the lock across the redis I/O calls.
+        for ldesc in self.locks.lock().await.drain() {
+            // Best effort... this call produce an error.
+            let _ = self.release_lock_in_redis(&ldesc).await;
+        }
+        Ok(())
+    }
+
+    async fn acquire_or_renew_lock(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        // Note that this holds the lock across the redis I/O call.
+        let mut locks_guard = self.locks.lock().await;
+        let mut conn = self.mgr.clone();
+        let script = Script::new(
+            r"
+                local current = redis.call('GET', KEYS[1])
+                if current == false then
+                    -- Key doesn't exist, acquire it
+                    redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+                    return 1
+                elseif current == ARGV[1] then
+                    -- We hold the lock, reset the TTL
+                    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+                    return 1
+                else
+                    -- Someone else holds it
+                    return 0
+                end
+            ",
+        );
+
+        let res: i64 = script
+            .key(&desc.key)
+            .arg(&desc.ident)
+            .arg(desc.timeout.as_millis() as u64)
+            .invoke_async(&mut conn)
+            .await?;
+
+        // Note: it is possible for the LUA to run, but to then lose the return message from redis.
+        // Since we are running REDIS on localhost this is unlikely. If that were to happen we would
+        // end up with the lock in redis but not in our local set.
+
+        if res == 1 {
+            locks_guard.insert(desc.clone());
+        }
+        Ok(res == 1)
+    }
+
+    async fn release_lock(&self, desc: &LockDescriptor) -> DbResult<bool> {
+        // Note that this holds the lock across the redis I/O call.
+        let mut locks_guard = self.locks.lock().await;
+        let released = self.release_lock_in_redis(desc).await?;
+
+        // May as well remove from our memory since it definately isn't in the DB.
+        locks_guard.remove(desc);
+
+        // Note: LUA script returns 2 when lock doesn't exist to begin with.
+        Ok(released)
     }
 }

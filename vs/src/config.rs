@@ -1,7 +1,8 @@
 //! Structs that map to the TOML configuration file for the visa service.
 
 use ipnet::{Ipv4Net, Ipv6Net};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::env;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -35,6 +36,15 @@ pub const ADMIN_HTTPS_PORT: u16 = 8182;
 
 pub const VALKEY_URI: &str = "redis://127.0.0.1:6379";
 
+/// Every THIS often we re-acquire the DB lock.
+pub const VALKEY_LOCK_REFRESH_SECS: Duration = Duration::from_secs(60);
+
+/// We set the DB lock to expire after THIS long.
+pub const VALKEY_LOCK_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// On renewal failure, retry at this faster cadence.
+pub const VALKEY_LOCK_RETRY_SECS: Duration = Duration::from_secs(5);
+
 /// Default VS ZPR address - must be in sync with compiler.
 pub const VS_ZPR_ADDR: Ipv6Addr = Ipv6Addr::new(
     0xfd5a, 0x5052, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001, // fd5a:5052::1
@@ -61,13 +71,13 @@ pub const VSS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// In cases where we create visas ourselves or if no timeout is specified, use this default.
 pub const DEFAULT_VISA_REQ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct VSConfig {
     pub core: CoreSection,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct CoreSection {
     /// The visa service bind address - this is a constant baked into entire ZPR system only override for testing.
@@ -89,6 +99,11 @@ pub struct CoreSection {
 
     /// ValKey connect string.
     pub vk_uri: Option<String>,
+
+    /// The identity string used to tie this visa service to the state database.
+    /// Overrides any stored identity file and disables the auto-generation of an identity UUID.
+    /// If set this must be a non-empty string.
+    pub identity: Option<String>,
 }
 
 impl Default for VSConfig {
@@ -107,6 +122,7 @@ impl Default for CoreSection {
             admin_cert: PathBuf::from("admin-tls-cert.pem"),
             admin_key: PathBuf::from("admin-tls-key.pem"),
             vk_uri: Some(VALKEY_URI.to_string()),
+            identity: Some(String::new()),
         }
     }
 }
@@ -140,4 +156,26 @@ mod test {
         assert_eq!(cfg.core.vk_uri, Some(VALKEY_URI.to_string()));
         assert_eq!(cfg.core.vsapi_port, Some(9999));
     }
+}
+
+// Return the path to the data home directory.
+pub fn get_data_home() -> PathBuf {
+    let mut dh = match env::var("XDG_DATA_HOME") {
+        Ok(val) => PathBuf::from(val),
+        Err(_) => match env::var("HOME") {
+            Ok(val) => {
+                let mut pb = PathBuf::from(val);
+                pb.push(".local/share");
+                // Now we will only take this if user already has a .local/share dir.
+                if pb.exists() {
+                    pb
+                } else {
+                    PathBuf::from("/var/run")
+                }
+            }
+            Err(_) => PathBuf::from("/var/run"),
+        },
+    };
+    dh.push("zpr");
+    dh
 }

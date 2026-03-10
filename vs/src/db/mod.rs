@@ -20,15 +20,24 @@ use chrono::Utc;
 use percent_encoding::CONTROLS;
 use percent_encoding::{AsciiSet, percent_decode_str, utf8_percent_encode};
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
+use std::time::Duration;
 
 // Encode '%' and ':' for KeyString type strings.
 const KEY_ESCAPES: &AsciiSet = &CONTROLS.add(b'%').add(b':');
+
+pub enum LockType {
+    VsInstance,
+}
 
 pub type DbResult<T> = redis::RedisResult<T>;
 
 #[async_trait::async_trait]
 pub trait DbConnection: Send + Sync {
+    /// May be called during a clean shutdown so that DB can do any necessary cleanup (e.g. releasing locks).
+    async fn shutdown_cleanup(&self) -> DbResult<()>;
+
     async fn exists(&self, key: &str) -> DbResult<bool>;
     async fn set(&self, key: &str, value: &str) -> DbResult<()>;
     async fn get(&self, key: &str) -> DbResult<Option<String>>;
@@ -53,7 +62,58 @@ pub trait DbConnection: Send + Sync {
 
     /// Remove all data from the database.
     async fn clear_state(&self) -> DbResult<()>;
+
+    /// Returns TRUE if we were able to acquire or re-acquire a lock specified by the descriptor.
+    /// Whent the lock is acquired or renewed the TTL will be extended by the timeout specified in the descriptor.
+    async fn acquire_or_renew_lock(&self, desc: &LockDescriptor) -> DbResult<bool>;
+
+    /// Returns TRUE if we were able to release a lock specified by the descriptor, or if no lock exists.
+    /// Returns FALSE only if the lock exists but is not "ours".
+    #[allow(dead_code)]
+    async fn release_lock(&self, desc: &LockDescriptor) -> DbResult<bool>;
 }
+
+#[derive(Clone)]
+pub struct LockDescriptor {
+    key: String,
+    ident: String,
+    timeout: Duration,
+}
+
+impl LockDescriptor {
+    /// Create LockDescriptor.
+    ///
+    /// The `ident` is a string that identifies the owner of the lock.  It can be any string,
+    /// but should be unique to the owner (e.g. a UUID or hostname).  
+    ///
+    /// The `timeout` is how long the lock should be held before it expires and can be acquired
+    /// by someone else.
+    pub fn new(ltype: LockType, ident: String, timeout: Duration) -> Self {
+        let key = match ltype {
+            LockType::VsInstance => format!("lock:vsinstance"),
+        };
+        LockDescriptor {
+            key,
+            ident,
+            timeout,
+        }
+    }
+}
+
+impl Hash for LockDescriptor {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.ident.hash(state);
+    }
+}
+
+impl PartialEq for LockDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.ident == other.ident
+    }
+}
+
+impl Eq for LockDescriptor {}
 
 pub enum DbOp {
     Del(String),

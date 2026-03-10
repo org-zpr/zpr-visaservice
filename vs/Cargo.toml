@@ -44,6 +44,7 @@ toml = "0.9.8"
 tower-service = "0.3.3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid = { version = "1.22.0", features = ["v4"] }
 zpr.workspace = true
 
 [dev-dependencies]
