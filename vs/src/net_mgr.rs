@@ -47,7 +47,7 @@ struct Addr4Allocator {
 
 /// Each AAA network is of the form:
 ///
-///     fd5a:5052:0000:0aaa : NNNN:NNxx:xxxx:xxxx
+///     fd5a:5052:0000:0aaa:NNNN:NNxx:xxxx:xxxx
 ///
 /// Where NNNN:NN are based on a computed "node id".
 /// And xx:xxxx:xxxx is up to the node to hand out.
