@@ -217,16 +217,21 @@ impl DbConnection for RedisDb {
                 end
         ",
         );
+        // Script returns:
+        //   0 if lock exists but is not ours
+        //   1 if lock existed, was ours and was deleted
+        //   2 if lock didn't exist to begin with
+
         let res: i64 = script
             .key(&desc.key)
             .arg(&desc.ident)
             .invoke_async(&mut conn)
             .await?;
 
-        if res == 1 {
-            self.locks.remove(desc);
-        }
-        // Note: LUA script returns '2' when lock doesn't exist to begin with.
+        // May as well remove from our memory since it definately isn't in the DB.
+        self.locks.remove(desc);
+
+        // Note: LUA script returns 2 when lock doesn't exist to begin with.
         Ok(res >= 1)
     }
 }
