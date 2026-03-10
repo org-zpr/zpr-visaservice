@@ -69,6 +69,7 @@ pub trait DbConnection: Send + Sync {
 
     /// Returns TRUE if we were able to release a lock specified by the descriptor, or if no lock exists.
     /// Returns FALSE only if the lock exists but is not "ours".
+    #[allow(dead_code)]
     async fn release_lock(&self, desc: &LockDescriptor) -> DbResult<bool>;
 }
 
