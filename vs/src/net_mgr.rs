@@ -59,14 +59,14 @@ pub fn aaa_network_for_node(node_zpr_addr: &IpAddr) -> IpNet {
     let node_id = node_id_for_node(node_zpr_addr);
     let aaa_net_addr = AAA_NET.addr();
 
-    let mut net_bytes = [0u16; 8];
-    net_bytes[..8].copy_from_slice(&aaa_net_addr.segments());
+    let mut net_segments = [0u16; 8];
+    net_segments[..8].copy_from_slice(&aaa_net_addr.segments());
 
     // Use bottom 24 bits of node ID.
-    net_bytes[4] = (node_id >> 8) as u16;
-    net_bytes[5] = (node_id << 8) as u16;
+    net_segments[4] = (node_id >> 8) as u16;
+    net_segments[5] = (node_id << 8) as u16;
 
-    let new_net_addr = IpAddr::V6(Ipv6Addr::from(net_bytes));
+    let new_net_addr = IpAddr::V6(Ipv6Addr::from(net_segments));
     IpNet::new(new_net_addr, NODE_AAA_PREFIX_LEN).unwrap()
 }
 
