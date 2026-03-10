@@ -241,8 +241,9 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             }
         };
 
-        // Confirmed actor is trying to access a valid authentication service. To proceed, we fabricate
-        // a phantom actor for this request.
+        // We have confirmed that an actor is trying to access a valid authentication service using a valid AAA address.
+        // To proceed, we fabricate a phantom actor for this request.  This phantom acts as the anonymous actor for
+        // purposes of granting a visa.
         let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;
         let mut anon_actor = Actor::new();
         let _ = anon_actor.add_attribute(
