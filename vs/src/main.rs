@@ -72,7 +72,7 @@ struct Cli {
     #[arg(long)]
     clear_state: bool,
 
-    /// Force a regeneration of  the visa service identity UUID.
+    /// Force a regeneration of the visa service identity UUID.
     #[arg(long)]
     regen_identity: bool,
 
