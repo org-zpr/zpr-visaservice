@@ -19,22 +19,23 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures::StreamExt;
 use futures::future::FutureExt;
+use libeval::actor::Actor;
+use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
+use libeval::eval::{EvalContext, EvalDecision};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
+use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
 use crate::assembly::Assembly;
 use crate::counters::CounterType;
 use crate::error::ServiceError;
 use crate::logging::targets::VREQ;
-
-use libeval::actor::Actor;
-use libeval::eval::{EvalContext, EvalDecision};
-use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
+use crate::{config, net_mgr};
 
 pub enum VisaDecision {
     Allow(Visa),
@@ -183,15 +184,101 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
 
 /// Run visa request.
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
-    let (source_actor, dest_actor) = get_actors(&asm, job).await?;
-    let source_actor = match source_actor {
-        Some(actor) => actor,
-        None => return Ok(VisaDecision::Deny(DenyCode::SourceNotFound)),
-    };
-    let dest_actor = match dest_actor {
-        Some(actor) => actor,
-        None => return Ok(VisaDecision::Deny(DenyCode::DestNotFound)),
-    };
+    let (mut source_actor, mut dest_actor) = get_actors(&asm, job).await?;
+
+    if source_actor.is_none() && dest_actor.is_none() {
+        return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
+    }
+
+    if source_actor.is_none() || dest_actor.is_none() {
+        // This might be an actor trying to talk to an authentication service.
+        //
+        // To check this we confirm that one actor is using an AAA network address
+        // from its node, and the other is an installed authentication service.
+        //
+
+        let missing_source = source_actor.is_none();
+
+        // "candidate" => the possible auth service, "anon_addr" => possible actor using AAA addr.
+        let (candidate_addr, anon_addr) = if missing_source {
+            (job.packet_desc.dest_addr(), job.packet_desc.source_addr())
+        } else {
+            (job.packet_desc.source_addr(), job.packet_desc.dest_addr())
+        };
+
+        // The anonymous actor must be using an AAA address (from its node).
+        let node_aaa_net = net_mgr::aaa_network_for_node(&job.requesting_node);
+        if !node_aaa_net.contains(anon_addr) {
+            if missing_source {
+                debug!(target: VREQ,
+                    "visa denied: unknown source {anon_addr} is not in the AAA network for node {:?}",
+                    job.requesting_node
+                );
+                return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
+            } else {
+                debug!(target: VREQ,
+                    "visa denied: unknown destination {anon_addr} is not in the AAA network for node {:?}",
+                    job.requesting_node
+                );
+                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
+            }
+        }
+
+        // The candidate actor must be an installed authentication service.
+        match asm
+            .actor_mgr
+            .has_auth_services(asm.clone(), candidate_addr)
+            .await
+        {
+            Ok(true) => (),
+            Ok(false) => {
+                warn!(target: VREQ, "visa denied: actor using AAA addr attempting to contact non-authentication service at {candidate_addr}");
+                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
+            }
+            Err(e) => {
+                debug!(target: VREQ, "visa denied: error checking authentication services for actor at {candidate_addr}: {}", e);
+                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
+            }
+        };
+
+        // We have confirmed that an actor is trying to access a valid authentication service using a valid AAA address.
+        // To proceed, we fabricate a phantom actor for this request.  This phantom acts as the anonymous actor for
+        // purposes of granting a visa.
+        let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;
+        let mut anon_actor = Actor::new();
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::ZPR_ADDR)
+                .expires(expiration)
+                .value(anon_addr.to_string()),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::AUTHORITY)
+                .expires(expiration)
+                .value("vs_hack_anon_to_auth"),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::ROLE)
+                .expires(expiration)
+                .value(ROLE_ADAPTER),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::CN)
+                .expires(expiration)
+                .value(format!("hack.{}.zpr", anon_addr)),
+        );
+        let _ = anon_actor.add_identity_key(0, key::CN);
+
+        if missing_source {
+            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA request: {:?} -> {candidate_addr}", anon_actor);
+            source_actor = Some(anon_actor);
+        } else {
+            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA response: {candidate_addr} -> {:?}", anon_actor);
+            dest_actor = Some(anon_actor);
+        }
+    }
+
+    let source_actor = source_actor.unwrap();
+    let dest_actor = dest_actor.unwrap();
 
     let policy = asm.policy_mgr.get_current();
     let ctx = EvalContext::new(policy);
@@ -285,7 +372,6 @@ async fn get_actors(
             return Err(ServiceError::Internal("error retrieving dest actor".into()));
         }
     };
-
     Ok((source_actor, dest_actor))
 }
 

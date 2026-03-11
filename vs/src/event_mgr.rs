@@ -68,7 +68,7 @@ async fn handle_actor_joins(asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(
     info!(target: EVENT, "actor joined: {}", actor_addr);
     let has_auth_services = match asm
         .actor_mgr
-        .has_auth_services(asm.clone(), actor_addr)
+        .has_auth_services(asm.clone(), &actor_addr)
         .await
     {
         Ok(v) => v,
@@ -150,7 +150,7 @@ async fn set_services_all_nodes(
                     "attempting to use VSS to set_services on node {naddr}"
                 );
                 if let Some(vss_h) = asm.vss_mgr.get_handle(&naddr) {
-                    if let Err(e) = vss_h.set_services(1, service_list).await {
+                    if let Err(e) = vss_h.set_services(service_list).await {
                         error!(
                             target: EVENT,
                             "failed to set_services on node {}: {}",

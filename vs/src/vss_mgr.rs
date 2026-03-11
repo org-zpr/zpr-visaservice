@@ -13,7 +13,7 @@ use tokio_util::compat::*;
 use tracing::{debug, error, info, warn};
 
 use zpr::vsapi::v1;
-use zpr::vsapi_types::{ApiResponseError, ServiceDescriptor, Visa};
+use zpr::vsapi_types::{ApiResponseError, Param, ServiceDescriptor, Visa, pname};
 use zpr::write_to::WriteTo;
 
 use crate::assembly::Assembly;
@@ -21,6 +21,7 @@ use crate::config;
 use crate::counters::CounterType;
 use crate::error::VssSyncError;
 use crate::logging::targets::VSS;
+use crate::net_mgr;
 
 pub struct VssMgr {
     // Each node has an entry here, handle is a thread monitoring the nodes VSS.
@@ -49,6 +50,7 @@ enum Job {
 type VssPushResponse = Result<usize, VssSyncError>; // usize is number items pushed.
 type VssRevokeAuthResponse = Result<usize, VssSyncError>; // usize is number of items revoked.
 type VssSetServicesResponse = Result<(), VssSyncError>;
+type VssConfigureResponse = Result<(), VssSyncError>;
 
 // Each API call is expressed as a message using this enum.
 #[allow(dead_code)]
@@ -58,10 +60,10 @@ enum VssCmd {
     RevokeVisasById(Vec<u64>, oneshot::Sender<VssPushResponse>),
     RevokeAuthsByZprAddr(Vec<IpAddr>, oneshot::Sender<VssRevokeAuthResponse>),
     SetServices(
-        u64,
         Vec<ServiceDescriptor>,
         oneshot::Sender<VssSetServicesResponse>,
     ), // (version, services-descriptor-list, channel)
+    Configure(Vec<Param>, oneshot::Sender<VssConfigureResponse>),
 }
 
 /// The Vss Manager manages VSS connections for each node.
@@ -186,13 +188,9 @@ impl VssHandle {
 
     /// Tell the node about authentication services connected to the ZPRnet.
     #[allow(dead_code)]
-    pub async fn set_services(
-        &self,
-        version: u64,
-        services: Vec<ServiceDescriptor>,
-    ) -> Result<(), VssSyncError> {
+    pub async fn set_services(&self, services: Vec<ServiceDescriptor>) -> Result<(), VssSyncError> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        let cmd = VssCmd::SetServices(version, services, resp_tx);
+        let cmd = VssCmd::SetServices(services, resp_tx);
         self.send_command(cmd).await?;
         resp_rx.await.map_err(|_| VssSyncError::ConnClosed)?
     }
@@ -289,20 +287,7 @@ async fn vss_worker_loop(
 
     info!(target: VSS, "connected to VSS at {}", node_addr);
 
-    match asm.actor_mgr.get_auth_services_list(asm.clone()).await {
-        Ok(services) => {
-            debug!(target: VSS, "sending initial auth services list to VSS at {}", node_addr);
-            if let Err(e) = do_set_services(&vss_handle, 1, services).await {
-                error!(target: VSS, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
-                asm.counters.incr(CounterType::VssErrors);
-            } else {
-                debug!(target: VSS, "initial auth services list sent to VSS at {}", node_addr);
-            }
-        }
-        Err(e) => {
-            warn!(target: VSS, "failed to get auth services list for VSS at {}: {}", node_addr, e);
-        }
-    }
+    do_vss_initialization(&asm, &node_addr.ip(), &vss_handle).await;
 
     let mut ping_interval = tokio::time::interval(config::VSS_PING_INTERVAL);
 
@@ -332,9 +317,15 @@ async fn vss_worker_loop(
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
-                    VssCmd::SetServices(_version, _services, resp_tx) => {
-                        if let Err(e) = resp_tx.send(do_set_services(&vss_handle, _version, _services).await) {
+                    VssCmd::SetServices(services, resp_tx) => {
+                        if let Err(e) = resp_tx.send(do_set_services(&vss_handle, services).await) {
                             error!(target: VSS, "failed to send response for set-services command: {:?}", e);
+                            asm.counters.incr(CounterType::VssErrors);
+                        }
+                    }
+                    VssCmd::Configure(params, resp_tx) => {
+                        if let Err(e) = resp_tx.send(do_configure(&vss_handle, params).await) {
+                            error!(target: VSS, "failed to send response for configure command: {:?}", e);
                             asm.counters.incr(CounterType::VssErrors);
                         }
                     }
@@ -365,6 +356,48 @@ async fn vss_worker_loop(
     }
 
     // Call ping in a loop periodically.  If this fails raise an alarm.
+}
+
+/// When the vss worker starts up the node expects a couple of calls immediately.
+/// 1. to the configure endpoint to set the params (only AAA prefix for now).
+/// 2. to the setServices endpoing to tell node about the available auth services.
+async fn do_vss_initialization(
+    asm: &Arc<Assembly>,
+    node_addr: &IpAddr,
+    vss_handle: &v1::v_s_s_handle::Client,
+) {
+    // The AAA net is stored in the actor properties, but it is statically tied to
+    // the node ZPR address so we just recompute it here.
+    let aaa_net = net_mgr::aaa_network_for_node(node_addr);
+    let params = vec![Param::new_str(
+        pname::AAA_PREFIX.into(),
+        aaa_net.to_string(),
+    )];
+    debug!(target: VSS, "sending configure to VSS at {node_addr}");
+    match do_configure(vss_handle, params).await {
+        Ok(_) => {
+            debug!(target: VSS, "{node_addr} configured successfully");
+        }
+        Err(e) => {
+            warn!(target: VSS, "failed to configure VSS at {node_addr}: {e}");
+            asm.counters.incr(CounterType::VssErrors);
+        }
+    }
+
+    match asm.actor_mgr.get_auth_services_list(asm.clone()).await {
+        Ok(services) => {
+            debug!(target: VSS, "sending initial auth services list to VSS at {}", node_addr);
+            if let Err(e) = do_set_services(&vss_handle, services).await {
+                error!(target: VSS, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
+                asm.counters.incr(CounterType::VssErrors);
+            } else {
+                debug!(target: VSS, "initial auth services list sent to VSS at {}", node_addr);
+            }
+        }
+        Err(e) => {
+            warn!(target: VSS, "failed to get auth services list for VSS at {}: {}", node_addr, e);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -437,17 +470,10 @@ fn tls_connect() -> TlsConnector {
 
 async fn do_set_services(
     vss_handle: &v1::v_s_s_handle::Client,
-    version: u64,
     services: Vec<ServiceDescriptor>,
 ) -> Result<(), VssSyncError> {
-    // The API calls for a "version" to be returned, but that is rather complicated
-    // to manage here. So for now we just send version=1 always and leave it up to the node
-    // to check the list and decide if anything has changed.
-    // TODO: update the VSS API to use a different scheme here.
-
     let mut req = vss_handle.set_services_request();
-    let mut req_builder = req.get();
-    req_builder.set_version(version);
+    let req_builder = req.get();
 
     let mut svc_list_builder = req_builder.init_svcs(services.len() as u32);
     for (i, svc) in services.iter().enumerate() {
@@ -468,4 +494,35 @@ async fn do_set_services(
     }
 
     Ok(())
+}
+
+async fn do_configure(
+    vss_handle: &v1::v_s_s_handle::Client,
+    params: Vec<Param>,
+) -> Result<(), VssSyncError> {
+    let mut req = vss_handle.configure_request();
+    let req_builder = req.get();
+
+    let mut params_builder = req_builder.init_params(params.len() as u32);
+    for (i, param) in params.iter().enumerate() {
+        let mut param_builder = params_builder.reborrow().get(i as u32);
+        param.write_to(&mut param_builder);
+    }
+
+    let configure_response_rdr = req.send().promise.await?;
+
+    let configure_response_ok_or_err = configure_response_rdr.get()?;
+
+    match configure_response_ok_or_err
+        .get_res()
+        .unwrap()
+        .which()
+        .unwrap()
+    {
+        v1::ok_or_error::Which::Ok(_) => Ok(()),
+        v1::ok_or_error::Which::Error(err_rdr) => {
+            let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
+            Err(VssSyncError::from(api_err))
+        }
+    }
 }

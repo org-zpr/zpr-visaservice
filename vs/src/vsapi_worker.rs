@@ -1,5 +1,4 @@
 use chrono::prelude::{DateTime, Utc};
-use ipnet::IpNet;
 use openssl::rand::rand_bytes;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -15,17 +14,18 @@ use tracing::{debug, error, info, warn};
 use ::zpr::vsapi::v1 as vsapi;
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, key};
-use zpr::vsapi_types::{ConnectRequest, Connection, PacketDesc, SockAddr, VisaOp};
+use zpr::vsapi_types::{
+    ConnectRequest, Connection, PacketDesc, Param, ParamValue, SockAddr, VisaOp, pname,
+};
 use zpr::write_to::WriteTo;
 
 use crate::assembly::Assembly;
 use crate::config;
 use crate::counters::CounterType;
-use crate::cparam;
-use crate::cparam::CParam;
 use crate::error::ServiceError;
 use crate::event_mgr::VsEvent;
 use crate::logging::targets::API;
+use crate::net_mgr;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 pub async fn launch_capnp(
@@ -108,7 +108,6 @@ struct VSGateImpl {
     remote: SocketAddr,
     remote_cn: String,
     req_zpr_addr: IpAddr,
-    req_aaa_net: IpNet,
 
     // This is set in `challenge` call and read in the `authenticate` call.
     // Safe to use here since the capn proto rpc is confined to a single thread.
@@ -128,7 +127,6 @@ impl VSGateImpl {
         remote: SocketAddr,
         remote_cn: String,
         req_zpr_addr: IpAddr,
-        req_aaa_net: IpNet,
     ) -> Self {
         VSGateImpl {
             asm,
@@ -136,7 +134,6 @@ impl VSGateImpl {
             remote_cn,
             challenge_data: Cell::new([0u8; 32]),
             req_zpr_addr,
-            req_aaa_net,
         }
     }
 }
@@ -301,18 +298,41 @@ fn ipaddr_from_capnp(addr: vsapi::ip_addr::Reader) -> Result<std::net::IpAddr, c
 }
 
 impl VisaServiceImpl {
-    /// Helper for the connect routine -- returns the two connect params we require: zpr_addr and aaa_prefix,
-    /// or errors out.
-    fn parse_my_connect_params(&self, params: &[CParam]) -> Result<(IpAddr, IpNet), ServiceError> {
-        let node_zpr_addr: IpAddr = CParam::get_ipaddr(params, cparam::PARAM_ZPR_ADDR)?;
-        let node_aaa_network_str = CParam::get_string(params, cparam::PARAM_AAA_PREFIX)?;
-        let node_aaa_net: IpNet = match node_aaa_network_str.parse() {
-            Ok(n) => n,
-            Err(_e) => Err(ServiceError::Param(format!(
-                "invalid ip prefix: {node_aaa_network_str}",
-            )))?,
-        };
-        Ok((node_zpr_addr, node_aaa_net))
+    /// Helper for the connect routine -- returns the one connect param we require: zpr_addr.
+    /// Older code used to pass in the AAA_PREFIX here but now we send that over the
+    /// VSS.
+    ///
+    /// During this transition period we will error out if node passes use AAA_PREFIX.
+    fn parse_my_connect_params(&self, params: &[Param]) -> Result<IpAddr, ServiceError> {
+        let mut node_zpr_addr = None;
+
+        for pp in params {
+            match pp.name.as_str() {
+                pname::ZPR_ADDR => match &pp.value {
+                    ParamValue::IpParam(ipa) => node_zpr_addr = Some(ipa.clone()),
+                    _ => {
+                        return Err(ServiceError::Param(format!(
+                            "param {} has invalid type",
+                            pname::ZPR_ADDR
+                        )));
+                    }
+                },
+
+                pname::AAA_PREFIX => {
+                    return Err(ServiceError::Param(format!(
+                        "param {} must not be sent to VS",
+                        pname::AAA_PREFIX
+                    )));
+                }
+
+                name => info!(target: API, "ignored connect param {}", name),
+            }
+        }
+
+        if node_zpr_addr.is_none() {
+            return Err(ServiceError::Param("ZPR_ADDR param missing".into()));
+        }
+        Ok(node_zpr_addr.unwrap())
     }
 }
 
@@ -331,7 +351,7 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         let req_cn = vs_connect_request.get_cn()?.to_string()?;
         let req_type = vs_connect_request.get_ctype()?;
 
-        let parsed_params = match CParam::from_connect_request(&vs_connect_request, 4) {
+        let parsed_params = match params_from_connect_request(&vs_connect_request, 4) {
             Ok(p) => p,
             Err(e) => {
                 let res_builder = results.get().init_resp();
@@ -349,8 +369,8 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
 
         // TODO: In next version of vsapi the AAA_PREFIX is going away and will instead be handed to the
         // node by the visa service.
-        let (node_zpr_addr, node_aaa_network) = match self.parse_my_connect_params(&parsed_params) {
-            Ok((addr, cidr)) => (addr, cidr),
+        let node_zpr_addr = match self.parse_my_connect_params(&parsed_params) {
+            Ok(addr) => addr,
             Err(e) => {
                 let res_builder = results.get().init_resp();
                 let mut err_builder = res_builder.init_error();
@@ -364,7 +384,6 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         };
 
         info!(target: API, "node {} requests zpr addr {}", req_cn, node_zpr_addr);
-        info!(target: API, "node {} requests aaa network {}", req_cn, node_aaa_network);
 
         match req_type {
             vsapi::VSConnT::Reset => {}
@@ -387,7 +406,6 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
             self.remote,
             req_cn,
             node_zpr_addr,
-            node_aaa_network,
         ));
 
         //res_builder.reborrow().set_ok(vs_gate)?;
@@ -541,18 +559,19 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             }
         };
 
+        let node_aaa_net = net_mgr::aaa_network_for_node(&node_zpr_addr);
+
         info!(
             target: API,
-            "successfully authenticated node {:?} from {:?} and assigned ip {:?}",
-            &node_cn, self.remote, &node_zpr_addr
+            "successfully authenticated node {node_cn} from {:?} and assigned ip {node_zpr_addr} and AAA net {node_aaa_net}",
+            self.remote,
         );
 
         // Ok, we have verified the credentials and checked with policy. Time to
         // update our state and return success.
 
-        // TODO: aaa_prefix is going to be set by visa service.
         node_actor
-            .add_attribute(Attribute::builder(key::AAA_NET).value(self.req_aaa_net.to_string()))
+            .add_attribute(Attribute::builder(key::AAA_NET).value(node_aaa_net.to_string()))
             .unwrap();
 
         // TODO: The policy may have changed since started the authentication. Once we add the node
@@ -701,7 +720,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                 error!(target: API, "failed to set VSS for node {:?}: {}", self.node.get_cn(), e);
             });
 
-        // As we return we kick off the vss worker for this node which will send list of services.
+        // As we return we kick off the vss worker for this node which will send config and list of services.
         // but will not work until visas are installed... So start it with small delay.
         if let Err(e) =
             self.asm
@@ -715,7 +734,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         Ok(())
     }
 
-    // When an adapter connects to ta node, a node ends up making a call here to authorize
+    // When an adapter connects to a node, a node ends up making a call here to authorize
     // the connection.  If successful the VS returns a ZPR address for the adapter, and an
     // expiration time.
     //
@@ -805,7 +824,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             error!(target: API, "failed to add authenticated adapter {:?} to actor db: {}", actor.get_cn(), e);
 
             if self.asm.net_mgr.is_managed_address(&actor_addr) {
-                if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr).await {
+                if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr) {
                     warn!(target: API, "failed to release adapter address {}: {}", actor_addr, e);
                 }
             }
@@ -980,5 +999,101 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         let mut res_builder = results.get().init_res();
         res_builder.set_ok(());
         Ok(())
+    }
+}
+
+/// Parse no more than `limit` params out of the connect request.
+pub fn params_from_connect_request(
+    vscr: &vsapi::v_s_connect_request::Reader,
+    limit: usize,
+) -> Result<Vec<Param>, ServiceError> {
+    let mut results = Vec::new();
+    let params = vscr.get_params()?;
+    for param_rdr in params.iter() {
+        let param: Param = param_rdr.try_into()?;
+        results.push(param);
+        if results.len() >= limit {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use capnp::message::Builder;
+
+    /// Helper function to create a v_s_connect_request message with the given params
+    fn build_connect_request(
+        build_fn: impl FnOnce(vsapi::v_s_connect_request::Builder),
+    ) -> capnp::message::Reader<capnp::serialize::OwnedSegments> {
+        let mut message = Builder::new_default();
+        {
+            let req = message.init_root::<vsapi::v_s_connect_request::Builder>();
+            build_fn(req);
+        }
+        // Serialize and deserialize to get a Reader
+        let mut buf = Vec::new();
+        capnp::serialize::write_message(&mut buf, &message).unwrap();
+        let reader =
+            capnp::serialize::read_message(&mut &buf[..], capnp::message::ReaderOptions::new())
+                .unwrap();
+        reader
+    }
+
+    #[test]
+    fn test_from_connect_request_empty() {
+        let message = build_connect_request(|req| {
+            req.init_params(0);
+        });
+
+        let reader = message.get_root().unwrap();
+        let result = params_from_connect_request(&reader, 10).unwrap();
+
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_from_connect_request_single_string() {
+        let message = build_connect_request(|req| {
+            let mut params = req.init_params(1);
+            let mut param = params.reborrow().get(0);
+            param.set_name("test_name");
+            param.set_ptype(vsapi::ParamT::String);
+            param.set_value_text("test_value");
+        });
+
+        let reader = message.get_root().unwrap();
+        let result = params_from_connect_request(&reader, 10).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "test_name");
+        match &result[0].value {
+            ParamValue::StrParam(s) => assert_eq!(s, "test_value"),
+            _ => panic!("Expected String value"),
+        }
+    }
+
+    #[test]
+    fn test_from_connect_request_limit() {
+        let message = build_connect_request(|req| {
+            let mut params = req.init_params(5);
+            for i in 0..5 {
+                let mut param = params.reborrow().get(i);
+                param.set_name(&format!("param{}", i));
+                param.set_ptype(vsapi::ParamT::U64);
+                param.set_value_u64(i as u64);
+            }
+        });
+
+        let reader = message.get_root().unwrap();
+        let result = params_from_connect_request(&reader, 3).unwrap();
+
+        // Should only return 3 params due to limit
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].name, "param0");
+        assert_eq!(result[1].name, "param1");
+        assert_eq!(result[2].name, "param2");
     }
 }

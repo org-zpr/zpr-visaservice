@@ -1,11 +1,11 @@
 //! Manage network type stuff like IP addresses and, maybe later, topology info.
 
-use ipnet::{Ipv4Net, Ipv6Net};
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use libeval::actor::Role;
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 
 use crate::config;
@@ -14,6 +14,13 @@ use crate::error::ServiceError;
 /// Minimum prefix length at which IPv4 `hosts()` includes the network address
 /// (RFC 3021 point-to-point links and /32 host routes).
 const IPV4_POINT_TO_POINT_PREFIX_LEN: u8 = 31;
+
+/// Each node gets a /88 for AAA addresses.
+const NODE_AAA_PREFIX_LEN: u8 = 88;
+
+/// ZPRnet AAA network is a /64.
+pub const AAA_NET: Ipv6Net =
+    Ipv6Net::new_assert(Ipv6Addr::new(0xfd5a, 0x5052, 0, 0x0aaa, 0, 0, 0, 0), 64);
 
 pub struct NetMgr {
     node_addrs: Arc<Mutex<dyn AddrAllocator + Send>>,
@@ -38,9 +45,52 @@ struct Addr4Allocator {
     used: HashSet<u32>,
 }
 
+/// Each AAA network is of the form:
+///
+///     fd5a:5052:0000:0aaa:NNNN:NNxx:xxxx:xxxx
+///
+/// Where NNNN:NN are based on a computed "node id".
+/// And xx:xxxx:xxxx is up to the node to hand out.
+///
+/// For the ZPRnet the AAA network is a /64.
+/// For each node the AAA network is a /88.
+///
+pub fn aaa_network_for_node(node_zpr_addr: &IpAddr) -> IpNet {
+    let node_id = node_id_for_node(node_zpr_addr);
+    let aaa_net_addr = AAA_NET.addr();
+
+    let mut net_segments = [0u16; 8];
+    net_segments[..8].copy_from_slice(&aaa_net_addr.segments());
+
+    // Use bottom 24 bits of node ID.
+    net_segments[4] = (node_id >> 8) as u16;
+    net_segments[5] = (node_id << 8) as u16;
+
+    let new_net_addr = IpAddr::V6(Ipv6Addr::from(net_segments));
+    IpNet::new(new_net_addr, NODE_AAA_PREFIX_LEN).unwrap()
+}
+
+/// Three bytes of the AAA address must be unique to the ZPRnet and ideally stable for a
+/// given node.  For now we simply pull the low 24 bits of the node's ZPRnet address.
+///
+/// TODO: Is it a good idea to tie this value to the node ZPR address? That means that if
+/// the ZPR address changes the AAA address set changes for the node.  Probably not a huge
+/// issue since AAA addresses are only used during authentication and are handed out
+/// on demand (I think).
+///
+/// TODO: Come up with better scheme.
+pub fn node_id_for_node(node_zpr_addr: &IpAddr) -> u32 {
+    match node_zpr_addr {
+        IpAddr::V4(addr) => u32::from_be_bytes(addr.octets()) & 0x00FFFFFF,
+        IpAddr::V6(addr) => {
+            u32::from_be_bytes(addr.octets()[12..16].try_into().unwrap()) & 0x00FFFFFF
+        }
+    }
+}
+
 impl NetMgr {
     /// Create a NetMgr backed by IPv6 address pools.
-    pub async fn new_v6() -> Result<Self, ServiceError> {
+    pub fn new_v6() -> Result<Self, ServiceError> {
         let adapter_net = config::ADAPTER_BASE_V6NET;
         let node_net = config::NODE_BASE_V6NET;
 
@@ -53,7 +103,7 @@ impl NetMgr {
 
     /// Create a NetMgr backed by IPv4 address pools.
     #[allow(dead_code)]
-    pub async fn new_v4() -> Result<Self, ServiceError> {
+    pub fn new_v4() -> Result<Self, ServiceError> {
         let adapter_net = config::ADAPTER_BASE_V4NET;
         let node_net = config::NODE_BASE_V4NET;
 
@@ -65,7 +115,7 @@ impl NetMgr {
     }
 
     /// Return an unused, random address in our network space.
-    pub async fn get_next_zpr_addr(&self, role: &Role) -> Result<IpAddr, ServiceError> {
+    pub fn get_next_zpr_addr(&self, role: &Role) -> Result<IpAddr, ServiceError> {
         let addr = match role {
             Role::Adapter => {
                 self.adapter_addrs
@@ -94,7 +144,7 @@ impl NetMgr {
 
     /// Release a previously allocated address, returns an error if the address
     /// was not allocated by this manager.
-    pub async fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), ServiceError> {
+    pub fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), ServiceError> {
         {
             let mut allocator = self.adapter_addrs.lock().unwrap();
             if allocator.contains(addr) {
@@ -262,17 +312,15 @@ mod tests {
 
     #[tokio::test]
     async fn v6_allocate_release_adapter_and_node() {
-        let mgr = NetMgr::new_v6().await.expect("failed to build v6 NetMgr");
+        let mgr = NetMgr::new_v6().expect("failed to build v6 NetMgr");
         let adapter_net = config::ADAPTER_BASE_V6NET;
         let node_net = config::NODE_BASE_V6NET;
 
         let adapter_addr = mgr
             .get_next_zpr_addr(&Role::Adapter)
-            .await
             .expect("failed to allocate adapter v6 addr");
         let node_addr = mgr
             .get_next_zpr_addr(&Role::Node)
-            .await
             .expect("failed to allocate node v6 addr");
 
         match adapter_addr {
@@ -285,29 +333,25 @@ mod tests {
         }
 
         mgr.release_zpr_addr(adapter_addr)
-            .await
             .expect("failed to release adapter v6 addr");
         mgr.release_zpr_addr(node_addr)
-            .await
             .expect("failed to release node v6 addr");
 
-        assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
-        assert!(mgr.release_zpr_addr(node_addr).await.is_err());
+        assert!(mgr.release_zpr_addr(adapter_addr).is_err());
+        assert!(mgr.release_zpr_addr(node_addr).is_err());
     }
 
     #[tokio::test]
     async fn v4_allocate_release_adapter_and_node() {
-        let mgr = NetMgr::new_v4().await.expect("failed to build v4 NetMgr");
+        let mgr = NetMgr::new_v4().expect("failed to build v4 NetMgr");
         let adapter_net = config::ADAPTER_BASE_V4NET;
         let node_net = config::NODE_BASE_V4NET;
 
         let adapter_addr = mgr
             .get_next_zpr_addr(&Role::Adapter)
-            .await
             .expect("failed to allocate adapter v4 addr");
         let node_addr = mgr
             .get_next_zpr_addr(&Role::Node)
-            .await
             .expect("failed to allocate node v4 addr");
 
         match adapter_addr {
@@ -320,14 +364,12 @@ mod tests {
         }
 
         mgr.release_zpr_addr(adapter_addr)
-            .await
             .expect("failed to release adapter v4 addr");
         mgr.release_zpr_addr(node_addr)
-            .await
             .expect("failed to release node v4 addr");
 
-        assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
-        assert!(mgr.release_zpr_addr(node_addr).await.is_err());
+        assert!(mgr.release_zpr_addr(adapter_addr).is_err());
+        assert!(mgr.release_zpr_addr(node_addr).is_err());
     }
 
     #[test]
@@ -399,9 +441,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn v6_allocate_release_unallocated() {
-        let mgr = NetMgr::new_v6().await.expect("failed to build v6 NetMgr");
+    #[test]
+    fn v6_allocate_release_unallocated() {
+        let mgr = NetMgr::new_v6().expect("failed to build v6 NetMgr");
         let adapter_net = config::ADAPTER_BASE_V6NET;
 
         let adapter_addr: IpAddr = "fd5a:5052:adda:1:7c51:12d4:f89e:8d90"
@@ -414,6 +456,28 @@ mod tests {
         }
 
         // Should return an error since it is not allocated
-        assert!(mgr.release_zpr_addr(adapter_addr).await.is_err());
+        assert!(mgr.release_zpr_addr(adapter_addr).is_err());
+    }
+
+    #[test]
+    fn aaa_network_for_node_uses_low_24_bits_of_node_id() {
+        let v4_node = IpAddr::from([10, 11, 12, 13]); // low 24 bits => 0x0b0c0d
+        let v6_node = IpAddr::V6(Ipv6Addr::new(
+            0x2001, 0xdb8, 0, 1, 0xaaaa, 0xbbbb, 0xcccc, 0x0c0d,
+        )); // low 24 bits => 0xbbcc0c0d & 0x00ffffff => 0xcc0c0d
+
+        let v4_net = aaa_network_for_node(&v4_node);
+        let v6_net = aaa_network_for_node(&v6_node);
+
+        assert_eq!(v4_net.prefix_len(), NODE_AAA_PREFIX_LEN);
+        assert_eq!(v6_net.prefix_len(), NODE_AAA_PREFIX_LEN);
+        assert_eq!(
+            v4_net,
+            IpNet::from_str("fd5a:5052:0:aaa:0b0c:0d00::/88").expect("parse expected v4 net"),
+        );
+        assert_eq!(
+            v6_net,
+            IpNet::from_str("fd5a:5052:0:aaa:cc0c:0d00::/88").expect("parse expected v6 net"),
+        );
     }
 }
