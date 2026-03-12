@@ -346,10 +346,10 @@ async fn get_visa(
     }
 }
 
-async fn revoke_visa(EPath(id): EPath<String>) -> impl IntoResponse {
+async fn revoke_visa(EPath(id): EPath<u64>) -> impl IntoResponse {
     debug!(target: ADMIN, "DELETE /admin/visas/{}", id);
     let r = Revokes {
-        id: "i".to_string(),
+        id: id.to_string(),
         revoked: vec![0],
     };
 
