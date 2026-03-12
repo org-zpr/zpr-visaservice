@@ -637,7 +637,7 @@ mod tests {
     async fn test_get_actors_one_actor() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
         let actor = make_node_actor_defexp("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
-        asm.actor_mgr.add_node(&actor).await.unwrap();
+        asm.actor_mgr.add_node(&actor, false).await.unwrap();
 
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
@@ -667,9 +667,9 @@ mod tests {
         let actor1 = make_node_actor_defexp("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
         let actor2 = make_node_actor_defexp("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
 
-        asm.actor_mgr.add_node(&actor0).await.unwrap();
-        asm.actor_mgr.add_node(&actor1).await.unwrap();
-        asm.actor_mgr.add_node(&actor2).await.unwrap();
+        asm.actor_mgr.add_node(&actor0, false).await.unwrap();
+        asm.actor_mgr.add_node(&actor1, false).await.unwrap();
+        asm.actor_mgr.add_node(&actor2, false).await.unwrap();
 
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
@@ -707,7 +707,7 @@ mod tests {
         let node_actor = make_node_actor_defexp("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
         let adapter_actor = make_adapter_actor_defexp("fd5a:5052::21", "adapter-1");
 
-        asm.actor_mgr.add_node(&node_actor).await.unwrap();
+        asm.actor_mgr.add_node(&node_actor, false).await.unwrap();
         asm.actor_mgr
             .add_adapter_via_node(&adapter_actor, node_actor.get_zpr_addr().unwrap())
             .await

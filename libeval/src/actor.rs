@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use thiserror::Error;
 
 use crate::attribute::key;
@@ -134,6 +134,20 @@ impl Actor {
             }
             Some(identity_values)
         }
+    }
+
+    /// TODO: Figure out all the details of how we hold authentication data.
+    ///
+    /// For now this looks at the identity keys and if any are found, return the
+    /// soonest expiration.
+    ///
+    /// If there are no identity keys we assume there is no authentication and return None.
+    pub fn get_authentication_expiration(&self) -> Option<SystemTime> {
+        self.identity_keys
+            .iter()
+            .filter_map(|key| self.get_attribute(key))
+            .map(|attr| attr.get_expires())
+            .min()
     }
 
     pub fn is_provider(&self) -> bool {
@@ -586,6 +600,64 @@ mod tests {
         assert_eq!(identity[0], "test@example.com");
         assert_eq!(identity[1], "12345");
         assert_eq!(identity[2], "John Doe");
+    }
+
+    #[test]
+    fn test_get_authentication_expiration_no_identity_keys() {
+        let actor = Actor::new();
+        assert!(actor.get_authentication_expiration().is_none());
+    }
+
+    #[test]
+    fn test_get_authentication_expiration_single_key() {
+        let mut actor = Actor::new();
+        let attr = Attribute::builder("user.email")
+            .expires_in(Duration::from_secs(3600))
+            .value("test@example.com");
+        let expected = attr.get_expires();
+        actor.add_attribute(attr).unwrap();
+        actor.add_identity_key(0, "user.email").unwrap();
+
+        assert_eq!(actor.get_authentication_expiration(), Some(expected));
+    }
+
+    #[test]
+    fn test_get_authentication_expiration_returns_soonest() {
+        let mut actor = Actor::new();
+        let soon = Attribute::builder("user.id")
+            .expires_in(Duration::from_secs(60))
+            .value("42");
+        let later = Attribute::builder("user.email")
+            .expires_in(Duration::from_secs(3600))
+            .value("test@example.com");
+        let soonest_expiry = soon.get_expires();
+        actor.add_attribute(soon).unwrap();
+        actor.add_attribute(later).unwrap();
+        actor.add_identity_key(0, "user.email").unwrap();
+        actor.add_identity_key(1, "user.id").unwrap();
+
+        assert_eq!(actor.get_authentication_expiration(), Some(soonest_expiry));
+    }
+
+    #[test]
+    fn test_get_authentication_expiration_non_identity_attrs_ignored() {
+        let mut actor = Actor::new();
+        // This attribute is NOT an identity key — should not affect the result
+        actor
+            .add_attribute(
+                Attribute::builder("custom.attr")
+                    .expires_in(Duration::from_secs(10))
+                    .value("irrelevant"),
+            )
+            .unwrap();
+        let attr = Attribute::builder("user.email")
+            .expires_in(Duration::from_secs(3600))
+            .value("test@example.com");
+        let expected = attr.get_expires();
+        actor.add_attribute(attr).unwrap();
+        actor.add_identity_key(0, "user.email").unwrap();
+
+        assert_eq!(actor.get_authentication_expiration(), Some(expected));
     }
 
     #[test]

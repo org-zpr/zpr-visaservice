@@ -2,8 +2,9 @@
 //!
 //!
 //! This updates:
-//! - node:<ZADDR> a json Node struct -- metadata about a node connection.
-//! - node:<ZADDR>:connections a set of adapter addresses connected to the node.
+//! - node:<ZADDR>             - a json Node struct -- metadata about a node connection.
+//! - node:<ZADDR>:vss         - a json SAWrapper struct -- the VSS address for the node.
+//! - node:<ZADDR>:connections - a set of adapter addresses connected to the node.
 //!
 //! Future stuff (not yet implemented):
 //! - node:<ZADDR>:todo:vinstall - ordered list of visa IDs to be installed on the node
@@ -46,7 +47,7 @@ impl NodeRepo {
         NodeRepo { db }
     }
 
-    /// Add/overwrite the node state record. This assumes this is a new node being added.
+    /// Add/overwrite the node state record.
     ///
     /// A node record is assoicated with an actor that is a node role.
     /// Nodes authenticate with the visa service directly.
@@ -85,6 +86,12 @@ impl NodeRepo {
                 })?,
             )
             .await?;
+        Ok(())
+    }
+
+    /// Drop the vss info for the node.
+    pub async fn clear_node_vss(&self, node_zpr_addr: &IpAddr) -> Result<(), StoreError> {
+        self.db.del(&vss_key_for_node(node_zpr_addr)).await?;
         Ok(())
     }
 

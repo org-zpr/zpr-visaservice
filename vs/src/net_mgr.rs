@@ -30,7 +30,10 @@ pub struct NetMgr {
 trait AddrAllocator {
     fn allocate(&mut self) -> Option<IpAddr>;
     fn release(&mut self, addr: IpAddr) -> Result<(), ServiceError>;
-    fn contains(&self, addr: IpAddr) -> bool;
+
+    /// Explicitly take an address out of the pool, returning an error if it is already allocated or outside the pool.
+    fn take(&mut self, addr: &IpAddr) -> Result<(), ServiceError>;
+    fn contains(&self, addr: &IpAddr) -> bool;
 }
 
 struct Addr6Allocator {
@@ -147,18 +150,37 @@ impl NetMgr {
     pub fn release_zpr_addr(&self, addr: IpAddr) -> Result<(), ServiceError> {
         {
             let mut allocator = self.adapter_addrs.lock().unwrap();
-            if allocator.contains(addr) {
+            if allocator.contains(&addr) {
                 return allocator.release(addr);
             }
         }
         {
             let mut allocator = self.node_addrs.lock().unwrap();
-            if allocator.contains(addr) {
+            if allocator.contains(&addr) {
                 return allocator.release(addr);
             }
         }
         Err(ServiceError::Internal(format!(
             "attempted to release address {addr} not managed by any allocator"
+        )))
+    }
+
+    /// Take an address out of the pool, returning an error if it is already allocated or outside the pool.
+    pub fn take_zpr_addr(&self, addr: &IpAddr) -> Result<(), ServiceError> {
+        {
+            let mut allocator = self.adapter_addrs.lock().unwrap();
+            if allocator.contains(addr) {
+                return allocator.take(addr);
+            }
+        }
+        {
+            let mut allocator = self.node_addrs.lock().unwrap();
+            if allocator.contains(addr) {
+                return allocator.take(addr);
+            }
+        }
+        Err(ServiceError::Internal(format!(
+            "attempted to take address {addr} not managed by any allocator"
         )))
     }
 
@@ -191,9 +213,9 @@ impl Addr6Allocator {
 }
 
 impl AddrAllocator for Addr6Allocator {
-    fn contains(&self, addr: IpAddr) -> bool {
+    fn contains(&self, addr: &IpAddr) -> bool {
         if let IpAddr::V6(v6addr) = addr {
-            self.net.contains(&v6addr)
+            self.net.contains(v6addr)
         } else {
             false
         }
@@ -234,6 +256,29 @@ impl AddrAllocator for Addr6Allocator {
             ))
         }
     }
+
+    fn take(&mut self, addr: &IpAddr) -> Result<(), ServiceError> {
+        if let IpAddr::V6(v6addr) = addr {
+            if !self.net.contains(v6addr) {
+                return Err(ServiceError::Internal(format!(
+                    "attempted to take IPv6 address {addr} outside allocator net: {}",
+                    self.net
+                )));
+            }
+            let n = u128::from(v6addr.clone()) - u128::from(self.net.network());
+            if self.used.insert(n as u64) {
+                Ok(())
+            } else {
+                Err(ServiceError::Internal(format!(
+                    "attempted to take already allocated IPv6 address: {addr}"
+                )))
+            }
+        } else {
+            Err(ServiceError::Internal(
+                "attempted to take non-IPv6 address from IPv6 allocator".to_string(),
+            ))
+        }
+    }
 }
 
 impl Addr4Allocator {
@@ -248,9 +293,9 @@ impl Addr4Allocator {
 }
 
 impl AddrAllocator for Addr4Allocator {
-    fn contains(&self, addr: IpAddr) -> bool {
+    fn contains(&self, addr: &IpAddr) -> bool {
         if let IpAddr::V4(v4addr) = addr {
-            self.net.contains(&v4addr)
+            self.net.contains(v4addr)
         } else {
             false
         }
@@ -300,6 +345,38 @@ impl AddrAllocator for Addr4Allocator {
         } else {
             Err(ServiceError::Internal(
                 "attempted to release non-IPv4 address from IPv4 allocator".to_string(),
+            ))
+        }
+    }
+
+    fn take(&mut self, addr: &IpAddr) -> Result<(), ServiceError> {
+        if let IpAddr::V4(v4addr) = addr {
+            if !self.net.contains(v4addr) {
+                return Err(ServiceError::Internal(format!(
+                    "attempted to take IPv4 address {addr} outside allocator net: {}",
+                    self.net
+                )));
+            }
+            let n = u32::from(v4addr.clone()) - u32::from(self.net.network());
+            let host_index = if self.net.prefix_len() < IPV4_POINT_TO_POINT_PREFIX_LEN {
+                n.checked_sub(1).ok_or_else(|| {
+                    ServiceError::Internal(format!(
+                        "attempted to take IPv4 network address: {addr}"
+                    ))
+                })?
+            } else {
+                n
+            };
+            if self.used.insert(host_index) {
+                Ok(())
+            } else {
+                Err(ServiceError::Internal(format!(
+                    "attempted to take already allocated IPv4 address: {addr}"
+                )))
+            }
+        } else {
+            Err(ServiceError::Internal(
+                "attempted to take non-IPv4 address from IPv4 allocator".to_string(),
             ))
         }
     }
@@ -457,6 +534,180 @@ mod tests {
 
         // Should return an error since it is not allocated
         assert!(mgr.release_zpr_addr(adapter_addr).is_err());
+    }
+
+    #[test]
+    fn v6_take_address_in_net() {
+        let net = config::ADAPTER_BASE_V6NET;
+        let mut alloc = Addr6Allocator::new(net);
+        let addr: IpAddr = "fd5a:5052:adda:1::42".parse().unwrap();
+        assert!(alloc.take(&addr).is_ok());
+    }
+
+    #[test]
+    fn v6_take_duplicate_fails() {
+        let net = config::ADAPTER_BASE_V6NET;
+        let mut alloc = Addr6Allocator::new(net);
+        let addr: IpAddr = "fd5a:5052:adda:1::42".parse().unwrap();
+        alloc.take(&addr).expect("first take should succeed");
+        assert!(alloc.take(&addr).is_err(), "second take should fail");
+    }
+
+    #[test]
+    fn v6_take_after_allocate_fails() {
+        let net = config::ADAPTER_BASE_V6NET;
+        let mut alloc = Addr6Allocator::new(net);
+        let addr = alloc.allocate().expect("allocation should succeed");
+        assert!(
+            alloc.take(&addr).is_err(),
+            "take of already-allocated address should fail"
+        );
+    }
+
+    #[test]
+    fn v6_take_outside_net_fails() {
+        let net = config::ADAPTER_BASE_V6NET;
+        let mut alloc = Addr6Allocator::new(net);
+        let outside: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(alloc.take(&outside).is_err());
+    }
+
+    #[test]
+    fn v6_take_then_release() {
+        let net = config::ADAPTER_BASE_V6NET;
+        let mut alloc = Addr6Allocator::new(net);
+        let addr: IpAddr = "fd5a:5052:adda:1::42".parse().unwrap();
+        alloc.take(&addr).expect("take should succeed");
+        alloc
+            .release(addr)
+            .expect("release after take should succeed");
+    }
+
+    #[test]
+    fn v4_take_address_in_net() {
+        let net = config::ADAPTER_BASE_V4NET;
+        let mut alloc = Addr4Allocator::new(net);
+        let addr: IpAddr = "10.128.0.1".parse().unwrap();
+        assert!(alloc.take(&addr).is_ok());
+    }
+
+    #[test]
+    fn v4_take_duplicate_fails() {
+        let net = config::ADAPTER_BASE_V4NET;
+        let mut alloc = Addr4Allocator::new(net);
+        let addr: IpAddr = "10.128.0.1".parse().unwrap();
+        alloc.take(&addr).expect("first take should succeed");
+        assert!(alloc.take(&addr).is_err(), "second take should fail");
+    }
+
+    #[test]
+    fn v4_take_after_allocate_fails() {
+        let net = config::ADAPTER_BASE_V4NET;
+        let mut alloc = Addr4Allocator::new(net);
+        let addr = alloc.allocate().expect("allocation should succeed");
+        assert!(
+            alloc.take(&addr).is_err(),
+            "take of already-allocated address should fail"
+        );
+    }
+
+    #[test]
+    fn v4_take_outside_net_fails() {
+        let net = config::ADAPTER_BASE_V4NET;
+        let mut alloc = Addr4Allocator::new(net);
+        let outside: IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(alloc.take(&outside).is_err());
+    }
+
+    #[test]
+    fn v4_take_network_address_fails() {
+        // For prefix_len < 31, take subtracts 1 from the offset; the network
+        // address has offset 0, so checked_sub(1) returns None → error.
+        let net = Ipv4Net::from_str("10.0.0.0/30").unwrap();
+        let mut alloc = Addr4Allocator::new(net);
+        let network_addr: IpAddr = "10.0.0.0".parse().unwrap();
+        assert!(alloc.take(&network_addr).is_err());
+    }
+
+    #[test]
+    fn v4_take_then_release() {
+        let net = config::ADAPTER_BASE_V4NET;
+        let mut alloc = Addr4Allocator::new(net);
+        let addr: IpAddr = "10.128.0.1".parse().unwrap();
+        alloc.take(&addr).expect("take should succeed");
+        alloc
+            .release(addr)
+            .expect("release after take should succeed");
+    }
+
+    #[test]
+    fn v4_take_on_slash31() {
+        // For a /31 (prefix_len == IPV4_POINT_TO_POINT_PREFIX_LEN), the offset
+        // is used directly without subtracting 1, so taking the network address works.
+        let net = Ipv4Net::from_str("10.0.0.0/31").unwrap();
+        let mut alloc = Addr4Allocator::new(net);
+        let addr: IpAddr = "10.0.0.0".parse().unwrap();
+        assert!(alloc.take(&addr).is_ok());
+    }
+
+    #[tokio::test]
+    async fn v6_take_and_release_zpr_addr() {
+        let mgr = NetMgr::new_v6().expect("failed to build v6 NetMgr");
+        let adapter_addr: IpAddr = "fd5a:5052:adda:1::100".parse().unwrap();
+        let node_addr: IpAddr = "fd5a:5052:90de:1::100".parse().unwrap();
+
+        mgr.take_zpr_addr(&adapter_addr)
+            .expect("take adapter addr should succeed");
+        mgr.take_zpr_addr(&node_addr)
+            .expect("take node addr should succeed");
+
+        mgr.release_zpr_addr(adapter_addr)
+            .expect("release adapter addr should succeed");
+        mgr.release_zpr_addr(node_addr)
+            .expect("release node addr should succeed");
+    }
+
+    #[test]
+    fn v6_take_unmanaged_addr_fails() {
+        let mgr = NetMgr::new_v6().expect("failed to build v6 NetMgr");
+        let unmanaged: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(mgr.take_zpr_addr(&unmanaged).is_err());
+    }
+
+    #[test]
+    fn v6_take_already_allocated_fails() {
+        let mgr = NetMgr::new_v6().expect("failed to build v6 NetMgr");
+        let addr = mgr
+            .get_next_zpr_addr(&Role::Adapter)
+            .expect("allocate should succeed");
+        assert!(
+            mgr.take_zpr_addr(&addr).is_err(),
+            "take of already-allocated address should fail"
+        );
+    }
+
+    #[tokio::test]
+    async fn v4_take_and_release_zpr_addr() {
+        let mgr = NetMgr::new_v4().expect("failed to build v4 NetMgr");
+        let adapter_addr: IpAddr = "10.128.0.1".parse().unwrap();
+        let node_addr: IpAddr = "10.192.0.1".parse().unwrap();
+
+        mgr.take_zpr_addr(&adapter_addr)
+            .expect("take adapter addr should succeed");
+        mgr.take_zpr_addr(&node_addr)
+            .expect("take node addr should succeed");
+
+        mgr.release_zpr_addr(adapter_addr)
+            .expect("release adapter addr should succeed");
+        mgr.release_zpr_addr(node_addr)
+            .expect("release node addr should succeed");
+    }
+
+    #[test]
+    fn v4_take_unmanaged_addr_fails() {
+        let mgr = NetMgr::new_v4().expect("failed to build v4 NetMgr");
+        let unmanaged: IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(mgr.take_zpr_addr(&unmanaged).is_err());
     }
 
     #[test]

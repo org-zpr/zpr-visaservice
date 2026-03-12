@@ -6,7 +6,8 @@ use libeval::attribute::key;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use tracing::{debug, warn};
+use std::time::SystemTime;
+use tracing::{debug, info, warn};
 
 use zpr::policy_types::{Scope, ServiceType};
 use zpr::vsapi_types::ServiceDescriptor;
@@ -44,19 +45,58 @@ impl ActorMgr {
         }
     }
 
+    /// When we start VS with state in the DB, we are primarily concerned about any nodes
+    /// that were connected.
+    ///
+    /// For each node we find in here we check to make sure that the node auth has not
+    /// expired.  Expired nodes are removed (along with any connected adapters).  
+    ///
+    /// For non-expired nodes, we wipe their vss info.
+    pub async fn refresh_state(&self) -> Result<(), ServiceError> {
+        for node_addr in &self.node_db.list_node_addrs().await? {
+            let node_actor = match self.actor_db.get_actor_by_zpr_addr(node_addr).await {
+                Ok(actor) => actor,
+                Err(StoreError::NotFound(_)) => {
+                    debug!(target: ACTOR, "refresh_state: node at {} not found in actor DB, removing from node DB", node_addr);
+                    self.remove_actor_by_zpr_addr(node_addr).await?;
+                    continue;
+                }
+                Err(e) => return Err(ServiceError::from(e)),
+            };
+
+            if let Some(exp) = node_actor.get_authentication_expiration() {
+                if exp < SystemTime::now() {
+                    info!(target: ACTOR, "refresh_state: node at {node_addr} has expired auth, removing");
+                    self.remove_actor_by_zpr_addr(node_addr).await?;
+                    continue;
+                }
+            }
+
+            if let Err(e) = self.node_db.clear_node_vss(node_addr).await {
+                warn!(target: ACTOR, "refresh_state: failed to clear VSS info for node at {}: {}", node_addr, e);
+            }
+        }
+
+        Ok(())
+    }
+
     /// TODO: Support for reconnects (where we still have state).
-    pub async fn add_node(&self, actor: &Actor) -> Result<(), ServiceError> {
+    pub async fn add_node(&self, actor: &Actor, reconnect: bool) -> Result<(), ServiceError> {
         if !actor.is_node() {
             return Err(ServiceError::Internal(
                 "attempt to add non-node actor as node".into(),
             ));
         }
-        // Make sure DB is clean (TODO: support for reconnects)
-        self.node_db
-            .remove_node(actor.get_zpr_addr().unwrap())
-            .await?;
 
-        self.actor_db.add_actor(actor).await?;
+        if !reconnect {
+            self.node_db
+                .remove_node(actor.get_zpr_addr().unwrap())
+                .await?;
+            self.actor_db.add_actor(actor).await?;
+        } else {
+            self.actor_db.update_actor(actor).await?;
+        }
+
         let node_obj = db::Node::new_from_node_actor(&actor)?;
         self.node_db.add_node(&node_obj).await?;
         Ok(())
@@ -269,6 +309,11 @@ impl ActorMgr {
         Ok(addrs)
     }
 
+    pub async fn list_zpr_addrs(&self) -> Result<Vec<IpAddr>, ServiceError> {
+        let addrs = self.actor_db.list_zpr_addrs().await?;
+        Ok(addrs)
+    }
+
     /// Return true if the actor exists and offers at least one authentication service.
     pub async fn has_auth_services(
         &self,
@@ -406,7 +451,7 @@ mod test {
         let actor = make_node_actor_defexp("fd5a:5052::1", "node-1", "[fd5a:5052::100]:1234");
         let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
 
-        mgr.add_node(&actor).await.unwrap();
+        mgr.add_node(&actor, false).await.unwrap();
         let loaded = mgr.get_actor_by_zpr_addr(&node_addr).await.unwrap();
         assert!(matches!(loaded, Some(a) if a.is_node()));
 
@@ -419,7 +464,7 @@ mod test {
         let mgr = make_mgr();
         let actor = make_adapter_actor_defexp("fd5a:5052::2", "adapter-1");
 
-        let err = mgr.add_node(&actor).await.unwrap_err();
+        let err = mgr.add_node(&actor, false).await.unwrap_err();
         match err {
             ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
@@ -443,7 +488,7 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
 
-        mgr.add_node(&node_actor).await.unwrap();
+        mgr.add_node(&node_actor, false).await.unwrap();
         mgr.add_adapter_via_node(&adapter_actor, &node_addr)
             .await
             .unwrap();
@@ -466,7 +511,7 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::6".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
 
-        mgr.add_node(&node_actor).await.unwrap();
+        mgr.add_node(&node_actor, false).await.unwrap();
         mgr.add_adapter_via_node(&adapter_actor, &node_addr)
             .await
             .unwrap();

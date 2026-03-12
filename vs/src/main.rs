@@ -208,6 +208,17 @@ async fn main() -> std::process::ExitCode {
         }
         None => PolicyMgr::new_from_state(db::PolicyRepo::new(db_handle.clone())).await,
     };
+
+    let net_mgr = NetMgr::new_v6().expect("failed to create NetMgr");
+
+    if !cli.clear_state {
+        if let Err(e) = synchronize_state(&actor_mgr, &net_mgr).await {
+            error!(target: MAIN, "error during state synchronization: {}", e);
+            // For now treat this as a fail.  Force user to reset state.
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+
     let policy_mgr = match policy_mgr_res {
         Ok(pm) => pm,
         Err(e) => {
@@ -231,7 +242,7 @@ async fn main() -> std::process::ExitCode {
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(visa_repo),
         vss_mgr: VssMgr::new(),
-        net_mgr: Arc::new(NetMgr::new_v6().expect("failed to create NetMgr")),
+        net_mgr: Arc::new(net_mgr),
         event_mgr: EventMgr::new(event_tx),
     });
 
@@ -376,4 +387,22 @@ fn initialize_identity(
     fs::write(&id_path, &new_identity)?;
     debug!(target: MAIN, "created new identity file at {}", id_path.display());
     Ok(new_identity)
+}
+
+/// If we are starting with state in the DB, do any housekeeping needed to get in sync.
+///
+/// TODO: If we have state in the db, and we are loading a policy that differs from
+/// the saved "curent" policy, we may have visas that are not longer valid.
+async fn synchronize_state(actor_mgr: &ActorMgr, net_mgr: &NetMgr) -> Result<(), ServiceError> {
+    actor_mgr.refresh_state().await?;
+
+    // If we are starting the visa service with state, we need to grab all the adapter
+    // addresses we have handed out already so that we do not try to hand out the same
+    // address to a new adapter.
+    for zpr_addr in actor_mgr.list_zpr_addrs().await.unwrap_or_default() {
+        if net_mgr.is_managed_address(&zpr_addr) {
+            net_mgr.take_zpr_addr(&zpr_addr)?;
+        }
+    }
+    Ok(())
 }
