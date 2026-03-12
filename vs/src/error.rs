@@ -57,6 +57,9 @@ pub enum ServiceError {
 
     #[error("vsapi error: {0}")]
     VsapiType(#[from] VsapiTypeError),
+
+    #[error("admin key error: {0}")]
+    AdminKeyError(String),
 }
 
 #[derive(Debug, Error)]

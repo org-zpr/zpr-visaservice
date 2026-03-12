@@ -3,6 +3,10 @@ name = "vs"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "vsapikey"
+path = "src/bin/vsapikey.rs"
+
 [dependencies]
 admin-api-types = { path = "../admin-api-types" }
 arc-swap = "1.7.1"
