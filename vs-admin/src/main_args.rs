@@ -13,6 +13,15 @@ pub struct Cmd {
     /// Path to the CA certificate file used to validate the visa service TLS credentials.
     #[arg(short, long, value_name = "PEM_CERT_FILE")]
     pub ca_cert: PathBuf,
+
+    /// API key for authenticating with the visa service admin API.
+    /// WARNING: insecure — key will be visible in shell history. Prefer --api-key-file or VS_API_KEY.
+    #[arg(long, value_name = "KEY", conflicts_with = "api_key_file")]
+    pub api_key: Option<String>,
+
+    /// Path to a file containing the API key for the visa service admin API.
+    #[arg(long, value_name = "PATH", conflicts_with = "api_key")]
+    pub api_key_file: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]

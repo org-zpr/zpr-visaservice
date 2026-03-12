@@ -34,6 +34,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 use crate::admin_apikeys::Permission;
+use crate::apikey::ApiKey;
 use crate::assembly::Assembly;
 use crate::db::Role;
 use crate::logging::targets::ADMIN;
@@ -107,35 +108,16 @@ fn rustls_tls_acceptor(key_file: &Path, cert_file: &Path) -> TlsAcceptor {
 }
 
 /// Check the passed API key.
-/// Key format is "zpr_vsapi.ID.HASH" where ID is the key ID and HASH is the base64-encoded secret.
 async fn validate_api_key(state: &SharedState, api_key: &str) -> Result<Permission, StatusCode> {
     let rstate = state.read().await;
 
-    if !api_key.starts_with("zpr_vsapi.") {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    let apikey = ApiKey::parse(api_key).map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    // The key is of the form prefix_ID.HASH
-    // We need the ID and the HASH.
-    let id_and_hash: Vec<&str> = api_key
-        .trim_start_matches("zpr_vsapi.")
-        .split('.')
-        .collect();
-    if id_and_hash.len() != 2 {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let key_id = id_and_hash[0];
-    let key_hash = id_and_hash[1];
-
-    match rstate
-        .asm
-        .admin_api_keys
-        .lookup_permission(key_id, key_hash)
-    {
+    match rstate.asm.admin_api_keys.lookup_permission(&apikey) {
         Ok(Some(perm)) => Ok(perm),
         Ok(None) => Err(StatusCode::UNAUTHORIZED),
         Err(e) => {
-            error!(target: ADMIN, "error validating API key {key_id}: {}", e);
+            error!(target: ADMIN, "error validating API key {}: {}", apikey.key_id_hex(), e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -568,35 +550,34 @@ mod tests {
 
     use super::*;
 
+    use crate::apikey::ApiKey;
     use axum::body::Body;
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE};
     use http_body_util::BodyExt;
     use libeval::eval::{Direction, Hit};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
 
-    use crate::admin_apikeys::{ApiKeyRecord, KeyStatus, sha256_hex};
+    use crate::admin_apikeys::{ApiKeyRecord, KeyStatus};
     use crate::assembly::tests::new_assembly_for_tests;
     use crate::test_helpers::{make_adapter_actor_defexp, make_node_actor_defexp};
 
     /// Insert a readwrite test key into the assembly's key store and return the
     /// key string to use in the X-API-Key header.
     fn setup_test_api_key(asm: &Arc<Assembly>) -> String {
-        let secret_bytes: Vec<u8> = (0u8..32).collect();
-        let secret_b64 = URL_SAFE.encode(&secret_bytes);
-        let secret_hash = sha256_hex(&secret_bytes).unwrap();
+        let secret_bytes: [u8; 32] = (0u8..32).collect::<Vec<_>>().try_into().unwrap();
+        let apikey = ApiKey::new(0xaabbccdd, secret_bytes);
         let record = ApiKeyRecord {
             owner: "test".to_string(),
             permission: Permission::ReadWrite,
             status: KeyStatus::Active,
             created: "2026-01-01".to_string(),
-            secret_hash,
+            secret_hash: apikey.secret_hash().unwrap(),
             description: "test key".to_string(),
         };
         asm.admin_api_keys
-            .insert_for_test("aabbccdd".to_string(), record);
-        format!("zpr_vsapi.aabbccdd.{}", secret_b64)
+            .insert_for_test(apikey.key_id_hex(), record);
+        apikey.to_key_string()
     }
 
     #[tokio::test]
