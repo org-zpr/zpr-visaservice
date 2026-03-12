@@ -567,18 +567,40 @@ mod tests {
     use super::*;
 
     use axum::body::Body;
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE};
     use http_body_util::BodyExt;
     use libeval::eval::{Direction, Hit};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
 
+    use crate::admin_apikeys::{ApiKeyRecord, KeyStatus, sha256_hex};
     use crate::assembly::tests::new_assembly_for_tests;
     use crate::test_helpers::{make_adapter_actor_defexp, make_node_actor_defexp};
+
+    /// Insert a readwrite test key into the assembly's key store and return the
+    /// key string to use in the X-API-Key header.
+    fn setup_test_api_key(asm: &Arc<Assembly>) -> String {
+        let secret_bytes: Vec<u8> = (0u8..32).collect();
+        let secret_b64 = URL_SAFE.encode(&secret_bytes);
+        let secret_hash = sha256_hex(&secret_bytes).unwrap();
+        let record = ApiKeyRecord {
+            owner: "test".to_string(),
+            permission: Permission::ReadWrite,
+            status: KeyStatus::Active,
+            created: "2026-01-01".to_string(),
+            secret_hash,
+            description: "test key".to_string(),
+        };
+        asm.admin_api_keys
+            .insert_for_test("aabbccdd".to_string(), record);
+        format!("zpr_vsapi.aabbccdd.{}", secret_b64)
+    }
 
     #[tokio::test]
     async fn test_get_visas_no_visas() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -586,6 +608,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/visas")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -602,6 +625,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visas_one_visa() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -625,6 +649,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/visas")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -642,6 +667,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visas_three_visas() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
@@ -680,6 +706,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/visas")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -700,6 +727,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_no_actors() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -707,6 +735,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -723,6 +752,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_one_actor() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let actor = make_node_actor_defexp("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
         asm.actor_mgr.add_node(&actor).await.unwrap();
 
@@ -733,6 +763,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -750,6 +781,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_multiple_actors() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let actor0 = make_node_actor_defexp("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
         let actor1 = make_node_actor_defexp("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
         let actor2 = make_node_actor_defexp("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
@@ -765,6 +797,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -791,6 +824,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_role_filter() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let node_actor = make_node_actor_defexp("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
         let adapter_actor = make_adapter_actor_defexp("fd5a:5052::21", "adapter-1");
 
@@ -809,6 +843,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors?role=node")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -831,6 +866,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors?role=adapter")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -852,6 +888,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_invalid_role_filter() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
 
@@ -860,6 +897,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors?role=invalid")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )

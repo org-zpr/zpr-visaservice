@@ -176,6 +176,13 @@ impl ReloadableApiKeys {
     pub fn get_path(&self) -> &std::path::Path {
         &self.keys_file_path
     }
+
+    /// Insert a key record directly. Only available in test builds.
+    #[cfg(test)]
+    pub fn insert_for_test(&self, id: String, record: ApiKeyRecord) {
+        let mut keys_file = self.keys_file.write().unwrap();
+        keys_file.keys.insert(id, record);
+    }
 }
 
 impl Default for ReloadableApiKeys {

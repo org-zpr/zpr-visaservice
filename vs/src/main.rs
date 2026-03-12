@@ -229,7 +229,7 @@ async fn main() -> std::process::ExitCode {
             .unwrap_or_else(|| PathBuf::from(config::DEFAULT_API_KEYS_FILE)),
         true,
     ) {
-        Ok(keys) => keys,        
+        Ok(keys) => keys,
         Err(e) => {
             error!(target: MAIN, "failed to load admin API keys: {e}");
             return std::process::ExitCode::FAILURE;
@@ -238,10 +238,7 @@ async fn main() -> std::process::ExitCode {
     if admin_api_keys.is_empty() {
         warn!(target: MAIN, "no active admin API keys, admin API will be inaccessible until keys file '{}' is created and contains active keys",
             admin_api_keys.get_path().display());
-    } 
-    
-
-    
+    }
 
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
