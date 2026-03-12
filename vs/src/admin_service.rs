@@ -106,6 +106,8 @@ fn rustls_tls_acceptor(key_file: &Path, cert_file: &Path) -> TlsAcceptor {
     TlsAcceptor::from(Arc::new(cfg))
 }
 
+/// Check the passed API key.
+/// Key format is "zpr_vsapi.ID.HASH" where ID is the key ID and HASH is the base64-encoded secret.
 async fn validate_api_key(state: &SharedState, api_key: &str) -> Result<Permission, StatusCode> {
     let rstate = state.read().await;
 
