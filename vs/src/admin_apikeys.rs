@@ -1,8 +1,10 @@
+use base64::{Engine as _, engine::general_purpose::URL_SAFE};
+use openssl::hash::{Hasher, MessageDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::error::ServiceError;
+use crate::error::{CryptoError, ServiceError};
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -29,12 +31,6 @@ pub struct ApiKeyRecord {
     pub description: String,
 }
 
-#[derive(Debug)]
-pub struct Permit {
-    pub owner: String,
-    permission: Permission,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct KeysFile {
     pub keys: HashMap<String, ApiKeyRecord>,
@@ -53,13 +49,14 @@ impl KeysFile {
     }
 }
 
-impl Permit {
+impl Permission {
     pub fn can_read(&self) -> bool {
-        matches!(self.permission, Permission::Read | Permission::ReadWrite)
+        matches!(self, Permission::Read | Permission::ReadWrite)
     }
 
+    #[allow(dead_code)]
     pub fn can_write(&self) -> bool {
-        matches!(self.permission, Permission::ReadWrite)
+        matches!(self, Permission::ReadWrite)
     }
 }
 
@@ -117,13 +114,47 @@ impl ReloadableApiKeys {
         }
     }
 
-    /// Lookup a key by ID. If the key is found and active it returns the [Permit].
-    pub fn lookup(&self, key_id: &str) -> Option<Permit> {
+    /// Check the key given by ID is present and active, and then confirm that the passed
+    /// secret matches the stored hash. If all that is good, return the permission associated with the key.
+    /// If not, return None (ie, no permission).
+    pub fn lookup_permission(
+        &self,
+        key_id: &str,
+        key_secret: &str,
+    ) -> Result<Option<Permission>, ServiceError> {
         let keys_file = self.keys_file.read().unwrap();
-        keys_file.keys.get(key_id).map(|record| Permit {
-            owner: record.owner.clone(),
-            permission: record.permission.clone(),
-        })
+        if let Some(record) = keys_file.keys.get(key_id) {
+            if record.status == KeyStatus::Active {
+                // key_secret is base64 encoded.
+                let secret_bytes = match URL_SAFE.decode(key_secret) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        return Err(ServiceError::AdminKeyError(format!(
+                            "invalid key secret encoding: {e}"
+                        )));
+                    }
+                };
+
+                // SHA256 hash the secret and compare to the stored hash.
+                let secret_hash = match sha256_hex(&secret_bytes) {
+                    Ok(hash) => hash,
+                    Err(e) => {
+                        return Err(ServiceError::AdminKeyError(format!(
+                            "failed to hash key: {e}"
+                        )));
+                    }
+                };
+                if secret_hash == record.secret_hash {
+                    Ok(Some(record.permission.clone()))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     /// Get the number of active keys in the keys file.
@@ -154,4 +185,12 @@ impl Default for ReloadableApiKeys {
             keys_file: RwLock::new(KeysFile::empty()),
         }
     }
+}
+
+/// Compute the SHA-256 digest of `data` and return it as a lowercase hex string.
+pub fn sha256_hex(data: &[u8]) -> Result<String, CryptoError> {
+    let mut hasher = Hasher::new(MessageDigest::sha256())?;
+    hasher.update(data)?;
+    let digest = hasher.finish()?;
+    Ok(hex::encode(&*digest))
 }

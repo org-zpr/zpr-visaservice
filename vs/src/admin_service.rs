@@ -8,13 +8,15 @@ use libeval::attribute::{ROLE_NODE, key};
 use tracing::{debug, error, info, warn};
 
 use axum::{
+    Extension,
     Json,
     Router,
     //routing::post,
     extract::{Json as EJson, Path as EPath, Query, Request, State},
     //extract::Form,
     http::StatusCode,
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     //response::Response,
     routing::{delete, get, post},
 };
@@ -31,6 +33,7 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
+use crate::admin_apikeys::Permission;
 use crate::assembly::Assembly;
 use crate::db::Role;
 use crate::logging::targets::ADMIN;
@@ -103,6 +106,56 @@ fn rustls_tls_acceptor(key_file: &Path, cert_file: &Path) -> TlsAcceptor {
     TlsAcceptor::from(Arc::new(cfg))
 }
 
+async fn validate_api_key(state: &SharedState, api_key: &str) -> Result<Permission, StatusCode> {
+    let rstate = state.read().await;
+
+    if !api_key.starts_with("zpr_vsapi.") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // The key is of the form prefix_ID.HASH
+    // We need the ID and the HASH.
+    let id_and_hash: Vec<&str> = api_key
+        .trim_start_matches("zpr_vsapi.")
+        .split('.')
+        .collect();
+    if id_and_hash.len() != 2 {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let key_id = id_and_hash[0];
+    let key_hash = id_and_hash[1];
+
+    match rstate
+        .asm
+        .admin_api_keys
+        .lookup_permission(key_id, key_hash)
+    {
+        Ok(Some(perm)) => Ok(perm),
+        Ok(None) => Err(StatusCode::UNAUTHORIZED),
+        Err(e) => {
+            error!(target: ADMIN, "error validating API key {key_id}: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// Check the API key and if all good inserts a Permission as a request extension.
+async fn require_api_key(
+    State(state): State<SharedState>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let api_key = req
+        .headers()
+        .get("X-API-Key")
+        .and_then(|hv| hv.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let perm = validate_api_key(&state, api_key).await?;
+    req.extensions_mut().insert(perm);
+    Ok(next.run(req).await)
+}
+
 fn admin_app(state: SharedState) -> Router {
     Router::new()
         .route("/admin/policies", get(get_policies))
@@ -123,6 +176,10 @@ fn admin_app(state: SharedState) -> Router {
         .route("/admin/authrevoke/{capture}", post(add_revoke))
         .route("/admin/authrevoke/clear", post(clear_revokes))
         .route("/admin/authrevoke/{capture}", delete(remove_revoke))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key,
+        ))
         .with_state(state.clone())
 }
 
@@ -207,7 +264,13 @@ async fn install_policy(EJson(_body): EJson<PolicyBundle>) -> impl IntoResponse 
 /// Returns a list of visa IDs in ListEntry structs or empty list.
 #[axum::debug_handler]
 //async fn get_visas(State(state): State<SharedState>) -> impl IntoResponse {
-async fn get_visas(State(state): State<SharedState>) -> (StatusCode, Json<Vec<ListEntry>>) {
+async fn get_visas(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+) -> (StatusCode, Json<Vec<ListEntry>>) {
+    if !perm.can_read() {
+        return (StatusCode::FORBIDDEN, Json(Vec::<ListEntry>::new()));
+    }
     debug!(target: ADMIN, "GET /admin/visas");
     let rstate = state.read().await;
 
@@ -243,9 +306,13 @@ fn ports_from_pep(pep: &DockPep) -> (u16, u16) {
 }
 
 async fn get_visa(
+    Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
     EPath(id): EPath<u64>,
 ) -> Result<Json<VisaDescriptor>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
     debug!(target: ADMIN, "GET /admin/visas/{}", id);
     let rstate = state.read().await;
 
@@ -307,9 +374,13 @@ async fn revoke_visa(EPath(id): EPath<String>) -> impl IntoResponse {
 
 /// Returns a list of connected CN values in CnEntry structs or empty list.
 async fn get_actors(
+    Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
     Query(q): Query<RoleFilter>,
 ) -> (StatusCode, Json<Vec<CnEntry>>) {
+    if !perm.can_read() {
+        return (StatusCode::FORBIDDEN, Json(Vec::<CnEntry>::new()));
+    }
     debug!(target: ADMIN, "GET /admin/actors {:?}", q);
     let db_filter = match q.role {
         Some(ActorRole::Node) => Some(Role::Node),
@@ -335,10 +406,15 @@ async fn get_actors(
 
 async fn get_actor(
     State(state): State<SharedState>,
+    Extension(perm): Extension<Permission>,
     EPath(cn): EPath<String>,
 ) -> Result<Json<ActorDescriptor>, StatusCode> {
     debug!(target: ADMIN, "GET /admin/actor/{}", cn);
     let rstate = state.read().await;
+
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     match rstate.asm.actor_mgr.get_actor_by_cn(&cn).await {
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -395,7 +471,13 @@ async fn get_related_visas(EPath(cn): EPath<String>) -> impl IntoResponse {
     two_elem_list()
 }
 
-async fn get_services(State(state): State<SharedState>) -> (StatusCode, Json<Vec<NamedListEntry>>) {
+async fn get_services(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+) -> (StatusCode, Json<Vec<NamedListEntry>>) {
+    if !perm.can_read() {
+        return (StatusCode::FORBIDDEN, Json(Vec::<NamedListEntry>::new()));
+    }
     debug!(target: ADMIN, "GET /admin/services");
     let rstate = state.read().await;
 
@@ -418,9 +500,14 @@ async fn get_services(State(state): State<SharedState>) -> (StatusCode, Json<Vec
 }
 
 async fn get_service(
+    Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
     EPath(cn): EPath<String>,
 ) -> Result<Json<ServiceDescriptor>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     debug!(target: ADMIN, "GET /admin/service CN={}", cn);
     let rstate = state.read().await;
 

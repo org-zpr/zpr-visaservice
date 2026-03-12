@@ -2,14 +2,13 @@
 
 use base64::prelude::*;
 use clap::{Parser, Subcommand};
-use openssl::hash::{Hasher, MessageDigest};
 use openssl::rand::rand_bytes;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use vs::admin_apikeys::{ApiKeyRecord, KeyStatus, KeysFile, Permission};
+use vs::admin_apikeys::{ApiKeyRecord, KeyStatus, KeysFile, Permission, sha256_hex};
 
 const DEFAULT_KEYS_FILE: &str = "vs_keys.toml";
 
@@ -31,19 +30,6 @@ fn write_keys_file(path: &Path, kf: &KeysFile) -> Result<(), String> {
         .map_err(|e| format!("failed to write temp file: {e}"))?;
     fs::rename(&tmp_path, path)
         .map_err(|e| format!("failed to rename temp file to {}: {}", path.display(), e))
-}
-
-/// Compute the SHA-256 digest of `data` and return it as a lowercase hex string.
-fn sha256_hex(data: &[u8]) -> Result<String, String> {
-    let mut hasher =
-        Hasher::new(MessageDigest::sha256()).map_err(|e| format!("hasher init error: {e}"))?;
-    hasher
-        .update(data)
-        .map_err(|e| format!("hasher update error: {e}"))?;
-    let digest = hasher
-        .finish()
-        .map_err(|e| format!("hasher finish error: {e}"))?;
-    Ok(hex::encode(&*digest))
 }
 
 /// Generate a random 8-char lowercase hex key ID that is not already present in `keys`.
@@ -152,7 +138,8 @@ fn cmd_create(
     let mut secret_bytes = [0u8; 32];
     rand_bytes(&mut secret_bytes).map_err(|e| format!("random secret generation failed: {e}"))?;
 
-    let secret_hash = sha256_hex(&secret_bytes)?;
+    let secret_hash =
+        sha256_hex(&secret_bytes).map_err(|e| format!("failed to compute secret hash: {e}"))?;
     let secret_b64 = BASE64_URL_SAFE_NO_PAD.encode(secret_bytes);
 
     let record = ApiKeyRecord {
