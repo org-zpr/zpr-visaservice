@@ -11,6 +11,7 @@ pub async fn launch(asm: Arc<Assembly>) {
     let mut term_stream = signal(SignalKind::terminate()).unwrap();
     let mut int_stream = signal(SignalKind::interrupt()).unwrap();
     let mut usr1_stream = signal(SignalKind::user_defined1()).unwrap();
+    let mut usr2_stream = signal(SignalKind::user_defined2()).unwrap();
 
     let mut int_received = false;
 
@@ -18,6 +19,14 @@ pub async fn launch(asm: Arc<Assembly>) {
         tokio::select! {
             _ = usr1_stream.recv() => {
                 emit_counts(&asm.counters, asm.get_uptime());
+            }
+
+            _ = usr2_stream.recv() => {
+                if let Err(e) = asm.admin_api_keys.reload() {
+                    error!(target: MAIN, "Error reloading admin API keys: {e}");
+                } else {
+                    info!(target: MAIN, "successfully reloaded admin API keys");
+                }
             }
 
             _ = int_stream.recv() => {

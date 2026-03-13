@@ -11,7 +11,9 @@ use libeval::attribute::{ROLE_ADAPTER, key};
 use libeval::pio;
 
 mod actor_mgr;
+mod admin_apikeys;
 mod admin_service;
+mod apikey;
 mod assembly;
 mod auth;
 mod config;
@@ -34,6 +36,7 @@ mod vss_mgr;
 mod test_helpers;
 
 use crate::actor_mgr::ActorMgr;
+use crate::admin_apikeys::ReloadableApiKeys;
 use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
@@ -48,9 +51,9 @@ use crate::net_mgr::NetMgr;
 use crate::policy_mgr::PolicyMgr;
 use crate::visa_mgr::VisaMgr;
 use crate::vss_mgr::VssMgr;
-use zpr::vsapi_types::Claim;
 
 use redis::AsyncCommands;
+use zpr::vsapi_types::Claim;
 
 const DEFAULT_CONFIG_PATH: &str = "vs.toml";
 
@@ -220,6 +223,24 @@ async fn main() -> std::process::ExitCode {
 
     let (event_tx, event_rx) = mpsc::channel(config::EVENT_QUEUE_DEPTH);
 
+    let admin_api_keys = match ReloadableApiKeys::new_from_file(
+        cfg.core
+            .api_keys
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(config::DEFAULT_API_KEYS_FILE)),
+        true,
+    ) {
+        Ok(keys) => keys,
+        Err(e) => {
+            error!(target: MAIN, "failed to load admin API keys: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    if admin_api_keys.is_empty() {
+        warn!(target: MAIN, "no active admin API keys, admin API will be inaccessible until keys file '{}' is created and contains active keys",
+            admin_api_keys.get_path().display());
+    }
+
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
         counters: Default::default(),
@@ -233,6 +254,7 @@ async fn main() -> std::process::ExitCode {
         vss_mgr: VssMgr::new(),
         net_mgr: Arc::new(NetMgr::new_v6().expect("failed to create NetMgr")),
         event_mgr: EventMgr::new(event_tx),
+        admin_api_keys: Arc::new(admin_api_keys),
     });
 
     js.spawn_local(signal_worker::launch(asm.clone()));

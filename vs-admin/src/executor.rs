@@ -18,9 +18,9 @@ pub struct Executor {
 }
 
 impl Executor {
-    pub fn new(api_url: String, cert: reqwest::tls::Certificate) -> Self {
+    pub fn new(api_url: String, cert: reqwest::tls::Certificate, api_key: String) -> Self {
         Executor {
-            vs_cli: VsClient::new(api_url, cert, false),
+            vs_cli: VsClient::new(api_url, cert, api_key, false),
         }
     }
 

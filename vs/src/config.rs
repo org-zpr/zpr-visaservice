@@ -11,6 +11,8 @@ use crate::error::ServiceError;
 
 pub const VS_CN: &str = "vs.zpr";
 
+pub const DEFAULT_API_KEYS_FILE: &str = "vs_keys.toml";
+
 pub const ADAPTER_BASE_V6NET: Ipv6Net =
     Ipv6Net::new_assert(Ipv6Addr::new(0xfd5a, 0x5052, 0xadda, 1, 0, 0, 0, 0), 64);
 pub const NODE_BASE_V6NET: Ipv6Net =
@@ -104,6 +106,9 @@ pub struct CoreSection {
     /// Overrides any stored identity file and disables the auto-generation of an identity UUID.
     /// If set this must be a non-empty string.
     pub identity: Option<String>,
+
+    /// Path to the API keys file.
+    pub api_keys: Option<PathBuf>,
 }
 
 impl Default for VSConfig {
@@ -123,6 +128,7 @@ impl Default for CoreSection {
             admin_key: PathBuf::from("admin-tls-key.pem"),
             vk_uri: Some(VALKEY_URI.to_string()),
             identity: Some(String::new()),
+            api_keys: Some(PathBuf::from(DEFAULT_API_KEYS_FILE)),
         }
     }
 }

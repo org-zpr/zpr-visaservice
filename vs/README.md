@@ -35,3 +35,9 @@ By default, `vs` will look for TLS credentials in `admin-tls-cert.pem` and
 ```bash
 openssl req -new -newkey rsa:4096 -x509 -sha256 -days 365 -nodes -out admin-tls-cert.pem -keyout admin-tls-key.pem
 ```
+
+## vsapikey
+
+This also builds the binary `vsapikey` which is used to generate API keys
+for accessing the HTTPS admin api.
+

@@ -12,11 +12,13 @@ use admin_api_types::{
 use crate::error::VsaError;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+const API_KEY_HEADER: &str = "X-API-Key";
 
 #[derive(Debug)]
 pub struct VsClient {
     cert: Certificate,
     api_url: String,
+    api_key: String,
     quiet: bool,
 }
 
@@ -28,10 +30,11 @@ pub enum RoleFilter {
 }
 
 impl VsClient {
-    pub fn new(svc_url: String, cert: Certificate, quiet: bool) -> Self {
+    pub fn new(svc_url: String, cert: Certificate, api_key: String, quiet: bool) -> Self {
         VsClient {
             cert,
             api_url: svc_url,
+            api_key,
             quiet,
         }
     }
@@ -50,7 +53,10 @@ impl VsClient {
         if !self.quiet {
             print!("{}", format!(">> get {url}").dimmed());
         }
-        let resp = client.get(url).send()?;
+        let resp = client
+            .get(url)
+            .header(API_KEY_HEADER, &self.api_key)
+            .send()?;
 
         let stat = resp.status();
         if !self.quiet {
@@ -69,7 +75,10 @@ impl VsClient {
         if !self.quiet {
             print!("{}", format!(">> post {url}").dimmed());
         }
-        let resp = client.post(url).send()?;
+        let resp = client
+            .post(url)
+            .header(API_KEY_HEADER, &self.api_key)
+            .send()?;
 
         let stat = resp.status();
         if !self.quiet {
@@ -92,7 +101,11 @@ impl VsClient {
         if !self.quiet {
             print!("{}", format!(">> post {url}").dimmed());
         }
-        let resp = client.post(url).json(body).send()?;
+        let resp = client
+            .post(url)
+            .header(API_KEY_HEADER, &self.api_key)
+            .json(body)
+            .send()?;
 
         let stat = resp.status();
         if !self.quiet {
@@ -111,7 +124,10 @@ impl VsClient {
         if !self.quiet {
             print!("{}", format!(">> delete {url}").dimmed());
         }
-        let resp = client.delete(url).send()?;
+        let resp = client
+            .delete(url)
+            .header(API_KEY_HEADER, &self.api_key)
+            .send()?;
 
         let stat = resp.status();
         if !self.quiet {

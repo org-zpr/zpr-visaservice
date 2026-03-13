@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 use tracing::error;
 
 use crate::actor_mgr::ActorMgr;
+use crate::admin_apikeys::ReloadableApiKeys;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
 use crate::counters::Counters;
@@ -27,6 +28,7 @@ pub struct Assembly {
     pub vss_mgr: VssMgr,
     pub net_mgr: Arc<NetMgr>,
     pub event_mgr: EventMgr,
+    pub admin_api_keys: Arc<ReloadableApiKeys>,
 }
 
 impl Assembly {
@@ -115,6 +117,7 @@ pub mod tests {
             vss_mgr: VssMgr::new(),
             net_mgr: Arc::new(NetMgr::new_v6().expect("failed to create NetMgr")),
             event_mgr: EventMgr::new(event_tx),
+            admin_api_keys: Arc::new(ReloadableApiKeys::default()),
         }
     }
 }
