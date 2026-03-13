@@ -8,13 +8,15 @@ use libeval::attribute::{ROLE_NODE, key};
 use tracing::{debug, error, info, warn};
 
 use axum::{
+    Extension,
     Json,
     Router,
     //routing::post,
     extract::{Json as EJson, Path as EPath, Query, Request, State},
     //extract::Form,
     http::StatusCode,
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     //response::Response,
     routing::{delete, get, post},
 };
@@ -31,6 +33,8 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
+use crate::admin_apikeys::Permission;
+use crate::apikey::ApiKey;
 use crate::assembly::Assembly;
 use crate::db::Role;
 use crate::logging::targets::ADMIN;
@@ -103,6 +107,39 @@ fn rustls_tls_acceptor(key_file: &Path, cert_file: &Path) -> TlsAcceptor {
     TlsAcceptor::from(Arc::new(cfg))
 }
 
+/// Check the passed API key.
+async fn validate_api_key(state: &SharedState, api_key: &str) -> Result<Permission, StatusCode> {
+    let rstate = state.read().await;
+
+    let apikey = ApiKey::parse(api_key).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    match rstate.asm.admin_api_keys.lookup_permission(&apikey) {
+        Ok(Some(perm)) => Ok(perm),
+        Ok(None) => Err(StatusCode::UNAUTHORIZED),
+        Err(e) => {
+            error!(target: ADMIN, "error validating API key {}: {}", apikey.key_id_hex(), e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// Check the API key and if all good inserts a Permission as a request extension.
+async fn require_api_key(
+    State(state): State<SharedState>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let api_key = req
+        .headers()
+        .get("X-API-Key")
+        .and_then(|hv| hv.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let perm = validate_api_key(&state, api_key).await?;
+    req.extensions_mut().insert(perm);
+    Ok(next.run(req).await)
+}
+
 fn admin_app(state: SharedState) -> Router {
     Router::new()
         .route("/admin/policies", get(get_policies))
@@ -123,6 +160,10 @@ fn admin_app(state: SharedState) -> Router {
         .route("/admin/authrevoke/{capture}", post(add_revoke))
         .route("/admin/authrevoke/clear", post(clear_revokes))
         .route("/admin/authrevoke/{capture}", delete(remove_revoke))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key,
+        ))
         .with_state(state.clone())
 }
 
@@ -207,7 +248,13 @@ async fn install_policy(EJson(_body): EJson<PolicyBundle>) -> impl IntoResponse 
 /// Returns a list of visa IDs in ListEntry structs or empty list.
 #[axum::debug_handler]
 //async fn get_visas(State(state): State<SharedState>) -> impl IntoResponse {
-async fn get_visas(State(state): State<SharedState>) -> (StatusCode, Json<Vec<ListEntry>>) {
+async fn get_visas(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+) -> (StatusCode, Json<Vec<ListEntry>>) {
+    if !perm.can_read() {
+        return (StatusCode::FORBIDDEN, Json(Vec::<ListEntry>::new()));
+    }
     debug!(target: ADMIN, "GET /admin/visas");
     let rstate = state.read().await;
 
@@ -243,9 +290,13 @@ fn ports_from_pep(pep: &DockPep) -> (u16, u16) {
 }
 
 async fn get_visa(
+    Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
     EPath(id): EPath<u64>,
 ) -> Result<Json<VisaDescriptor>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
     debug!(target: ADMIN, "GET /admin/visas/{}", id);
     let rstate = state.read().await;
 
@@ -295,10 +346,10 @@ async fn get_visa(
     }
 }
 
-async fn revoke_visa(EPath(id): EPath<String>) -> impl IntoResponse {
+async fn revoke_visa(EPath(id): EPath<u64>) -> impl IntoResponse {
     debug!(target: ADMIN, "DELETE /admin/visas/{}", id);
     let r = Revokes {
-        id: "i".to_string(),
+        id: id.to_string(),
         revoked: vec![0],
     };
 
@@ -307,9 +358,13 @@ async fn revoke_visa(EPath(id): EPath<String>) -> impl IntoResponse {
 
 /// Returns a list of connected CN values in CnEntry structs or empty list.
 async fn get_actors(
+    Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
     Query(q): Query<RoleFilter>,
 ) -> (StatusCode, Json<Vec<CnEntry>>) {
+    if !perm.can_read() {
+        return (StatusCode::FORBIDDEN, Json(Vec::<CnEntry>::new()));
+    }
     debug!(target: ADMIN, "GET /admin/actors {:?}", q);
     let db_filter = match q.role {
         Some(ActorRole::Node) => Some(Role::Node),
@@ -335,10 +390,15 @@ async fn get_actors(
 
 async fn get_actor(
     State(state): State<SharedState>,
+    Extension(perm): Extension<Permission>,
     EPath(cn): EPath<String>,
 ) -> Result<Json<ActorDescriptor>, StatusCode> {
     debug!(target: ADMIN, "GET /admin/actor/{}", cn);
     let rstate = state.read().await;
+
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     match rstate.asm.actor_mgr.get_actor_by_cn(&cn).await {
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -395,7 +455,13 @@ async fn get_related_visas(EPath(cn): EPath<String>) -> impl IntoResponse {
     two_elem_list()
 }
 
-async fn get_services(State(state): State<SharedState>) -> (StatusCode, Json<Vec<NamedListEntry>>) {
+async fn get_services(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+) -> (StatusCode, Json<Vec<NamedListEntry>>) {
+    if !perm.can_read() {
+        return (StatusCode::FORBIDDEN, Json(Vec::<NamedListEntry>::new()));
+    }
     debug!(target: ADMIN, "GET /admin/services");
     let rstate = state.read().await;
 
@@ -418,9 +484,14 @@ async fn get_services(State(state): State<SharedState>) -> (StatusCode, Json<Vec
 }
 
 async fn get_service(
+    Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
     EPath(cn): EPath<String>,
 ) -> Result<Json<ServiceDescriptor>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     debug!(target: ADMIN, "GET /admin/service CN={}", cn);
     let rstate = state.read().await;
 
@@ -479,6 +550,7 @@ mod tests {
 
     use super::*;
 
+    use crate::apikey::ApiKey;
     use axum::body::Body;
     use http_body_util::BodyExt;
     use libeval::eval::{Direction, Hit};
@@ -486,12 +558,32 @@ mod tests {
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
 
+    use crate::admin_apikeys::{ApiKeyRecord, KeyStatus};
     use crate::assembly::tests::new_assembly_for_tests;
     use crate::test_helpers::{make_adapter_actor_defexp, make_node_actor_defexp};
+
+    /// Insert a readwrite test key into the assembly's key store and return the
+    /// key string to use in the X-API-Key header.
+    fn setup_test_api_key(asm: &Arc<Assembly>) -> String {
+        let secret_bytes: [u8; 32] = (0u8..32).collect::<Vec<_>>().try_into().unwrap();
+        let apikey = ApiKey::new(0xaabbccdd, secret_bytes);
+        let record = ApiKeyRecord {
+            owner: "test".to_string(),
+            permission: Permission::ReadWrite,
+            status: KeyStatus::Active,
+            created: "2026-01-01".to_string(),
+            secret_hash: apikey.secret_hash().unwrap(),
+            description: "test key".to_string(),
+        };
+        asm.admin_api_keys
+            .insert_for_test(apikey.key_id_hex(), record);
+        apikey.to_key_string()
+    }
 
     #[tokio::test]
     async fn test_get_visas_no_visas() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -499,6 +591,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/visas")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -515,6 +608,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visas_one_visa() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -538,6 +632,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/visas")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -555,6 +650,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visas_three_visas() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
@@ -593,6 +689,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/visas")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -613,6 +710,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_no_actors() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -620,6 +718,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -636,6 +735,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_one_actor() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let actor = make_node_actor_defexp("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
         asm.actor_mgr.add_node(&actor, false).await.unwrap();
 
@@ -646,6 +746,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -663,6 +764,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_multiple_actors() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let actor0 = make_node_actor_defexp("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
         let actor1 = make_node_actor_defexp("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
         let actor2 = make_node_actor_defexp("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
@@ -678,6 +780,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -704,6 +807,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_role_filter() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let node_actor = make_node_actor_defexp("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
         let adapter_actor = make_adapter_actor_defexp("fd5a:5052::21", "adapter-1");
 
@@ -722,6 +826,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors?role=node")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -744,6 +849,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors?role=adapter")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -765,6 +871,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_invalid_role_filter() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
 
@@ -773,6 +880,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/actors?role=invalid")
+                    .header("X-API-Key", &api_key)
                     .body(Body::empty())
                     .unwrap(),
             )

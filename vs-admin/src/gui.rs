@@ -36,20 +36,24 @@ struct Gui {
 
 /// Fire up the terminal based gui which is just a simple dashboard.
 /// Returns on terrible error or if user exits.
-pub fn enter_gui(api_url: &str, cert: Certificate) -> Result<(), Box<dyn std::error::Error>> {
+pub fn enter_gui(
+    api_url: &str,
+    cert: Certificate,
+    api_key: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::init();
-    let mut g = Gui::new(api_url, cert);
+    let mut g = Gui::new(api_url, cert, api_key);
     let result = g.run(&mut terminal);
     ratatui::restore();
     result
 }
 
 impl Gui {
-    fn new(api_url: &str, cert: Certificate) -> Self {
+    fn new(api_url: &str, cert: Certificate, api_key: String) -> Self {
         Self {
             exit: false,
             err_msg: None,
-            vs_cli: VsClient::new(api_url.to_string(), cert, true),
+            vs_cli: VsClient::new(api_url.to_string(), cert, api_key, true),
             actors: Vec::new(),
             services: Vec::new(),
             visas: Vec::new(),
