@@ -94,7 +94,17 @@ impl ActorMgr {
                 .await?;
             self.actor_db.add_actor(actor).await?;
         } else {
-            self.actor_db.update_actor(actor).await?;
+            if let Err(e) = self.actor_db.update_actor(actor).await {
+                // Update failed? Make the node try a fresh connect.
+                if let Err(ee) = self
+                    .node_db
+                    .remove_node(actor.get_zpr_addr().unwrap())
+                    .await
+                {
+                    warn!(target: ACTOR, "add_node: failed to remove node at {} after failed update during reconnect: {}", actor.get_zpr_addr().unwrap(), ee);
+                }
+                return Err(e.into());
+            }
         }
 
         let node_obj = db::Node::new_from_node_actor(&actor)?;

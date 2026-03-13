@@ -112,6 +112,8 @@ struct VSGateImpl {
     // This is set in `challenge` call and read in the `authenticate` call.
     // Safe to use here since the capn proto rpc is confined to a single thread.
     challenge_data: Cell<[u8; 32]>,
+
+    // If node passes the "reconnect" flag.
     reconnect: bool,
 }
 

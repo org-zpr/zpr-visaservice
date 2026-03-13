@@ -169,6 +169,7 @@ impl ActorRepo {
         Ok(addrs)
     }
 
+    /// Update existing actor data.
     pub async fn update_actor(&self, actor: &Actor) -> Result<(), StoreError> {
         let zpraddr = match actor.get_zpr_addr() {
             Some(addr) => addr.clone(),
@@ -183,6 +184,12 @@ impl ActorRepo {
         let base_key = actor_key_for(&zpraddr);
         let attrs_key = attrs_key_for(&zpraddr);
         let services_key = actor_services_key_for(&zpraddr);
+
+        if !self.db.exists(&base_key).await? {
+            return Err(StoreError::NotFound(format!(
+                "update called on non-existant actor: {zpraddr}"
+            )));
+        }
 
         let ts = gen_timestamp();
 
@@ -557,21 +564,25 @@ impl ActorRepo {
     }
 }
 
+/// returns 'actor:<ZADDR>'
 fn actor_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}")
 }
 
+/// returns 'actor:<ZADDR>:attrs'
 fn attrs_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}:attrs")
 }
 
+/// returns 'service:<MUNGED_SERVICENAME>'
 fn service_key_for(service_name: &str) -> String {
     let svc_name_clean = KeyString::from(service_name);
     format!("{KEY_SERVICE}:{}", svc_name_clean.as_str())
 }
 
+/// returns 'actor:<ZADDR>:services'
 fn actor_services_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}:services")
