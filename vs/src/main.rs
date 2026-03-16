@@ -25,6 +25,7 @@ mod error;
 mod event_mgr;
 mod logging;
 mod net_mgr;
+mod packet;
 mod policy_mgr;
 mod signal_worker;
 mod visa_mgr;
@@ -62,7 +63,7 @@ const DEFAULT_CONFIG_PATH: &str = "vs.toml";
 #[command(name = "vs")]
 #[command(version, verbatim_doc_comment)]
 struct Cli {
-    /// Initial policy file (.bin2 format). If not specified we will load the current policy set in the database.  
+    /// Initial policy file (.bin2 format). If not specified we will load the current policy set in the database.
     /// If there is no policy in the database the visa service will fail to start.
     policy: Option<PathBuf>,
 
@@ -70,7 +71,7 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS INCLUDING LOCK.    
+    /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS INCLUDING LOCK.
     #[arg(long)]
     clear_state: bool,
 
@@ -427,4 +428,3 @@ async fn synchronize_state(actor_mgr: &ActorMgr, net_mgr: &NetMgr) -> Result<(),
     }
     Ok(())
 }
-

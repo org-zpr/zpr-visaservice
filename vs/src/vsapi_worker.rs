@@ -341,10 +341,6 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
             }
         };
 
-        // We care about two params: zpr_addr and aaa_prefix.
-
-        // TODO: In next version of vsapi the AAA_PREFIX is going away and will instead be handed to the
-        // node by the visa service.
         let node_zpr_addr = match self.parse_my_connect_params(&parsed_params) {
             Ok(addr) => addr,
             Err(e) => {
@@ -356,7 +352,7 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
             }
         };
 
-        info!(target: API, "node {} requests zpr addr {}", req_cn, node_zpr_addr);
+        info!(target: API, "node {} requests zpr addr {} (CONNECT_TYPE={:?})", req_cn, node_zpr_addr, req_type);
 
         match req_type {
             vsapi::VSConnT::Reset => {}
@@ -408,7 +404,6 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
             req_type == vsapi::VSConnT::Reconnect,
         ));
 
-        //res_builder.reborrow().set_ok(vs_gate)?;
         res_builder.set_ok(vs_gate)?;
 
         Ok(())
