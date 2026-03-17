@@ -67,9 +67,9 @@ struct Cli {
     /// If there is no policy in the database the visa service will fail to start.
     policy: Option<PathBuf>,
 
-    /// Enable verbose debug output
-    #[arg(short, long)]
-    verbose: bool,
+    /// Enable verbose debug output (use twice for more, eg "-vv").
+    #[arg(short = 'v', long, action = clap::ArgAction::Count)]
+    verbose: u8,
 
     /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS INCLUDING LOCK.
     #[arg(long)]
@@ -106,7 +106,14 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
-    enable_logging(cli.verbose);
+    let verbosity = if cli.verbose >= 2 {
+        logging::Verbosity::VeryVerboseIndeed
+    } else if cli.verbose == 1 {
+        logging::Verbosity::SomewhatVerbose
+    } else {
+        logging::Verbosity::NotVerbose
+    };
+    enable_logging(verbosity);
     info!(target: MAIN, "vs version {}", env!("CARGO_PKG_VERSION"));
     let cfg = match load_config(cli.config.as_deref()) {
         Ok(c) => c,
@@ -231,7 +238,13 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    let visa_repo = db::VisaRepo::new(db_handle.clone());
+    let visa_repo = match db::VisaRepo::new(db_handle.clone(), config::INITIAL_VISA_ID).await {
+        Ok(vr) => vr,
+        Err(e) => {
+            error!(target: MAIN, "failed to instantiate visa repository: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     let (event_tx, event_rx) = mpsc::channel(config::EVENT_QUEUE_DEPTH);
 

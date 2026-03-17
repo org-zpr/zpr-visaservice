@@ -148,6 +148,16 @@ impl VSHandleImpl {
         VSHandleImpl { asm, node }
     }
 
+    /// Squash (but log) any errors.
+    async fn update_last_seen_time(&self, node_addr: &IpAddr) {
+        match self.asm.actor_mgr.update_node_last_seen(node_addr).await {
+            Ok(_) => (),
+            Err(e) => {
+                warn!(target: API, "failed to update last-seen time for node at addr {}: {}", node_addr, e);
+            }
+        }
+    }
+
     // Helper to process a visa request and either return an API error or a visa decision.
     async fn do_visa_request(
         &self,
@@ -626,6 +636,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         let saddr_rdr = params.get()?.get_addr()?;
 
         let node_zpr_addr = self.node.get_zpr_addr().unwrap();
+        self.update_last_seen_time(node_zpr_addr).await;
 
         let vss_sockaddr: SockAddr = match SockAddr::try_from(saddr_rdr) {
             Ok(addr) => addr,
@@ -719,11 +730,12 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
 
         // As we return we kick off the vss worker for this node which will send config and list of services.
         // but will not work until visas are installed... So start it with small delay.
-        if let Err(e) =
-            self.asm
-                .vss_mgr
-                .start_vss_worker(self.asm.clone(), &saddr, config::VSS_START_DELAY)
-        {
+        if let Err(e) = self.asm.vss_mgr.start_vss_worker(
+            self.asm.clone(),
+            &self.node.get_zpr_addr().unwrap(),
+            &saddr,
+            config::VSS_START_DELAY,
+        ) {
             warn!(target: API, "failed to start VSS worker for node {:?}: {}", self.node.get_cn(), e);
             // TODO: how to recover here?
         }
@@ -789,6 +801,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         })?;
 
         let connect_via = self.node.get_zpr_addr().unwrap();
+        self.update_last_seen_time(connect_via).await;
 
         let actor = match self
             .asm
@@ -949,6 +962,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             .node
             .get_zpr_addr()
             .expect("programming error - node must have an address");
+        self.update_last_seen_time(requestor_addr).await;
 
         match self
             .do_visa_request(args, config::DEFAULT_VISA_REQ_TIMEOUT)
@@ -992,6 +1006,9 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         mut results: vsapi::v_s_handle::PingResults,
     ) -> Result<(), capnp::Error> {
         trace!(target: API, "ping from {:?}", self.node.get_cn());
+        if let Some(addr) = self.node.get_zpr_addr() {
+            self.update_last_seen_time(addr).await;
+        }
         self.asm.counters.incr(CounterType::VsApiPings);
         let mut res_builder = results.get().init_res();
         res_builder.set_ok(());

@@ -327,9 +327,9 @@ mod tests {
     use crate::test_helpers::make_visa;
     use std::sync::Arc;
 
-    fn make_mgr() -> VisaMgr {
+    async fn make_mgr() -> VisaMgr {
         let db = Arc::new(FakeDb::new());
-        VisaMgr::new(VisaRepo::new(db))
+        VisaMgr::new(VisaRepo::new(db, 1).await.unwrap())
     }
 
     // The default visa from make_visa has source fd5a:5052::10, dest fd5a:5052::20,
@@ -340,7 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_node_visa_by_five_tuple_found() {
-        let mgr = make_mgr();
+        let mgr = make_mgr().await;
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(1, std::time::Duration::from_secs(60));
 
@@ -367,7 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_node_visa_by_five_tuple_not_found_empty() {
-        let mgr = make_mgr();
+        let mgr = make_mgr().await;
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
 
         let ft = make_fivetuple_tcp(
@@ -387,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_node_visa_by_five_tuple_wrong_ports() {
-        let mgr = make_mgr();
+        let mgr = make_mgr().await;
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(2, std::time::Duration::from_secs(60));
 
@@ -414,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_node_visa_by_five_tuple_pending_not_matched() {
         // Visas in PendingInstall state should not be returned.
-        let mgr = make_mgr();
+        let mgr = make_mgr().await;
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(3, std::time::Duration::from_secs(60));
 

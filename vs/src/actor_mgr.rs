@@ -49,7 +49,7 @@ impl ActorMgr {
     /// that were connected.
     ///
     /// For each node we find in here we check to make sure that the node auth has not
-    /// expired.  Expired nodes are removed (along with any connected adapters).  
+    /// expired.  Expired nodes are removed (along with any connected adapters).
     ///
     /// For non-expired nodes, we wipe their vss info.
     pub async fn refresh_state(&self) -> Result<(), ServiceError> {
@@ -109,6 +109,9 @@ impl ActorMgr {
 
         let node_obj = db::Node::new_from_node_actor(&actor)?;
         self.node_db.add_node(&node_obj).await?;
+        self.node_db
+            .update_last_seen_time(actor.get_zpr_addr().unwrap())
+            .await?;
         Ok(())
     }
 
@@ -116,6 +119,12 @@ impl ActorMgr {
     /// Use this function here in addition to remove node state.
     pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         self.node_db.remove_node(node_addr).await?;
+        Ok(())
+    }
+
+    /// Update the last-seen time for given node.
+    pub async fn update_node_last_seen(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
+        self.node_db.update_last_seen_time(node_addr).await?;
         Ok(())
     }
 
