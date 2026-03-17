@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use tokio::task::LocalSet;
 use tokio_rustls::TlsConnector;
 use tokio_util::compat::*;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use zpr::vsapi::v1;
 use zpr::vsapi_types::{ApiResponseError, Param, ServiceDescriptor, Visa, pname};
@@ -343,7 +343,7 @@ async fn vss_worker_loop(
                     let ping_response_rdr = ping_response_or_err.unwrap();
                     let ping_response_ok_or_error = ping_response_rdr.get();
                     match ping_response_ok_or_error.unwrap().get_res().unwrap().which().unwrap() {
-                        v1::ok_or_error::Which::Ok(_) => debug!(target: VSS, "ping to VSS at {} succeeded", node_addr),
+                        v1::ok_or_error::Which::Ok(_) => trace!(target: VSS, "ping to VSS at {} succeeded", node_addr),
                         v1::ok_or_error::Which::Error(err_rdr) => {
                             let err_obj = err_rdr.unwrap();
                             error!(target: VSS, "VSS ping returns error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());

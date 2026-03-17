@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_rustls::TlsAcceptor;
 use tokio_util::compat::*;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use ::zpr::vsapi::v1 as vsapi;
 use libeval::actor::Actor;
@@ -485,7 +485,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             warn!(target: API, "excess clock skew from {}, authenticate fails", self.remote_cn);
             return self.ok_with_authenticate_error(
                 results,
-                vsapi::ErrorCode::OutOfSync,
+                vsapi::ErrorCode::Internal,
                 "excess clock skew",
             );
         }
@@ -991,7 +991,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         _req: vsapi::v_s_handle::PingParams,
         mut results: vsapi::v_s_handle::PingResults,
     ) -> Result<(), capnp::Error> {
-        debug!(target: API, "ping from {:?}", self.node.get_cn());
+        trace!(target: API, "ping from {:?}", self.node.get_cn());
         self.asm.counters.incr(CounterType::VsApiPings);
         let mut res_builder = results.get().init_res();
         res_builder.set_ok(());
