@@ -570,7 +570,7 @@ async fn do_configure(
     }
 }
 
-/// Wrap a Cap'n Proto RPC future with a timeout, mapping errors to VSApiError.
+/// Wrap a Cap'n Proto RPC future with a timeout, mapping errors.
 async fn rpc_with_timeout<F, T>(
     name: &'static str,
     duration: Duration,
