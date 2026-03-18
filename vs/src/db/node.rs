@@ -91,6 +91,20 @@ impl NodeRepo {
         Ok(())
     }
 
+    /// Get the VSS address for the node, if any.
+    pub async fn get_node_vss(
+        &self,
+        node_zpr_addr: &IpAddr,
+    ) -> Result<Option<SocketAddr>, StoreError> {
+        let vss_json_opt = self.db.get(&vss_key_for_node(node_zpr_addr)).await?;
+        if let Some(vss_json) = vss_json_opt {
+            let sa_wrapper: SAWrapper = serde_json::from_str(&vss_json)?;
+            Ok(Some(sa_wrapper.vss_addr))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Drop the vss info for the node.
     pub async fn clear_node_vss(&self, node_zpr_addr: &IpAddr) -> Result<(), StoreError> {
         self.db.del(&vss_key_for_node(node_zpr_addr)).await?;

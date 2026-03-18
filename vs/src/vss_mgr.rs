@@ -2,6 +2,7 @@ use dashmap::DashMap;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +10,6 @@ use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::LocalSet;
-use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_util::compat::*;
 use tracing::{debug, error, info, trace, warn};
@@ -24,6 +24,12 @@ use crate::counters::CounterType;
 use crate::error::VssSyncError;
 use crate::logging::targets::VSS;
 use crate::net_mgr;
+
+/// Minimum (and initial) timeout for a ping RPC call.
+const PING_MIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Default timeout for a single Cap'n Proto RPC call.
+const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct VssMgr {
     // Each node has an entry here, handle is a thread monitoring the nodes VSS.
@@ -269,14 +275,15 @@ async fn vss_worker_loop(
 
     let req = vss_service.connect_request();
 
-    let handle_result_rdr = match req.send().promise.await {
-        Ok(req_resp) => req_resp,
-        Err(e) => {
-            error!(target: VSS, "VSS connect request failed: {}", e);
-            asm.counters.incr(CounterType::VssErrors);
-            return; // TODO: Signal manager?
-        }
-    };
+    let handle_result_rdr =
+        match rpc_with_timeout("connect", DEFAULT_RPC_TIMEOUT, req.send().promise).await {
+            Ok(req_resp) => req_resp,
+            Err(e) => {
+                error!(target: VSS, "VSS connect request failed: {}", e);
+                asm.counters.incr(CounterType::VssErrors);
+                return; // TODO: Signal manager?
+            }
+        };
 
     let handle_result_ok_or_error = handle_result_rdr.get().unwrap().get_resp().unwrap();
 
@@ -348,11 +355,10 @@ async fn vss_worker_loop(
             }
 
             () = &mut ping_timeout => {
-                let ping_req = vss_handle.ping_request();
-                match timeout(Duration::from_secs(1 + ping_failures), ping_req.send().promise).await {
-                    Ok(Ok(ping_response_rdr)) => {
-                        let ping_response_ok_or_error = ping_response_rdr.get();
-                        match ping_response_ok_or_error.unwrap().get_res().unwrap().which().unwrap() {
+                let ping_dur = PING_MIN_TIMEOUT + Duration::from_secs(ping_failures);
+                match rpc_with_timeout("ping", ping_dur, vss_handle.ping_request().send().promise).await {
+                    Ok(ping_response_rdr) => {
+                        match ping_response_rdr.get().unwrap().get_res().unwrap().which().unwrap() {
                             v1::ok_or_error::Which::Ok(_) => {
                                 trace!(target: VSS, "ping to VSS at {} succeeded", node_addr);
                                 asm.actor_mgr.update_node_last_seen(&node_addr.ip()).await.ok(); // Ignore errors.
@@ -366,15 +372,14 @@ async fn vss_worker_loop(
                                 ping_failures += 1;
                             }
                         }
-
                     }
-                    Ok(Err(_capnp_err)) => {
-                        warn!(target: VSS, "ping to VSS at {} failed", node_addr);
+                    Err(VssSyncError::Timeout(_)) => {
+                        warn!(target: VSS, "ping to VSS at {} timed out", node_addr);
                         asm.counters.incr(CounterType::VssErrors);
                         ping_failures += 1;
                     }
                     Err(_) => {
-                        warn!(target: VSS, "ping to VSS at {} timed out", node_addr);
+                        warn!(target: VSS, "ping to VSS at {} failed", node_addr);
                         asm.counters.incr(CounterType::VssErrors);
                         ping_failures += 1;
                     }
@@ -517,7 +522,8 @@ async fn do_set_services(
         svc.write_to(&mut svc_builder);
     }
 
-    let set_response_rdr = req.send().promise.await?;
+    let set_response_rdr =
+        rpc_with_timeout("set-services", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
 
     let set_response_ok_or_err = set_response_rdr.get()?;
 
@@ -545,7 +551,8 @@ async fn do_configure(
         param.write_to(&mut param_builder);
     }
 
-    let configure_response_rdr = req.send().promise.await?;
+    let configure_response_rdr =
+        rpc_with_timeout("configure", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
 
     let configure_response_ok_or_err = configure_response_rdr.get()?;
 
@@ -560,5 +567,21 @@ async fn do_configure(
             let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
             Err(VssSyncError::from(api_err))
         }
+    }
+}
+
+/// Wrap a Cap'n Proto RPC future with a timeout, mapping errors to VSApiError.
+async fn rpc_with_timeout<F, T>(
+    name: &'static str,
+    duration: Duration,
+    fut: F,
+) -> Result<T, VssSyncError>
+where
+    F: Future<Output = Result<T, capnp::Error>>,
+{
+    match tokio::time::timeout(duration, fut).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(capnp_err)) => Err(capnp_err.into()),
+        Err(_elapsed) => Err(VssSyncError::Timeout(name.to_string())),
     }
 }

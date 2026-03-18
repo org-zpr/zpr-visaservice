@@ -138,6 +138,14 @@ impl ActorMgr {
         Ok(())
     }
 
+    pub async fn get_node_vss(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<Option<SocketAddr>, ServiceError> {
+        let vss = self.node_db.get_node_vss(node_addr).await?;
+        Ok(vss)
+    }
+
     /// Add an adapter that is connected to a node.
     #[allow(dead_code)]
     pub async fn add_adapter_via_node(

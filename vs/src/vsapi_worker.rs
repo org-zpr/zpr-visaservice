@@ -737,7 +737,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             config::VSS_START_DELAY,
         ) {
             warn!(target: API, "failed to start VSS worker for node {:?}: {}", self.node.get_cn(), e);
-            // TODO: how to recover here?
+            // TODO: handle the duplicate error here - if worker already running we are ok, I think.
         }
 
         Ok(())
@@ -1005,11 +1005,36 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         _req: vsapi::v_s_handle::PingParams,
         mut results: vsapi::v_s_handle::PingResults,
     ) -> Result<(), capnp::Error> {
-        trace!(target: API, "ping from {:?}", self.node.get_cn());
+        let node_cn = self.node.get_cn().unwrap_or("<unknown>");
+        trace!(target: API, "ping from {node_cn}");
         if let Some(addr) = self.node.get_zpr_addr() {
             self.update_last_seen_time(addr).await;
         }
         self.asm.counters.incr(CounterType::VsApiPings);
+
+        if let Some(node_addr) = self.node.get_zpr_addr() {
+            if let Some(vssaddr) = self
+                .asm
+                .actor_mgr
+                .get_node_vss(&node_addr)
+                .await
+                .unwrap_or(None)
+            {
+                if self.asm.vss_mgr.get_handle(&node_addr).is_none() {
+                    warn!("no VSS worker running for node {node_cn} @ {node_addr} - starting one");
+
+                    if let Err(e) = self.asm.vss_mgr.start_vss_worker(
+                        self.asm.clone(),
+                        &node_addr,
+                        &vssaddr,
+                        Duration::from_secs(0),
+                    ) {
+                        warn!(target: API, "failed to start VSS worker for node {node_cn}: {}", e);
+                    }
+                }
+            }
+        }
+
         let mut res_builder = results.get().init_res();
         res_builder.set_ok(());
         Ok(())
