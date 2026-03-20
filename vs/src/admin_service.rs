@@ -274,9 +274,9 @@ async fn get_visas(
     }
 }
 
-fn system_time_to_unix_milliseconds(st: std::time::SystemTime) -> u64 {
+fn system_time_to_unix_seconds(st: std::time::SystemTime) -> u64 {
     match st.duration_since(std::time::UNIX_EPOCH) {
-        Ok(dur) => dur.as_millis() as u64,
+        Ok(dur) => dur.as_secs() as u64,
         Err(_) => 0,
     }
 }
@@ -330,8 +330,8 @@ async fn get_visa(
                 };
                 let vd = VisaDescriptor {
                     id: visa.issuer_id,
-                    expires: system_time_to_unix_milliseconds(visa.expires),
-                    created: ctime,
+                    expires_secs: system_time_to_unix_seconds(visa.expires),
+                    created_secs: ctime,
                     requesting_node,
                     policy_id: "0".into(), // TODO: not tracked yet
                     source_addr: visa.source_addr.to_string(),
@@ -428,7 +428,7 @@ async fn get_actor(
 
                 let descriptor = ActorDescriptor {
                     cn: cn.clone(),
-                    ctime: 0, // TODO: Not tracked yet
+                    ctime_secs: 0, // TODO: Not tracked yet
                     ident,
                     node: is_node,
                     zpr_addr: zpr_addr_str,

@@ -29,16 +29,6 @@ Notes
     (for example: policies, revokes, some deletes).
   - A few fields are currently hardcoded or not tracked yet; see endpoint notes.
 
-Inconsistencies (timestamps) - Will be addressed soon
------------------------------------------------------
-  Milliseconds since epoch:
-    - VisaDescriptor.expires
-    - VisaDescriptor.created
-    - ActorDescriptor.ctime (server currently returns 0)
-  Seconds since epoch:
-    - NodeRecordBrief.last_contact
-    - HostRecordBrief.ctime (type exists but not used by current endpoints)
-    - ServiceRecord.ctime (type exists but not used by current endpoints)
 
 Common Types
 ------------
@@ -60,7 +50,7 @@ Common Types
 |                 |                                                          |
 | Revokes         | { "id": string, "revoked": number[] }                    |
 |                 |                                                          |
-| ActorDescriptor | { "cn": string, "ctime": number, "ident": string,        |
+| ActorDescriptor | { "cn": string, "created": number, "ident": string,      |
 |                 |   "node": boolean, "zpr_addr": string,                   |
 |                 |   "node_details": NodeRecordBrief | null }               |
 |                 |                                                          |
@@ -108,7 +98,7 @@ GET /admin/actors/{cn}
     404: not found
     500: server error
   Notes
-    ctime is milliseconds since epoch but is currently 0 (not tracked yet).
+    created is seconds since epoch but is currently 0 (not tracked yet).
     node_details is currently null (not tracked yet).
     Note that passed {cn} must be url path encoded.
 
@@ -182,8 +172,8 @@ GET /admin/visas/{id}
     404: not found
     500: server error
   Notes
-    expires is milliseconds since epoch.
-    created is milliseconds since epoch (from visa metadata).
+    expires is seconds since epoch.
+    created is seconds since epoch (from visa metadata).
     policy_id is currently "0" (not tracked yet).
     proto is currently "TCP" (fixed in server code).
 

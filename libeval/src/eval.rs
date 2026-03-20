@@ -180,8 +180,8 @@ impl fmt::Display for VisaProps {
 /// Policy may include constraints on the permission.
 #[derive(Debug, Serialize)]
 pub enum Constraint {
-    /// unix time milliseconds for expiration of permission.
-    ExpiresAtMs(u64),
+    /// unix time seconds for expiration of permission.
+    ExpiresAtUnixSeconds(u64),
 }
 
 /// Policy may dictate certain communication pattern options.
