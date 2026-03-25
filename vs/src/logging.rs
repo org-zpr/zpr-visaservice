@@ -17,8 +17,18 @@ pub mod targets {
     pub const VREQ: &str = "vreq";
 }
 
-pub fn enable_logging(verbose: bool) {
-    let level = if verbose { Level::DEBUG } else { Level::INFO };
+pub enum Verbosity {
+    NotVerbose,
+    SomewhatVerbose,
+    VeryVerboseIndeed,
+}
+
+pub fn enable_logging(verbosity: Verbosity) {
+    let level = match verbosity {
+        Verbosity::NotVerbose => Level::INFO,
+        Verbosity::SomewhatVerbose => Level::DEBUG,
+        Verbosity::VeryVerboseIndeed => Level::TRACE,
+    };
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             //.with(fmt::layer().with_thread_ids(true))
