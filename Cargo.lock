@@ -1124,6 +1124,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "gen_ops"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "304de19db7028420975a296ab0fcbbc8e69438c4ed254a1e41e2a7f37d5f0e0a"
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1519,6 +1525,12 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "ip_network_table-deps-treebitmap"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e537132deb99c0eb4b752f0346b6a836200eaaa3516dd7e5514b63930a09e5d"
 
 [[package]]
 name = "ipnet"
@@ -2308,6 +2320,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "range-set-blaze"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dbaaf29990efce7efbdb301794fbacf9fcdbfb871e77f67c00b0ae3c08b665e"
+dependencies = [
+ "gen_ops",
+ "itertools",
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -4401,12 +4425,14 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zpr"
-version = "0.9.0"
-source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.9.0#1a2d224e01bdc08c3b0bf0106b6d8c3f28d12a74"
+version = "0.12.0"
+source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.12.0#ef53de44c3b2b336b0b4719f8c1b4ed3440f7bcd"
 dependencies = [
  "capnp",
  "capnpc",
+ "ip_network_table-deps-treebitmap",
  "open-enum",
+ "range-set-blaze",
  "thiserror 1.0.69",
  "url",
  "zerocopy",
