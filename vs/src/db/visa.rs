@@ -38,7 +38,7 @@ pub enum NodeVisaState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisaMetadata {
     pub requesting_node: IpAddr,
-    pub ctime: u64, // unix timestamp millisconds
+    pub ctime: u64, // unix timestamp (seconds since epoch)
 }
 
 pub struct VisaRepo {
@@ -52,7 +52,7 @@ impl VisaMetadata {
             ctime: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
-                .as_millis() as u64,
+                .as_secs() as u64,
         }
     }
 }
