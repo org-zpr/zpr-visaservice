@@ -445,7 +445,9 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // We must have sent challenge data ... meaning it cannot all be zeros.
         if challenge_presented.iter().all(|&b| b == 0) {
             warn!(target: API, "all zeros challenge presented from {}, authenticate fails", self.remote_cn);
-            self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+            self.asm
+                .counters
+                .incr(CounterType::NodeConnectionsFailed, None);
             let mut err_builder = res_builder.init_error();
             write_error(
                 &mut err_builder,
@@ -458,7 +460,9 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // Must match the challenge we sent.
         if challenge_presented != &self.challenge_data.get() {
             warn!(target: API, "invalid challenge from {}, authenticate fails", self.remote_cn);
-            self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+            self.asm
+                .counters
+                .incr(CounterType::NodeConnectionsFailed, None);
             let mut err_builder = res_builder.init_error();
             write_error(
                 &mut err_builder,
@@ -477,7 +481,9 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         let my_unix_ts = now.duration_since(UNIX_EPOCH).unwrap().as_secs();
         if my_unix_ts.abs_diff(unix_ts) > config::MAX_CLOCK_SKEW_SECS {
             warn!(target: API, "excess clock skew from {}, authenticate fails", self.remote_cn);
-            self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+            self.asm
+                .counters
+                .incr(CounterType::NodeConnectionsFailed, None);
             let mut err_builder = res_builder.init_error();
             write_error(
                 &mut err_builder,
@@ -508,7 +514,9 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             Ok(node_id) => node_id,
             Err(ServiceError::AuthenticationFailed(reason)) => {
                 warn!(target: API, "authentication failed for {}: {}", self.remote_cn, reason);
-                self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+                self.asm
+                    .counters
+                    .incr(CounterType::NodeConnectionsFailed, None);
                 let mut err_builder = res_builder.init_error();
                 write_error(
                     &mut err_builder,
@@ -519,7 +527,9 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             }
             Err(e) => {
                 error!(target: API, "internal error during authentication for {}: {}", self.remote_cn, e);
-                self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+                self.asm
+                    .counters
+                    .incr(CounterType::NodeConnectionsFailed, None);
                 let mut err_builder = res_builder.init_error();
                 write_error(
                     &mut err_builder,
@@ -603,7 +613,9 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         if let Err(e) = self.asm.event_mgr.record_event(evt).await {
             warn!(target: API, "failed to record actor joins event for node {:?}: {}", &node_cn, e);
         }
-        self.asm.counters.incr(CounterType::NodeConnectionsSuccess);
+        self.asm
+            .counters
+            .incr(CounterType::NodeConnectionsSuccess, None);
 
         let vs_handle: vsapi::v_s_handle::Client =
             capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
@@ -945,7 +957,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     ) -> Result<(), capnp::Error> {
         debug!(target: API, "visa_request from {:?}", self.node.get_cn());
 
-        self.asm.counters.incr(CounterType::VsApiVisaRequests);
+        self.asm.counters.incr(CounterType::VsApiVisaRequests, None);
 
         // A node must have an address.
         let requestor_addr = self
@@ -995,7 +1007,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         mut results: vsapi::v_s_handle::PingResults,
     ) -> Result<(), capnp::Error> {
         debug!(target: API, "ping from {:?}", self.node.get_cn());
-        self.asm.counters.incr(CounterType::VsApiPings);
+        self.asm.counters.incr(CounterType::VsApiPings, None);
         let mut res_builder = results.get().init_res();
         res_builder.set_ok(());
         Ok(())

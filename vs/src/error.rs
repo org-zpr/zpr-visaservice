@@ -60,6 +60,9 @@ pub enum ServiceError {
 
     #[error("admin key error: {0}")]
     AdminKeyError(String),
+
+    #[error("counter error: {0}")]
+    Counter(String),
 }
 
 #[derive(Debug, Error)]

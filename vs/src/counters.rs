@@ -1,8 +1,9 @@
 //! Counters: Track various interesting events in the visa service operations.
+use crate::error::ServiceError;
 
 use enum_map::{Enum, EnumMap};
 // use std::alloc::System;
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::fmt;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Default)]
 pub struct Counters {
     pub counters: EnumMap<CounterType, Counter>,
-    pub node_counters: HashMap<IpAddr, EnumMap<NodeCounterType, Counter>>,
+    pub node_counters: DashMap<IpAddr, EnumMap<NodeCounterType, Counter>>,
 }
 
 pub struct Counter {
@@ -20,12 +21,22 @@ pub struct Counter {
 
 impl Counters {
     /// Shorthand for `Counters::counters[<TYPE>].increment()`.
-    pub fn incr(&self, c: CounterType) {
+    pub fn incr(&self, c: CounterType, node: Option<&IpAddr>) {
         self.counters[c].increment();
-    }
 
-    pub fn incr_node(&self, c: NodeCounterType, node: &IpAddr) {
-        self.node_counters[node][c].increment();
+        match (NodeCounterType::try_from(c), node) {
+            (Ok(ty), Some(n)) => {
+                match self.node_counters.get(n) {
+                    Some(node_counters) => node_counters[ty].increment(),
+                    None => {
+                        let enum_map:EnumMap<NodeCounterType, Counter>  = EnumMap::default();
+                        enum_map[ty].increment();
+                        self.node_counters.insert(n.clone(), enum_map);
+                    }
+                }
+            }
+            _ => (),
+        }
     }
     // pub fn set_request_time(&mut self, node: &IpAddr) {
     //     match self.node_counters.get_mut(node) {
@@ -129,5 +140,18 @@ impl NodeCounterType {
 impl fmt::Display for NodeCounterType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name())
+    }
+}
+
+impl TryFrom<CounterType> for NodeCounterType {
+    type Error = ServiceError;
+
+    fn try_from(c: CounterType) -> Result<Self, Self::Error> {
+        match c {
+            CounterType::VisaRequests => Ok(NodeCounterType::VisaRequests),
+            CounterType::VisaRequestsApproved => Ok(NodeCounterType::VisaRequestsApproved),
+            CounterType::VisaRequestsDenied => Ok(NodeCounterType::VisaRequestsDenied),
+            _ => Err(ServiceError::Counter("Incorrect counter type".to_string())),
+        }
     }
 }

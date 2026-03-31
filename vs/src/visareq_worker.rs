@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
 use crate::assembly::Assembly;
-use crate::counters::{CounterType, NodeCounterType};
+use crate::counters::CounterType;
 use crate::error::ServiceError;
 use crate::logging::targets::VREQ;
 use crate::{config, net_mgr};
@@ -85,10 +85,9 @@ pub async fn request_visa_wait_response(
 ) -> Result<VisaDecision, ServiceError> {
     let deadline = tokio::time::Instant::now() + timeout;
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
-
-    asm.counters.incr(CounterType::VisaRequests);
+    
     asm.counters
-        .incr_node(NodeCounterType::VisaRequests, requesting_node);
+        .incr(CounterType::VisaRequests, Some(requesting_node));
 
     match tokio::time::timeout_at(deadline, asm.vreq_chan.reserve()).await {
         Ok(Ok(permit)) => {
@@ -97,14 +96,14 @@ pub async fn request_visa_wait_response(
         }
 
         Ok(Err(_closed)) => {
-            asm.counters.incr(CounterType::VisaRequestQueueError);
+            asm.counters.incr(CounterType::VisaRequestQueueError, None);
             Err(ServiceError::Internal(
                 "internal error enqueuing visa request".to_string(),
             ))
         }
 
         Err(_timedout) => {
-            asm.counters.incr(CounterType::VisaRequestQueueFull);
+            asm.counters.incr(CounterType::VisaRequestQueueFull, None);
             Err(ServiceError::Timeout(
                 "timeout enqueuing visa request".into(),
             ))
@@ -116,33 +115,30 @@ pub async fn request_visa_wait_response(
         // Increment the appropriate counters before returning.
         Ok(Ok(vr_result)) => match vr_result {
             Ok(VisaDecision::Allow(_)) => {
-                asm.counters.incr(CounterType::VisaRequestsApproved);
                 asm.counters
-                    .incr_node(NodeCounterType::VisaRequestsApproved, requesting_node);
-
+                    .incr(CounterType::VisaRequestsApproved, Some(requesting_node));
                 vr_result
             }
             Ok(VisaDecision::Deny(_)) => {
-                asm.counters.incr(CounterType::VisaRequestsDenied);
                 asm.counters
-                    .incr_node(NodeCounterType::VisaRequestsDenied, requesting_node);
+                    .incr(CounterType::VisaRequestsDenied, Some(requesting_node));
                 vr_result
             }
             Err(_) => {
-                asm.counters.incr(CounterType::VisaRequestFailed);
+                asm.counters.incr(CounterType::VisaRequestFailed, None);
                 vr_result
             }
         },
         Ok(Err(e)) => {
             // Queue read error -- probably closed?
-            asm.counters.incr(CounterType::VisaRequestQueueError);
+            asm.counters.incr(CounterType::VisaRequestQueueError, None);
             Err(ServiceError::Internal(format!(
                 "queue error receiving visa request response: {}",
                 e
             )))
         }
         Err(_timedout) => {
-            asm.counters.incr(CounterType::VisaRequestTimeout);
+            asm.counters.incr(CounterType::VisaRequestTimeout, None);
             Err(ServiceError::Timeout(format!(
                 "timeout waiting for visa request response after {:?}",
                 timeout
