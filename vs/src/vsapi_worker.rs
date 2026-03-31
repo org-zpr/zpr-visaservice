@@ -587,7 +587,12 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
 
         if !self.reconnect {
             if let Err(e) = self.asm.visa_mgr.clear_node_state(&node_zpr_addr).await {
-                warn!(target: API, "failed to clear node state for {:?}: {}", &node_cn, e);
+                error!(target: API, "failed to clear node state for {:?}: {}", &node_cn, e);
+                return self.ok_with_authenticate_error(
+                    results,
+                    vsapi::ErrorCode::Internal,
+                    "failed to clear node state",
+                );
             }
         }
 

@@ -94,6 +94,7 @@ impl ActorMgr {
                 .await?;
             self.actor_db.add_actor(actor).await?;
         } else {
+            // Is a reconnect...
             if let Err(e) = self.actor_db.update_actor(actor).await {
                 // Update failed? Make the node try a fresh connect.
                 if let Err(ee) = self
