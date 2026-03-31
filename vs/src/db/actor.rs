@@ -213,11 +213,16 @@ impl ActorRepo {
         //                |- <key> -> JSON(<Attribute>)
         //
         // Write the attributes. We write out the attributes in JSON.
-        for attr in actor.attrs_iter() {
-            self.db
-                .hset(&attrs_key, attr.get_key(), &serde_json::to_string(&attr)?)
-                .await?;
-        }
+        // There may be a bunch of attributes so we take the time to set up a pipeline.
+        let ops = actor
+            .attrs_iter()
+            .map(|attr| DbOp::HSet {
+                hash_key: attrs_key.clone(),
+                field: attr.get_key().to_string(),
+                value: serde_json::to_string(attr).unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        self.db.atomic_pipeline(&ops).await?;
 
         //
         // actor:<ZADDR>
