@@ -1,12 +1,17 @@
 //! Counters: Track various interesting events in the visa service operations.
 
 use enum_map::{Enum, EnumMap};
+// use std::alloc::System;
+use std::collections::HashMap;
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+// use std::time::SystemTime;
 
 #[derive(Default)]
 pub struct Counters {
     pub counters: EnumMap<CounterType, Counter>,
+    pub node_counters: HashMap<IpAddr, EnumMap<NodeCounterType, Counter>>,
 }
 
 pub struct Counter {
@@ -18,6 +23,19 @@ impl Counters {
     pub fn incr(&self, c: CounterType) {
         self.counters[c].increment();
     }
+
+    pub fn incr_node(&self, c: NodeCounterType, node: &IpAddr) {
+        self.node_counters[node][c].increment();
+    }
+    // pub fn set_request_time(&mut self, node: &IpAddr) {
+    //     match self.node_counters.get_mut(node) {
+    //         Some(idx) => idx.1 = SystemTime::now(),
+    //         None => {self.node_counters.insert(node.clone(), (EnumMap::default(), SystemTime::now()));},
+    //     }
+    // }
+    // pub fn get_last_request_time(&self, node: &IpAddr) -> SystemTime {
+    //     self.node_counters[node].1
+    // }
 }
 
 impl Counter {
@@ -86,6 +104,29 @@ impl CounterType {
 }
 
 impl fmt::Display for CounterType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+#[derive(Enum, Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum NodeCounterType {
+    VisaRequests,
+    VisaRequestsApproved,
+    VisaRequestsDenied,
+}
+
+impl NodeCounterType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            NodeCounterType::VisaRequests => "node_visa_requests_total",
+            NodeCounterType::VisaRequestsApproved => "node_visa_requests_approved",
+            NodeCounterType::VisaRequestsDenied => "node_visa_requests_denied",
+        }
+    }
+}
+
+impl fmt::Display for NodeCounterType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name())
     }

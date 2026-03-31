@@ -297,6 +297,8 @@ pub struct NodeRecordBrief {
     pub visa_requests: u64,
     pub connect_requests: u64,
     pub in_sync: bool,
+    pub approved_reqs: u64,
+    pub denied_reqs: u64,
 }
 
 impl fmt::Display for NodeRecordBrief {
@@ -330,7 +332,16 @@ impl fmt::Display for NodeRecordBrief {
             // '[visas: VAL' '|' 'connects: VAL]'
             format!(
                 "{} {} {}",
-                format!("{}{}", "[vreqs:".dimmed(), self.visa_requests),
+                format!(
+                    "{}{} {}{} {}{}{}",
+                    "[vreqs:".dimmed(),
+                    self.visa_requests,
+                    "(vreqs_appr".dimmed(),
+                    self.approved_reqs,
+                    "vreqs_den".dimmed(),
+                    self.denied_reqs,
+                    ")"
+                ),
                 "|".dimmed(),
                 format!(
                     "{}{}{}",

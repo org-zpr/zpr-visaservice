@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
 use crate::assembly::Assembly;
-use crate::counters::CounterType;
+use crate::counters::{CounterType, NodeCounterType};
 use crate::error::ServiceError;
 use crate::logging::targets::VREQ;
 use crate::{config, net_mgr};
@@ -87,6 +87,8 @@ pub async fn request_visa_wait_response(
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
 
     asm.counters.incr(CounterType::VisaRequests);
+    asm.counters
+        .incr_node(NodeCounterType::VisaRequests, requesting_node);
 
     match tokio::time::timeout_at(deadline, asm.vreq_chan.reserve()).await {
         Ok(Ok(permit)) => {
@@ -115,10 +117,15 @@ pub async fn request_visa_wait_response(
         Ok(Ok(vr_result)) => match vr_result {
             Ok(VisaDecision::Allow(_)) => {
                 asm.counters.incr(CounterType::VisaRequestsApproved);
+                asm.counters
+                    .incr_node(NodeCounterType::VisaRequestsApproved, requesting_node);
+
                 vr_result
             }
             Ok(VisaDecision::Deny(_)) => {
                 asm.counters.incr(CounterType::VisaRequestsDenied);
+                asm.counters
+                    .incr_node(NodeCounterType::VisaRequestsDenied, requesting_node);
                 vr_result
             }
             Err(_) => {
