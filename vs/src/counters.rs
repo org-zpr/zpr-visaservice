@@ -1,13 +1,11 @@
 //! Counters: Track various interesting events in the visa service operations.
 use crate::error::ServiceError;
 
-use enum_map::{Enum, EnumMap};
-// use std::alloc::System;
 use dashmap::DashMap;
+use enum_map::{Enum, EnumMap};
 use std::fmt;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-// use std::time::SystemTime;
 
 #[derive(Default)]
 pub struct Counters {
@@ -21,20 +19,23 @@ pub struct Counter {
 
 impl Counters {
     /// Shorthand for `Counters::counters[<TYPE>].increment()`.
+    ///
+    /// If the increment is for CounterType::VisaRequests, CounterType::VisaRequestsApproved,
+    /// or CounterType::VisaRequestsDenied, you should also provide a node address, and
+    /// it will increment the node counts as well. If a node address is not provided, the
+    /// total counters will be increased, but the node counters will not, but no error will be provided
     pub fn incr(&self, c: CounterType, node: Option<&IpAddr>) {
         self.counters[c].increment();
 
         match (NodeCounterType::try_from(c), node) {
-            (Ok(ty), Some(n)) => {
-                match self.node_counters.get(n) {
-                    Some(node_counters) => node_counters[ty].increment(),
-                    None => {
-                        let enum_map:EnumMap<NodeCounterType, Counter>  = EnumMap::default();
-                        enum_map[ty].increment();
-                        self.node_counters.insert(n.clone(), enum_map);
-                    }
+            (Ok(ty), Some(n)) => match self.node_counters.get(n) {
+                Some(node_counters) => node_counters[ty].increment(),
+                None => {
+                    let enum_map: EnumMap<NodeCounterType, Counter> = EnumMap::default();
+                    enum_map[ty].increment();
+                    self.node_counters.insert(n.clone(), enum_map);
                 }
-            }
+            },
             _ => (),
         }
     }

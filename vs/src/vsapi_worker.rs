@@ -317,7 +317,9 @@ impl VisaServiceImpl {
         code: vsapi::ErrorCode,
         message: &str,
     ) -> Result<(), capnp::Error> {
-        self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+        self.asm
+            .counters
+            .incr(CounterType::NodeConnectionsFailed, None);
         let res_builder = results.get().init_resp();
         let mut err_builder = res_builder.init_error();
         write_error(&mut err_builder, code, message);
@@ -429,7 +431,9 @@ impl VSGateImpl {
         code: vsapi::ErrorCode,
         message: &str,
     ) -> Result<(), capnp::Error> {
-        self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+        self.asm
+            .counters
+            .incr(CounterType::NodeConnectionsFailed, None);
         let res_builder = results.get().init_res();
         let mut err_builder = res_builder.init_error();
         write_error(&mut err_builder, code, message);

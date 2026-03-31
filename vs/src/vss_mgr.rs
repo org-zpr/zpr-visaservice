@@ -402,7 +402,7 @@ async fn vss_worker_loop(
                             v1::ok_or_error::Which::Error(err_rdr) => {
                                 let err_obj = err_rdr.unwrap();
                                 error!(target: VSS, "VSS ping returns error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
-                                asm.counters.incr(CounterType::VssErrors);
+                                asm.counters.incr(CounterType::VssErrors, None);
                                 // TODO: What does this even mean? We got a reply but it is a coded error message? Should we just disconnect from node?
                                 ping_failures += 1;
                             }
@@ -410,12 +410,12 @@ async fn vss_worker_loop(
                     }
                     Err(VssSyncError::Timeout(_)) => {
                         warn!(target: VSS, "ping to VSS at {} timed out", node_addr);
-                        asm.counters.incr(CounterType::VssErrors);
+                        asm.counters.incr(CounterType::VssErrors, None);
                         ping_failures += 1;
                     }
                     Err(_) => {
                         warn!(target: VSS, "ping to VSS at {} failed", node_addr);
-                        asm.counters.incr(CounterType::VssErrors);
+                        asm.counters.incr(CounterType::VssErrors, None);
                         ping_failures += 1;
                     }
                 }

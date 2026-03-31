@@ -85,7 +85,7 @@ pub async fn request_visa_wait_response(
 ) -> Result<VisaDecision, ServiceError> {
     let deadline = tokio::time::Instant::now() + timeout;
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
-    
+
     asm.counters
         .incr(CounterType::VisaRequests, Some(requesting_node));
 
