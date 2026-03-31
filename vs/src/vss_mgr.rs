@@ -138,6 +138,42 @@ impl VssMgr {
         Ok(())
     }
 
+    /// Start a VSS worker only if none is already running for this node.
+    /// Uses DashMap entry to make this thread safe.
+    ///
+    /// Returns `true` if a new worker was started, `false` if one was already running.
+    pub fn start_vss_worker_if_none(
+        &self,
+        asm: Arc<Assembly>,
+        node_addr: &IpAddr,
+        vss_addr: &SocketAddr,
+        delay: std::time::Duration,
+    ) -> Result<bool, VssSyncError> {
+        // entry() holds the DashMap shard lock for the duration of the match, making the
+        // check-and-insert atomic and preventing concurrent callers from both starting a worker.
+        match self.workers.entry(*node_addr) {
+            dashmap::Entry::Occupied(_) => Ok(false),
+            dashmap::Entry::Vacant(slot) => {
+                let (cmd_tx, cmd_rx) = mpsc::channel::<VssCmd>(16);
+                let job = Job::StartVssWorker {
+                    asm,
+                    node_addr: *node_addr,
+                    vss_addr: *vss_addr,
+                    delay,
+                    cmd_rx,
+                };
+                self.jobs_tx.try_send(job).map_err(|e| {
+                    VssSyncError::QueueFull(format!(
+                        "failed to queue VSS worker start job for {}: {}",
+                        vss_addr, e
+                    ))
+                })?;
+                slot.insert(VssHandle { cmd_tx });
+                Ok(true)
+            }
+        }
+    }
+
     /// Obtain a handle to the VSS worker for the given node. Using the handle you can
     /// send VSS API messages.
     pub fn get_handle(&self, naddr: &IpAddr) -> Option<VssHandle> {

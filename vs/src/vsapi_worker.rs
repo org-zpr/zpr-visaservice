@@ -1025,15 +1025,19 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                 .await
                 .unwrap_or(None)
             {
-                if self.asm.vss_mgr.get_handle(&node_addr).is_none() {
-                    warn!("no VSS worker running for node {node_cn} @ {node_addr} - starting one");
-
-                    if let Err(e) = self.asm.vss_mgr.start_vss_worker(
-                        self.asm.clone(),
-                        &node_addr,
-                        &vssaddr,
-                        Duration::from_secs(0),
-                    ) {
+                match self.asm.vss_mgr.start_vss_worker_if_none(
+                    self.asm.clone(),
+                    &node_addr,
+                    &vssaddr,
+                    Duration::from_secs(0),
+                ) {
+                    Ok(true) => {
+                        info!(
+                            "found no VSS worker running for node {node_cn} @ {node_addr} - started one"
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
                         warn!(target: API, "failed to start VSS worker for node {node_cn}: {}", e);
                     }
                 }
