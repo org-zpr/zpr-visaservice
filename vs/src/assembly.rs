@@ -97,7 +97,7 @@ pub mod tests {
 
         let actor_repo = ActorRepo::new(db_handle.clone());
         let node_repo = NodeRepo::new(db_handle.clone());
-        let visa_repo = VisaRepo::new(db_handle.clone());
+        let visa_repo = VisaRepo::new(db_handle.clone(), 1).await.unwrap();
 
         let (event_tx, _event_rx) = mpsc::channel(100);
         // TODO: Start event manager worker?

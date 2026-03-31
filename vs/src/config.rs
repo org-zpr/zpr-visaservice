@@ -36,6 +36,11 @@ pub const VSAPI_PORT: u16 = 5002;
 /// Default VS admin HTTPS port - must be in sync with compiler since it adds policy for that.
 pub const ADMIN_HTTPS_PORT: u16 = 8182;
 
+/// Initial visa ID to use when creating visas - must be in sync with the nodes since they create
+/// initial "hardcoded" visas using IDs below this. This value is only set if we do not have
+/// state in the database yet.
+pub const INITIAL_VISA_ID: u64 = 1000;
+
 pub const VALKEY_URI: &str = "redis://127.0.0.1:6379";
 
 /// Every THIS often we re-acquire the DB lock.
@@ -68,7 +73,10 @@ pub const DEFAULT_ANON_AUTH_EXPIRATION: Duration = Duration::from_secs(5 * 60); 
 pub const VSS_START_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// VSS worker pings the node VSS API at this interval.
-pub const VSS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+pub const VSS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(7);
+
+/// Number of allowed consecutive VSS ping failures before we drop the node.
+pub const VSS_MAX_PING_FAILURES: usize = 3;
 
 /// In cases where we create visas ourselves or if no timeout is specified, use this default.
 pub const DEFAULT_VISA_REQ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);

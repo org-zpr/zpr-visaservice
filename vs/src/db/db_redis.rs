@@ -99,6 +99,12 @@ impl DbConnection for RedisDb {
         Ok(res)
     }
 
+    async fn sismember(&self, key: &str, member: &str) -> DbResult<bool> {
+        let mut conn = self.mgr.clone();
+        let res: bool = conn.sismember(key, member).await?;
+        Ok(res)
+    }
+
     async fn hget(&self, key: &str, field: &str) -> DbResult<Option<String>> {
         let mut conn = self.mgr.clone();
         let res: Option<String> = conn.hget(key, field).await?;

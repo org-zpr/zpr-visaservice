@@ -47,6 +47,7 @@ pub trait DbConnection: Send + Sync {
     async fn get_bin(&self, key: &str) -> DbResult<Vec<u8>>;
     async fn del(&self, key: &str) -> DbResult<()>;
     async fn smembers(&self, key: &str) -> DbResult<HashSet<String>>;
+    async fn sismember(&self, key: &str, member: &str) -> DbResult<bool>;
     async fn hget(&self, key: &str, field: &str) -> DbResult<Option<String>>;
     async fn hgetall(&self, key: String) -> DbResult<HashMap<String, String>>;
     async fn hset(&self, key: &str, field: &str, value: &str) -> DbResult<()>;

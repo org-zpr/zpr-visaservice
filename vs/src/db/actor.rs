@@ -4,12 +4,12 @@
 //! Note that the MUNGED_SERVICENAME is a db::KeyString - colons and '%' replaced with percent encoding.
 //!
 //! This updates:
-//! - actor:<ZADDR> a hash for each connected actor
-//! - actor:<ZADDR>:attrs a hash of attributes for each actor maps attribute keys to Attribug in JSON.
-//! - actor:<ZADDR>:services a set of service names offered by the actor.
-//! - service:<MUNGED_SERVICENAME> a hash. Includes key 'zpr_addr' with the ZPR address (string) of the actor providing the service.
-//! - nodes set of IP addresses  of all connected nodes.
-//! - adapters set of IP addresses  of all connected adapters.
+//! - actor:<ZADDR>                - a hash for each connected actor
+//! - actor:<ZADDR>:attrs          - a hash of attributes for each actor maps attribute keys to Attribug in JSON.
+//! - actor:<ZADDR>:services       - a set of service names offered by the actor.
+//! - service:<MUNGED_SERVICENAME> - a hash. Includes key 'zpr_addr' with the ZPR address (string) of the actor providing the service.
+//! - nodes                        - set of IP addresses  of all connected nodes.
+//! - adapters                     - set of IP addresses  of all connected adapters.
 
 use dashmap::DashMap;
 use libeval::actor::Actor;
@@ -136,6 +136,143 @@ impl ActorRepo {
                 Err(e)
             }
         }
+    }
+
+    /// List the ZPR addresses of all connected actors.
+    pub async fn list_zpr_addrs(&self) -> Result<Vec<IpAddr>, StoreError> {
+        let mut addrs = Vec::new();
+
+        let node_addr_strs: HashSet<String> = self.db.smembers(KEY_NODES).await?;
+        for addr_str in node_addr_strs {
+            let addr: IpAddr = match addr_str.parse() {
+                Ok(addr) => addr,
+                Err(err) => {
+                    warn!(target: DB, "invalid zpr address in set {}: {} ({})", KEY_NODES, addr_str, err);
+                    continue;
+                }
+            };
+            addrs.push(addr);
+        }
+
+        let adapter_addr_strs: HashSet<String> = self.db.smembers(KEY_ADAPTERS).await?;
+        for addr_str in adapter_addr_strs {
+            let addr: IpAddr = match addr_str.parse() {
+                Ok(addr) => addr,
+                Err(err) => {
+                    warn!(target: DB, "invalid zpr address in set {}: {} ({})", KEY_ADAPTERS, addr_str, err);
+                    continue;
+                }
+            };
+            addrs.push(addr);
+        }
+
+        Ok(addrs)
+    }
+
+    /// Update existing actor data.
+    pub async fn update_actor(&self, actor: &Actor) -> Result<(), StoreError> {
+        let zpraddr = match actor.get_zpr_addr() {
+            Some(addr) => addr.clone(),
+            None => {
+                return Err(StoreError::MissingRequired(
+                    "attempt to update actor with no ZPR address".into(),
+                ));
+            }
+        };
+
+        let zpraddr_str = zpraddr.to_string();
+        let base_key = actor_key_for(&zpraddr);
+        let attrs_key = attrs_key_for(&zpraddr);
+        let services_key = actor_services_key_for(&zpraddr);
+
+        if !self.db.exists(&base_key).await? {
+            return Err(StoreError::NotFound(format!(
+                "update called on non-existant actor: {zpraddr}"
+            )));
+        }
+
+        let ts = gen_timestamp();
+
+        // The actor is not allowed to change roles:
+        if actor.is_node() {
+            if !self.db.sismember(KEY_NODES, &zpraddr_str).await? {
+                return Err(StoreError::InvalidData(format!(
+                    "update fails since node actor not already in node role: {zpraddr}"
+                )));
+            }
+        } else {
+            if !self.db.sismember(KEY_ADAPTERS, &zpraddr_str).await? {
+                return Err(StoreError::InvalidData(format!(
+                    "update fails since adapter actor not already in adapter role: {zpraddr}"
+                )));
+            }
+        }
+
+        //
+        // actor:<ZADDR>:attrs
+        //                |- <key> -> JSON(<Attribute>)
+        //
+        // Write the attributes. We write out the attributes in JSON.
+        // There may be a bunch of attributes so we take the time to set up a pipeline.
+        let ops = actor
+            .attrs_iter()
+            .map(|attr| DbOp::HSet {
+                hash_key: attrs_key.clone(),
+                field: attr.get_key().to_string(),
+                value: serde_json::to_string(attr).unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        self.db.atomic_pipeline(&ops).await?;
+
+        //
+        // actor:<ZADDR>
+        //         |- identity_keys -> JSON(<IdentityKeysVec>)
+        //         |- ctime -> string
+        //         |- utime -> string
+        //
+
+        // Get the identity keys as a vec, write as JSON array
+        let identity_keys = actor
+            .identity_keys_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        self.db
+            .hset(
+                &base_key,
+                "identity_keys",
+                &serde_json::to_string(&identity_keys)?,
+            )
+            .await?;
+        self.db.hset_nx(&base_key, "ctime", &ts).await?; // set create time only if not already there.
+        self.db.hset(&base_key, "utime", &ts).await?; // always set update time
+
+        //
+        // service:<NAME>
+        //           |- zpr_addr -> string
+        //
+        // actor:<ZADDR>:services -> SET[ <service_name> ]
+        //
+
+        // Remove existing services.
+        let existing_services: HashSet<String> = self.db.smembers(&services_key).await?;
+        for service_name in existing_services {
+            let svc_key_str = service_key_for(&service_name);
+            self.db.del(&svc_key_str).await?;
+        }
+        self.db.del(&services_key).await?;
+
+        // Add services back based on what actor actually still has.
+        for service_name in actor.services_iter() {
+            debug!(target: DB, "adding service for actor: addr={zpraddr} service={service_name}");
+            let svc_key_str = service_key_for(&service_name);
+            self.db
+                .hset(&svc_key_str, "zpr_addr", &zpraddr.to_string())
+                .await?;
+            self.db.sadd(&services_key, &service_name).await?;
+        }
+
+        debug!(target: DB, "update actor in DB: addr={zpraddr} cn={:?} node?={}", actor.get_cn(), actor.is_node());
+        Ok(())
     }
 
     /// Update our in-memory cache when we add an actor.
@@ -432,21 +569,25 @@ impl ActorRepo {
     }
 }
 
+/// returns 'actor:<ZADDR>'
 fn actor_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}")
 }
 
+/// returns 'actor:<ZADDR>:attrs'
 fn attrs_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}:attrs")
 }
 
+/// returns 'service:<MUNGED_SERVICENAME>'
 fn service_key_for(service_name: &str) -> String {
     let svc_name_clean = KeyString::from(service_name);
     format!("{KEY_SERVICE}:{}", svc_name_clean.as_str())
 }
 
+/// returns 'actor:<ZADDR>:services'
 fn actor_services_key_for(zpr_addr: &IpAddr) -> String {
     let zaddr: ZAddr = zpr_addr.into();
     format!("{KEY_ACTOR}:{zaddr}:services")

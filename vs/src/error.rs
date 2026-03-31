@@ -123,6 +123,9 @@ pub enum VssSyncError {
 
     #[error("duplicate vss worker for {0}")]
     DuplicateWorker(SocketAddr),
+
+    #[error("timeout: {0}")]
+    Timeout(String),
 }
 
 impl From<ApiResponseError> for VssSyncError {
