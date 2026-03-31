@@ -48,7 +48,7 @@ impl VisaMgr {
             node_addr.clone(),
             0,
             vss_addr.port(),
-        );
+        )?;
         let has_vs_to_node_visa = self
             .get_node_visa_by_five_tuple(node_addr, &vs_node_ft)
             .await?
@@ -354,7 +354,8 @@ mod tests {
             DST_ADDR.parse().unwrap(),
             1234,
             443,
-        );
+        )
+        .unwrap();
 
         let result = mgr
             .get_node_visa_by_five_tuple(&node_addr, &ft)
@@ -375,7 +376,8 @@ mod tests {
             DST_ADDR.parse().unwrap(),
             1234,
             443,
-        );
+        )
+        .unwrap();
 
         let result = mgr
             .get_node_visa_by_five_tuple(&node_addr, &ft)
@@ -401,7 +403,8 @@ mod tests {
             DST_ADDR.parse().unwrap(),
             1234,
             8080, // wrong dest_port
-        );
+        )
+        .unwrap();
 
         let result = mgr
             .get_node_visa_by_five_tuple(&node_addr, &ft)
@@ -428,7 +431,8 @@ mod tests {
             DST_ADDR.parse().unwrap(),
             1234,
             443,
-        );
+        )
+        .unwrap();
 
         let result = mgr
             .get_node_visa_by_five_tuple(&node_addr, &ft)
