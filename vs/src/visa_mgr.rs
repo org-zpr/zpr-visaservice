@@ -2,7 +2,6 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
 use tracing::debug;
 
 use crate::assembly::Assembly;
@@ -145,14 +144,11 @@ impl VisaMgr {
         pdesc: &PacketDesc,
         hit: &Hit,
     ) -> Result<Visa, ServiceError> {
-        // Expiration is millis since UNIX EPOCH
-        let expiration = {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| ServiceError::Internal("system time before UNIX EPOCH".to_string()))?
-                .as_secs();
-            (now + config::DEFAULT_VISA_EXPIRATION.as_secs()) * 1000
-        };
+        let expiration_time = std::time::SystemTime::now()
+            .checked_add(config::DEFAULT_VISA_EXPIRATION)
+            .ok_or_else(|| {
+                ServiceError::Internal("failed to compute visa expiration time".to_string())
+            })?;
 
         let (source_port, dest_port) = match pdesc.five_tuple.l4_protocol {
             ip_proto::TCP | ip_proto::UDP => {
@@ -205,7 +201,7 @@ impl VisaMgr {
         let visa = Visa {
             issuer_id: visa_id,
             config: 0,
-            expires: UNIX_EPOCH + Duration::from_millis(expiration),
+            expires: expiration_time,
             source_addr: pdesc.five_tuple.source_addr.clone(),
             dest_addr: pdesc.five_tuple.dest_addr.clone(),
             dock_pep: pep,
