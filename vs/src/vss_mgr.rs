@@ -301,7 +301,6 @@ async fn vss_worker_loop(
 
     do_vss_initialization(&asm, &node_addr.ip(), &vss_handle).await;
 
-    //let mut ping_interval = tokio::time::interval(config::VSS_PING_INTERVAL);
     let ping_timeout = tokio::time::sleep(config::VSS_PING_INTERVAL);
     tokio::pin!(ping_timeout);
     let mut ping_failures = 0;
