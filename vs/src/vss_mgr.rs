@@ -430,8 +430,6 @@ async fn vss_worker_loop(
             }
         }
     }
-
-    // Call ping in a loop periodically.  If this fails raise an alarm.
 }
 
 /// When the vss worker starts up the node expects a couple of calls immediately.
