@@ -236,6 +236,24 @@ impl DbConnection for FakeDb {
         }
     }
 
+    async fn sismember(&self, key: &str, member: &str) -> DbResult<bool> {
+        let _rlock = self.lock.read().await;
+        if !self.exists(key).await? {
+            return Ok(false);
+        }
+        if let Some(entry) = self.store.get(key) {
+            match &entry.value {
+                FakeDbValue::Set(s) => Ok(s.contains(member)),
+                _ => Err(redis::RedisError::from((
+                    redis::ErrorKind::UnexpectedReturnType,
+                    "value is not a set",
+                ))),
+            }
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Get a field from a hash.
     async fn hget(&self, key: &str, field: &str) -> DbResult<Option<String>> {
         let _rlock = self.lock.read().await;
@@ -628,6 +646,28 @@ mod test {
         assert!(!db.exists("hash:key").await.unwrap());
         let keys = db.scan_match_all("*".to_string()).await.unwrap();
         assert!(keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sismember() {
+        let db = FakeDb::new();
+
+        // Member present.
+        db.sadd("set:key", "a").await.unwrap();
+        db.sadd("set:key", "b").await.unwrap();
+        assert!(db.sismember("set:key", "a").await.unwrap());
+        assert!(db.sismember("set:key", "b").await.unwrap());
+
+        // Member absent.
+        assert!(!db.sismember("set:key", "c").await.unwrap());
+
+        // Key does not exist.
+        assert!(!db.sismember("no:such:key", "a").await.unwrap());
+
+        // Wrong type returns an error.
+        db.set("string:key", "value").await.unwrap();
+        let err = db.sismember("string:key", "a").await.unwrap_err();
+        assert_eq!(err.kind(), redis::ErrorKind::UnexpectedReturnType);
     }
 
     #[tokio::test]

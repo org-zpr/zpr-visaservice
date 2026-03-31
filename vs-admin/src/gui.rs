@@ -279,7 +279,7 @@ impl Gui {
         let rows = self.actors.iter().map(|actor| {
             let cn = actor.cn.clone();
             let zpr_addr = actor.zpr_addr.clone();
-            let ts: DateTime<Utc> = DateTime::from_timestamp(actor.ctime as i64, 0).unwrap();
+            let ts: DateTime<Utc> = DateTime::from_timestamp(actor.ctime_secs as i64, 0).unwrap();
             let join_date = ts.to_rfc3339_opts(SecondsFormat::Secs, true);
             let flag = if actor.node {
                 "[node]".light_magenta()
@@ -349,9 +349,7 @@ impl Gui {
         }
 
         let rows = self.visas.iter().map(|vrec| {
-            let exp_secs = (vrec.expires / 1000) as i64;
-            let exp_nanos = ((vrec.expires % 1000) * 1_000_000) as u32;
-            let dt: DateTime<Utc> = DateTime::from_timestamp(exp_secs, exp_nanos).unwrap();
+            let dt: DateTime<Utc> = DateTime::from_timestamp(vrec.expires_secs as i64, 0).unwrap();
 
             let idstr = format!("{}", vrec.id);
             let expstr = dt.to_rfc3339_opts(SecondsFormat::Secs, true);

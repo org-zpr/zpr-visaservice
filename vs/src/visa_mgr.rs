@@ -2,19 +2,20 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use tracing::debug;
 
 use crate::assembly::Assembly;
 use crate::config;
 use crate::db;
 use crate::error::{ServiceError, StoreError};
 use crate::logging::targets::VISA;
+use crate::packet::make_fivetuple_tcp;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval::{Direction, Hit};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
-    CommFlag, DockPep, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa,
+    CommFlag, DockPep, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa, VsapiFiveTuple,
 };
 
 use tracing::info;
@@ -36,17 +37,66 @@ impl VisaMgr {
     ) -> Result<Vec<Visa>, ServiceError> {
         let mut visas = Vec::new();
 
-        if let Ok(pendings) = asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
+        if let Ok(pendings) = self.get_pending_visas_for_node(node_addr).await {
             visas.extend(pendings); // ignore errors here
         }
 
-        let cres = asm
-            .visa_mgr
-            .create_vs_to_node_vss_visa(asm.clone(), node_addr, vss_addr.port())
-            .await?;
-        visas.push(cres);
+        // The node may be reconnecting, in which case it may already have the core visas installed.
+        let vs_node_ft = make_fivetuple_tcp(
+            asm.config.get_vs_addr(),
+            node_addr.clone(),
+            0,
+            vss_addr.port(),
+        )?;
+        let has_vs_to_node_visa = self
+            .get_node_visa_by_five_tuple(node_addr, &vs_node_ft)
+            .await?
+            .is_some();
 
+        if !has_vs_to_node_visa {
+            let cres = self
+                .create_vs_to_node_vss_visa(asm.clone(), node_addr, vss_addr.port())
+                .await?;
+            visas.push(cres);
+        } else {
+            debug!(
+                target: VISA,
+                "node {node_addr} already has VS->VSS visa installed, skipping creation"
+            );
+        }
         Ok(visas)
+    }
+
+    /// Use a linear search of all visas installed on the node to find a match.
+    /// TODO: Need in-memory indexes for this.
+    pub async fn get_node_visa_by_five_tuple(
+        &self,
+        node_addr: &IpAddr,
+        ft: &VsapiFiveTuple,
+    ) -> Result<Option<Visa>, ServiceError> {
+        for visa in self
+            .repo
+            .get_visas_for_node_by_state(node_addr, db::NodeVisaState::Installed)
+            .await?
+        {
+            if &visa.source_addr == &ft.source_addr && &visa.dest_addr == &ft.dest_addr {
+                // Is from VS -> NODE, check for VSS port match.
+                match &visa.dock_pep {
+                    DockPep::TCP(tpep) => {
+                        if tpep.dest_port == ft.dest_port && tpep.source_port == ft.source_port {
+                            // Found it
+                            return Ok(Some(visa));
+                        } else {
+                            continue; // not the right visa
+                        }
+                    }
+                    _ => {
+                        continue; // not the right visa
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Ask policy for a visa permitting this visa service to talk to the given node VSS addr.
@@ -94,14 +144,11 @@ impl VisaMgr {
         pdesc: &PacketDesc,
         hit: &Hit,
     ) -> Result<Visa, ServiceError> {
-        // Expiration is millis since UNIX EPOCH
-        let expiration = {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| ServiceError::Internal("system time before UNIX EPOCH".to_string()))?
-                .as_secs();
-            (now + config::DEFAULT_VISA_EXPIRATION.as_secs()) * 1000
-        };
+        let expiration_time = std::time::SystemTime::now()
+            .checked_add(config::DEFAULT_VISA_EXPIRATION)
+            .ok_or_else(|| {
+                ServiceError::Internal("failed to compute visa expiration time".to_string())
+            })?;
 
         let (source_port, dest_port) = match pdesc.five_tuple.l4_protocol {
             ip_proto::TCP | ip_proto::UDP => {
@@ -154,7 +201,7 @@ impl VisaMgr {
         let visa = Visa {
             issuer_id: visa_id,
             config: 0,
-            expires: UNIX_EPOCH + Duration::from_millis(expiration),
+            expires: expiration_time,
             source_addr: pdesc.five_tuple.source_addr.clone(),
             dest_addr: pdesc.five_tuple.dest_addr.clone(),
             dock_pep: pep,
@@ -265,5 +312,129 @@ fn ep_from_dir(dir: &Direction) -> EndpointT {
 
         // Matched reverse direction: server to client.
         Direction::Reverse => EndpointT::Server,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{FakeDb, VisaRepo};
+    use crate::packet::make_fivetuple_tcp;
+    use crate::test_helpers::make_visa;
+    use std::sync::Arc;
+
+    async fn make_mgr() -> VisaMgr {
+        let db = Arc::new(FakeDb::new());
+        VisaMgr::new(VisaRepo::new(db, 1).await.unwrap())
+    }
+
+    // The default visa from make_visa has source fd5a:5052::10, dest fd5a:5052::20,
+    // TCP source_port=1234, dest_port=443.
+    const NODE_ADDR: &str = "fd5a:5052::1";
+    const SRC_ADDR: &str = "fd5a:5052::10";
+    const DST_ADDR: &str = "fd5a:5052::20";
+
+    #[tokio::test]
+    async fn test_get_node_visa_by_five_tuple_found() {
+        let mgr = make_mgr().await;
+        let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
+        let visa = make_visa(1, std::time::Duration::from_secs(60));
+
+        mgr.repo
+            .store_visa(&node_addr, &visa, db::NodeVisaState::Installed)
+            .await
+            .unwrap();
+
+        let ft = make_fivetuple_tcp(
+            SRC_ADDR.parse().unwrap(),
+            DST_ADDR.parse().unwrap(),
+            1234,
+            443,
+        )
+        .unwrap();
+
+        let result = mgr
+            .get_node_visa_by_five_tuple(&node_addr, &ft)
+            .await
+            .unwrap();
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().issuer_id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_node_visa_by_five_tuple_not_found_empty() {
+        let mgr = make_mgr().await;
+        let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
+
+        let ft = make_fivetuple_tcp(
+            SRC_ADDR.parse().unwrap(),
+            DST_ADDR.parse().unwrap(),
+            1234,
+            443,
+        )
+        .unwrap();
+
+        let result = mgr
+            .get_node_visa_by_five_tuple(&node_addr, &ft)
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_node_visa_by_five_tuple_wrong_ports() {
+        let mgr = make_mgr().await;
+        let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
+        let visa = make_visa(2, std::time::Duration::from_secs(60));
+
+        mgr.repo
+            .store_visa(&node_addr, &visa, db::NodeVisaState::Installed)
+            .await
+            .unwrap();
+
+        let ft = make_fivetuple_tcp(
+            SRC_ADDR.parse().unwrap(),
+            DST_ADDR.parse().unwrap(),
+            1234,
+            8080, // wrong dest_port
+        )
+        .unwrap();
+
+        let result = mgr
+            .get_node_visa_by_five_tuple(&node_addr, &ft)
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_node_visa_by_five_tuple_pending_not_matched() {
+        // Visas in PendingInstall state should not be returned.
+        let mgr = make_mgr().await;
+        let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
+        let visa = make_visa(3, std::time::Duration::from_secs(60));
+
+        mgr.repo
+            .store_visa(&node_addr, &visa, db::NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        let ft = make_fivetuple_tcp(
+            SRC_ADDR.parse().unwrap(),
+            DST_ADDR.parse().unwrap(),
+            1234,
+            443,
+        )
+        .unwrap();
+
+        let result = mgr
+            .get_node_visa_by_five_tuple(&node_addr, &ft)
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
     }
 }

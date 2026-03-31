@@ -274,9 +274,9 @@ async fn get_visas(
     }
 }
 
-fn system_time_to_unix_milliseconds(st: std::time::SystemTime) -> u64 {
+fn system_time_to_unix_seconds(st: std::time::SystemTime) -> u64 {
     match st.duration_since(std::time::UNIX_EPOCH) {
-        Ok(dur) => dur.as_millis() as u64,
+        Ok(dur) => dur.as_secs() as u64,
         Err(_) => 0,
     }
 }
@@ -330,8 +330,8 @@ async fn get_visa(
                 };
                 let vd = VisaDescriptor {
                     id: visa.issuer_id,
-                    expires: system_time_to_unix_milliseconds(visa.expires),
-                    created: ctime,
+                    expires_secs: system_time_to_unix_seconds(visa.expires),
+                    created_secs: ctime,
                     requesting_node,
                     policy_id: "0".into(), // TODO: not tracked yet
                     source_addr: visa.source_addr.to_string(),
@@ -428,7 +428,7 @@ async fn get_actor(
 
                 let descriptor = ActorDescriptor {
                     cn: cn.clone(),
-                    ctime: 0, // TODO: Not tracked yet
+                    ctime_secs: 0, // TODO: Not tracked yet
                     ident,
                     node: is_node,
                     zpr_addr: zpr_addr_str,
@@ -737,7 +737,7 @@ mod tests {
         let asm = Arc::new(new_assembly_for_tests(None).await);
         let api_key = setup_test_api_key(&asm);
         let actor = make_node_actor_defexp("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
-        asm.actor_mgr.add_node(&actor).await.unwrap();
+        asm.actor_mgr.add_node(&actor, false).await.unwrap();
 
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
@@ -769,9 +769,9 @@ mod tests {
         let actor1 = make_node_actor_defexp("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
         let actor2 = make_node_actor_defexp("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
 
-        asm.actor_mgr.add_node(&actor0).await.unwrap();
-        asm.actor_mgr.add_node(&actor1).await.unwrap();
-        asm.actor_mgr.add_node(&actor2).await.unwrap();
+        asm.actor_mgr.add_node(&actor0, false).await.unwrap();
+        asm.actor_mgr.add_node(&actor1, false).await.unwrap();
+        asm.actor_mgr.add_node(&actor2, false).await.unwrap();
 
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
@@ -811,7 +811,7 @@ mod tests {
         let node_actor = make_node_actor_defexp("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
         let adapter_actor = make_adapter_actor_defexp("fd5a:5052::21", "adapter-1");
 
-        asm.actor_mgr.add_node(&node_actor).await.unwrap();
+        asm.actor_mgr.add_node(&node_actor, false).await.unwrap();
         asm.actor_mgr
             .add_adapter_via_node(&adapter_actor, node_actor.get_zpr_addr().unwrap())
             .await

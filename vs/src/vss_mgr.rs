@@ -2,15 +2,17 @@ use dashmap::DashMap;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::LocalSet;
 use tokio_rustls::TlsConnector;
 use tokio_util::compat::*;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use zpr::vsapi::v1;
 use zpr::vsapi_types::{ApiResponseError, Param, ServiceDescriptor, Visa, pname};
@@ -22,6 +24,12 @@ use crate::counters::CounterType;
 use crate::error::VssSyncError;
 use crate::logging::targets::VSS;
 use crate::net_mgr;
+
+/// Minimum (and initial) timeout for a ping RPC call.
+const PING_MIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Default timeout for a single Cap'n Proto RPC call.
+const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct VssMgr {
     // Each node has an entry here, handle is a thread monitoring the nodes VSS.
@@ -41,6 +49,7 @@ enum Job {
     // Params for starting a VssHandle thread.
     StartVssWorker {
         asm: Arc<Assembly>,
+        node_addr: IpAddr,
         vss_addr: SocketAddr,
         delay: std::time::Duration,
         cmd_rx: mpsc::Receiver<VssCmd>,
@@ -99,13 +108,12 @@ impl VssMgr {
     pub fn start_vss_worker(
         &self,
         asm: Arc<Assembly>,
+        node_addr: &IpAddr,
         vss_addr: &SocketAddr,
         delay: std::time::Duration,
     ) -> Result<(), VssSyncError> {
-        let node_ip = vss_addr.ip();
-
         // Return error if we already have a worker for this node.
-        if self.workers.contains_key(&node_ip) {
+        if self.workers.contains_key(node_addr) {
             return Err(VssSyncError::DuplicateWorker(*vss_addr));
         }
 
@@ -113,6 +121,7 @@ impl VssMgr {
 
         let job = Job::StartVssWorker {
             asm,
+            node_addr: node_addr.clone(),
             vss_addr: *vss_addr,
             delay,
             cmd_rx,
@@ -125,8 +134,44 @@ impl VssMgr {
             )));
         }
         let worker = VssHandle { cmd_tx };
-        self.workers.insert(node_ip, worker);
+        self.workers.insert(node_addr.clone(), worker);
         Ok(())
+    }
+
+    /// Start a VSS worker only if none is already running for this node.
+    /// Uses DashMap entry to make this thread safe.
+    ///
+    /// Returns `true` if a new worker was started, `false` if one was already running.
+    pub fn start_vss_worker_if_none(
+        &self,
+        asm: Arc<Assembly>,
+        node_addr: &IpAddr,
+        vss_addr: &SocketAddr,
+        delay: std::time::Duration,
+    ) -> Result<bool, VssSyncError> {
+        // entry() holds the DashMap shard lock for the duration of the match, making the
+        // check-and-insert atomic and preventing concurrent callers from both starting a worker.
+        match self.workers.entry(*node_addr) {
+            dashmap::Entry::Occupied(_) => Ok(false),
+            dashmap::Entry::Vacant(slot) => {
+                let (cmd_tx, cmd_rx) = mpsc::channel::<VssCmd>(16);
+                let job = Job::StartVssWorker {
+                    asm,
+                    node_addr: *node_addr,
+                    vss_addr: *vss_addr,
+                    delay,
+                    cmd_rx,
+                };
+                self.jobs_tx.try_send(job).map_err(|e| {
+                    VssSyncError::QueueFull(format!(
+                        "failed to queue VSS worker start job for {}: {}",
+                        vss_addr, e
+                    ))
+                })?;
+                slot.insert(VssHandle { cmd_tx });
+                Ok(true)
+            }
+        }
     }
 
     /// Obtain a handle to the VSS worker for the given node. Using the handle you can
@@ -208,17 +253,19 @@ async fn run_vss_job(job: Job) {
     match job {
         Job::StartVssWorker {
             asm,
+            node_addr,
             vss_addr,
             delay,
             cmd_rx,
         } => {
-            debug!(target: VSS, "starting VSS worker for node at {}", vss_addr);
-            let naddr = vss_addr.ip().to_owned();
+            debug!(target: VSS, "starting VSS worker for node {} at {}", node_addr, vss_addr);
             tokio::time::sleep(delay).await;
             vss_worker_loop(asm.clone(), vss_addr, cmd_rx).await;
             // When we exit the worker loop, we are done but the handle is still sitting in
             // the manager. So we clean it out here:
-            asm.vss_mgr.clear_handle(&naddr);
+            asm.vss_mgr.clear_handle(&node_addr);
+            info!(target: VSS, "VSS worker for node {} has exited", node_addr);
+            // TODO: Do we need to track somewhere that we are no longer in communication with this node?
         }
     }
 }
@@ -264,14 +311,15 @@ async fn vss_worker_loop(
 
     let req = vss_service.connect_request();
 
-    let handle_result_rdr = match req.send().promise.await {
-        Ok(req_resp) => req_resp,
-        Err(e) => {
-            error!(target: VSS, "VSS connect request failed: {}", e);
-            asm.counters.incr(CounterType::VssErrors, None);
-            return; // TODO: Signal manager?
-        }
-    };
+    let handle_result_rdr =
+        match rpc_with_timeout("connect", DEFAULT_RPC_TIMEOUT, req.send().promise).await {
+            Ok(req_resp) => req_resp,
+            Err(e) => {
+                error!(target: VSS, "VSS connect request failed: {}", e);
+                asm.counters.incr(CounterType::VssErrors, None);
+                return; // TODO: Signal manager?
+            }
+        };
 
     let handle_result_ok_or_error = handle_result_rdr.get().unwrap().get_resp().unwrap();
 
@@ -289,73 +337,99 @@ async fn vss_worker_loop(
 
     do_vss_initialization(&asm, &node_addr.ip(), &vss_handle).await;
 
-    let mut ping_interval = tokio::time::interval(config::VSS_PING_INTERVAL);
+    let ping_timeout = tokio::time::sleep(config::VSS_PING_INTERVAL);
+    tokio::pin!(ping_timeout);
+    let mut ping_failures = 0;
 
     loop {
         tokio::select! {
-            Some(cmd) = cmd_rx.recv() => {
-                match cmd {
-                    VssCmd::Stop() => {
-                        info!(target: VSS, "stop called on VSS worker for {}", node_addr);
+            cmd_opt = cmd_rx.recv() => {
+                match cmd_opt {
+                    Some(cmd) => match cmd {
+                        VssCmd::Stop() => {
+                            info!(target: VSS, "stop called on VSS worker for {}", node_addr);
+                            break;
+                        }
+                        VssCmd::PushVisas(_visas, resp_tx) => {
+                            if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("push-visas not implemented".to_string()))) {
+                                error!(target: VSS, "failed to send response for push-visas command: {:?}", e);
+                                asm.counters.incr(CounterType::VssErrors, None);
+                            }
+                        }
+                        VssCmd::RevokeVisasById(_visa_id, resp_tx) => {
+                            if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("revoke-visas not implemented".to_string()))) {
+                                error!(target: VSS, "failed to send response for revoke-visas command: {:?}", e);
+                                asm.counters.incr(CounterType::VssErrors, None);
+                            }
+                        }
+                        VssCmd::RevokeAuthsByZprAddr(_zpr_addr, resp_tx) => {
+                            if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("revoke-auths not implemented".to_string()))) {
+                                error!(target: VSS, "failed to send response for revoke-auths command: {:?}", e);
+                                asm.counters.incr(CounterType::VssErrors, None);
+                            }
+                        }
+                        VssCmd::SetServices(services, resp_tx) => {
+                            if let Err(e) = resp_tx.send(do_set_services(&vss_handle, services).await) {
+                                error!(target: VSS, "failed to send response for set-services command: {:?}", e);
+                                asm.counters.incr(CounterType::VssErrors, None);
+                            }
+                        }
+                        VssCmd::Configure(params, resp_tx) => {
+                            if let Err(e) = resp_tx.send(do_configure(&vss_handle, params).await) {
+                                error!(target: VSS, "failed to send response for configure command: {:?}", e);
+                                asm.counters.incr(CounterType::VssErrors, None);
+                            }
+                        }
+                    }
+                    None => {
+                        // Uh oh - channel closed.
+                        warn!(target: VSS, "command channel closed for VSS worker for {}", node_addr);
                         break;
-                    }
-                    VssCmd::PushVisas(_visas, resp_tx) => {
-                        if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("push-visas not implemented".to_string()))) {
-                            error!(target: VSS, "failed to send response for push-visas command: {:?}", e);
-                            asm.counters.incr(CounterType::VssErrors, None);
-                        }
-                    }
-                    VssCmd::RevokeVisasById(_visa_id, resp_tx) => {
-                        if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("revoke-visas not implemented".to_string()))) {
-                            error!(target: VSS, "failed to send response for revoke-visas command: {:?}", e);
-                            asm.counters.incr(CounterType::VssErrors, None);
-                        }
-                    }
-                    VssCmd::RevokeAuthsByZprAddr(_zpr_addr, resp_tx) => {
-                        if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("revoke-auths not implemented".to_string()))) {
-                            error!(target: VSS, "failed to send response for revoke-auths command: {:?}", e);
-                            asm.counters.incr(CounterType::VssErrors, None);
-                        }
-                    }
-                    VssCmd::SetServices(services, resp_tx) => {
-                        if let Err(e) = resp_tx.send(do_set_services(&vss_handle, services).await) {
-                            error!(target: VSS, "failed to send response for set-services command: {:?}", e);
-                            asm.counters.incr(CounterType::VssErrors, None);
-                        }
-                    }
-                    VssCmd::Configure(params, resp_tx) => {
-                        if let Err(e) = resp_tx.send(do_configure(&vss_handle, params).await) {
-                            error!(target: VSS, "failed to send response for configure command: {:?}", e);
-                            asm.counters.incr(CounterType::VssErrors, None);
-                        }
                     }
                 }
             }
 
-            _ = ping_interval.tick() => {
-                // TODO: We need some way to raise an alert to the manager when a ping fails.
-                let ping_req = vss_handle.ping_request();
-                let ping_response_or_err = ping_req.send().promise.await;
-                if ping_response_or_err.is_err() {
-                    info!(target: VSS, "ping to VSS at {} failed", node_addr);
-                }
-                else {
-                    let ping_response_rdr = ping_response_or_err.unwrap();
-                    let ping_response_ok_or_error = ping_response_rdr.get();
-                    match ping_response_ok_or_error.unwrap().get_res().unwrap().which().unwrap() {
-                        v1::ok_or_error::Which::Ok(_) => debug!(target: VSS, "ping to VSS at {} succeeded", node_addr),
-                        v1::ok_or_error::Which::Error(err_rdr) => {
-                            let err_obj = err_rdr.unwrap();
-                            error!(target: VSS, "VSS ping returns error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
+            () = &mut ping_timeout => {
+                let ping_dur = PING_MIN_TIMEOUT + Duration::from_secs(ping_failures);
+                match rpc_with_timeout("ping", ping_dur, vss_handle.ping_request().send().promise).await {
+                    Ok(ping_response_rdr) => {
+                        match ping_response_rdr.get().unwrap().get_res().unwrap().which().unwrap() {
+                            v1::ok_or_error::Which::Ok(_) => {
+                                trace!(target: VSS, "ping to VSS at {} succeeded", node_addr);
+                                asm.actor_mgr.update_node_last_seen(&node_addr.ip()).await.ok(); // Ignore errors.
+                                ping_failures = 0;
+                            }
+                            v1::ok_or_error::Which::Error(err_rdr) => {
+                                let err_obj = err_rdr.unwrap();
+                                error!(target: VSS, "VSS ping returns error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
+                                asm.counters.incr(CounterType::VssErrors);
+                                // TODO: What does this even mean? We got a reply but it is a coded error message? Should we just disconnect from node?
+                                ping_failures += 1;
+                            }
                         }
                     }
-
+                    Err(VssSyncError::Timeout(_)) => {
+                        warn!(target: VSS, "ping to VSS at {} timed out", node_addr);
+                        asm.counters.incr(CounterType::VssErrors);
+                        ping_failures += 1;
+                    }
+                    Err(_) => {
+                        warn!(target: VSS, "ping to VSS at {} failed", node_addr);
+                        asm.counters.incr(CounterType::VssErrors);
+                        ping_failures += 1;
+                    }
+                }
+                if ping_failures == 0 {
+                    ping_timeout.as_mut().reset(tokio::time::Instant::now() + config::VSS_PING_INTERVAL);
+                } else if ping_failures < config::VSS_MAX_PING_FAILURES as u64 {
+                    ping_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(1));
+                } else {
+                    error!(target: VSS, "too many VSS ping failures to {}, exiting VSS worker", node_addr);
+                    return;
                 }
             }
         }
     }
-
-    // Call ping in a loop periodically.  If this fails raise an alarm.
 }
 
 /// When the vss worker starts up the node expects a couple of calls immediately.
@@ -481,7 +555,8 @@ async fn do_set_services(
         svc.write_to(&mut svc_builder);
     }
 
-    let set_response_rdr = req.send().promise.await?;
+    let set_response_rdr =
+        rpc_with_timeout("set-services", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
 
     let set_response_ok_or_err = set_response_rdr.get()?;
 
@@ -509,7 +584,8 @@ async fn do_configure(
         param.write_to(&mut param_builder);
     }
 
-    let configure_response_rdr = req.send().promise.await?;
+    let configure_response_rdr =
+        rpc_with_timeout("configure", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
 
     let configure_response_ok_or_err = configure_response_rdr.get()?;
 
@@ -524,5 +600,21 @@ async fn do_configure(
             let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
             Err(VssSyncError::from(api_err))
         }
+    }
+}
+
+/// Wrap a Cap'n Proto RPC future with a timeout, mapping errors.
+async fn rpc_with_timeout<F, T>(
+    name: &'static str,
+    duration: Duration,
+    fut: F,
+) -> Result<T, VssSyncError>
+where
+    F: Future<Output = Result<T, capnp::Error>>,
+{
+    match tokio::time::timeout(duration, fut).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(capnp_err)) => Err(capnp_err.into()),
+        Err(_elapsed) => Err(VssSyncError::Timeout(name.to_string())),
     }
 }

@@ -38,7 +38,7 @@ pub enum NodeVisaState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisaMetadata {
     pub requesting_node: IpAddr,
-    pub ctime: u64, // unix timestamp millisconds
+    pub ctime: u64, // unix timestamp (seconds since epoch)
 }
 
 pub struct VisaRepo {
@@ -52,15 +52,26 @@ impl VisaMetadata {
             ctime: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
-                .as_millis() as u64,
+                .as_secs() as u64,
         }
     }
 }
 
 impl VisaRepo {
-    pub fn new(db: Arc<dyn DbConnection>) -> Self {
-        // TODO: Could sanity check db state here.
-        VisaRepo { db }
+    /// Set up and initialize the visa store.
+    /// We set `initial_visa_id` only if the key is not already present.
+    pub async fn new(db: Arc<dyn DbConnection>, initial_visa_id: u64) -> Result<Self, StoreError> {
+        // TODO: More intialization is probably needed.
+
+        // Only set the initial visa id if the key is not ready present.
+        // We don't use the redis NX feature here since we are not concerned with any sort of concurrency
+        // at startup time.
+        if !db.exists(KEY_NEXT_VISA_ID).await? {
+            db.set(KEY_NEXT_VISA_ID, &initial_visa_id.to_string())
+                .await?;
+        }
+
+        Ok(VisaRepo { db })
     }
 
     pub async fn get_next_visa_id(&self) -> Result<u64, StoreError> {
@@ -385,7 +396,7 @@ mod test {
     #[tokio::test]
     async fn test_store_and_get_visas_by_state() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db.clone());
+        let repo = VisaRepo::new(db.clone(), 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
         let visa = make_visa(42, Duration::from_secs(60));
 
@@ -428,7 +439,7 @@ mod test {
     #[tokio::test]
     async fn test_update_node_visa_state_missing() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db);
+        let repo = VisaRepo::new(db, 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::2".parse().unwrap();
 
         let err = repo
@@ -444,7 +455,7 @@ mod test {
     #[tokio::test]
     async fn test_clear_node_state_only_removes_nodevisa() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db.clone());
+        let repo = VisaRepo::new(db.clone(), 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::3".parse().unwrap();
         let visa = make_visa(7, Duration::from_secs(60));
 
@@ -466,7 +477,7 @@ mod test {
     #[tokio::test]
     async fn test_store_visa_rejects_expired() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db);
+        let repo = VisaRepo::new(db, 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
         let mut visa = make_visa(8, Duration::from_secs(1));
         visa.expires = SystemTime::now() - Duration::from_secs(1);
@@ -484,7 +495,7 @@ mod test {
     #[tokio::test(start_paused = true)]
     async fn test_update_node_visa_state_after_expiry() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db);
+        let repo = VisaRepo::new(db, 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
         let visa = make_visa(9, Duration::from_secs(5));
 
@@ -507,7 +518,7 @@ mod test {
     #[tokio::test]
     async fn test_get_visas_skips_missing_blobs() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db.clone());
+        let repo = VisaRepo::new(db.clone(), 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::6".parse().unwrap();
         let visa_a = make_visa(10, Duration::from_secs(60));
         let visa_b = make_visa(11, Duration::from_secs(60));
@@ -532,7 +543,7 @@ mod test {
     #[tokio::test]
     async fn test_list_visa_ids_after_store() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db);
+        let repo = VisaRepo::new(db, 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
 
         let visa_a = make_visa(1, Duration::from_secs(60));
@@ -558,7 +569,7 @@ mod test {
     #[tokio::test]
     async fn test_get_visa_by_id() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db);
+        let repo = VisaRepo::new(db, 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::8".parse().unwrap();
         let visa = make_visa(77, Duration::from_secs(60));
 
@@ -575,7 +586,7 @@ mod test {
     #[tokio::test]
     async fn test_get_visa_by_id_missing() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db);
+        let repo = VisaRepo::new(db, 1).await.unwrap();
 
         let err = repo.get_visa_by_id(1234).await.unwrap_err();
         match err {
@@ -587,7 +598,7 @@ mod test {
     #[tokio::test]
     async fn test_get_visa_metadata_by_id() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db);
+        let repo = VisaRepo::new(db, 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::9".parse().unwrap();
         let visa = make_visa(88, Duration::from_secs(60));
 
@@ -603,7 +614,7 @@ mod test {
     #[tokio::test]
     async fn test_get_visa_metadata_by_id_missing() {
         let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db);
+        let repo = VisaRepo::new(db, 1).await.unwrap();
 
         let err = repo.get_visa_metadata_by_id(999).await.unwrap_err();
         match err {

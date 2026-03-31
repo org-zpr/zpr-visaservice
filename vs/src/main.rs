@@ -25,6 +25,7 @@ mod error;
 mod event_mgr;
 mod logging;
 mod net_mgr;
+mod packet;
 mod policy_mgr;
 mod signal_worker;
 mod visa_mgr;
@@ -62,15 +63,15 @@ const DEFAULT_CONFIG_PATH: &str = "vs.toml";
 #[command(name = "vs")]
 #[command(version, verbatim_doc_comment)]
 struct Cli {
-    /// Initial policy file (.bin2 format). If not specified we will load the current policy set in the database.  
+    /// Initial policy file (.bin2 format). If not specified we will load the current policy set in the database.
     /// If there is no policy in the database the visa service will fail to start.
     policy: Option<PathBuf>,
 
-    /// Enable verbose debug output
-    #[arg(short, long)]
-    verbose: bool,
+    /// Enable verbose debug output (use twice for more, eg "-vv").
+    #[arg(short = 'v', long, action = clap::ArgAction::Count)]
+    verbose: u8,
 
-    /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS INCLUDING LOCK.    
+    /// Clear any existing state in the database and start fresh. WARNING: REMOVES ALL REDIS KEYS INCLUDING LOCK.
     #[arg(long)]
     clear_state: bool,
 
@@ -105,7 +106,14 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
-    enable_logging(cli.verbose);
+    let verbosity = if cli.verbose >= 2 {
+        logging::Verbosity::VeryVerboseIndeed
+    } else if cli.verbose == 1 {
+        logging::Verbosity::SomewhatVerbose
+    } else {
+        logging::Verbosity::NotVerbose
+    };
+    enable_logging(verbosity);
     info!(target: MAIN, "vs version {}", env!("CARGO_PKG_VERSION"));
     let cfg = match load_config(cli.config.as_deref()) {
         Ok(c) => c,
@@ -211,6 +219,17 @@ async fn main() -> std::process::ExitCode {
         }
         None => PolicyMgr::new_from_state(db::PolicyRepo::new(db_handle.clone())).await,
     };
+
+    let net_mgr = NetMgr::new_v6().expect("failed to create NetMgr");
+
+    if !cli.clear_state {
+        if let Err(e) = synchronize_state(&actor_mgr, &net_mgr).await {
+            error!(target: MAIN, "error during state synchronization: {}", e);
+            // For now treat this as a fail.  Force user to reset state.
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+
     let policy_mgr = match policy_mgr_res {
         Ok(pm) => pm,
         Err(e) => {
@@ -219,7 +238,13 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    let visa_repo = db::VisaRepo::new(db_handle.clone());
+    let visa_repo = match db::VisaRepo::new(db_handle.clone(), config::INITIAL_VISA_ID).await {
+        Ok(vr) => vr,
+        Err(e) => {
+            error!(target: MAIN, "failed to instantiate visa repository: {}", e);
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     let (event_tx, event_rx) = mpsc::channel(config::EVENT_QUEUE_DEPTH);
 
@@ -252,7 +277,7 @@ async fn main() -> std::process::ExitCode {
         vreq_chan: vreq_tx,
         visa_mgr: VisaMgr::new(visa_repo),
         vss_mgr: VssMgr::new(),
-        net_mgr: Arc::new(NetMgr::new_v6().expect("failed to create NetMgr")),
+        net_mgr: Arc::new(net_mgr),
         event_mgr: EventMgr::new(event_tx),
         admin_api_keys: Arc::new(admin_api_keys),
     });
@@ -398,4 +423,21 @@ fn initialize_identity(
     fs::write(&id_path, &new_identity)?;
     debug!(target: MAIN, "created new identity file at {}", id_path.display());
     Ok(new_identity)
+}
+
+/// If we are starting with state in the DB, do any housekeeping needed to get in sync.
+///
+/// TODO: If we have state in the db, and we are loading a policy that differs from
+/// the saved "curent" policy, we may have visas that are not longer valid.
+async fn synchronize_state(actor_mgr: &ActorMgr, net_mgr: &NetMgr) -> Result<(), ServiceError> {
+    actor_mgr.refresh_state().await?;
+
+    // Grab all the adapter addresses we have handed out already so that we do not try
+    // to hand out the same address to a new adapter.
+    for zpr_addr in actor_mgr.list_zpr_addrs().await.unwrap_or_default() {
+        if net_mgr.is_managed_address(&zpr_addr) {
+            net_mgr.take_zpr_addr(&zpr_addr)?;
+        }
+    }
+    Ok(())
 }

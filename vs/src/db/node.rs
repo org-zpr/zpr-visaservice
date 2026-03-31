@@ -2,14 +2,17 @@
 //!
 //!
 //! This updates:
-//! - node:<ZADDR> a json Node struct -- metadata about a node connection.
-//! - node:<ZADDR>:connections a set of adapter addresses connected to the node.
+//! - node:<ZADDR>             - a json Node struct -- metadata about a node connection.
+//! - node:<ZADDR>:lastseen    - timestamp of last contact from the node
+//! - node:<ZADDR>:vss         - a json SAWrapper struct -- the VSS address for the node.
+//! - node:<ZADDR>:connections - a set of adapter addresses connected to the node.
 //!
 //! Future stuff (not yet implemented):
 //! - node:<ZADDR>:todo:vinstall - ordered list of visa IDs to be installed on the node
 //! - node:<ZADDR>:todo:vrevoke - ordered list of visa IDs to be revoked from the node
 //! - node:<ZADDR>:todo:crevoke - ordered list of authentication IDs (TBD??) to be revoked from the node
 
+use chrono::Utc;
 use libeval::actor::Actor;
 use libeval::attribute::key;
 use serde::{Deserialize, Serialize};
@@ -46,7 +49,7 @@ impl NodeRepo {
         NodeRepo { db }
     }
 
-    /// Add/overwrite the node state record. This assumes this is a new node being added.
+    /// Add/overwrite the node state record.
     ///
     /// A node record is assoicated with an actor that is a node role.
     /// Nodes authenticate with the visa service directly.
@@ -84,6 +87,36 @@ impl NodeRepo {
                     vss_addr: *vss_addr,
                 })?,
             )
+            .await?;
+        Ok(())
+    }
+
+    /// Get the VSS address for the node, if any.
+    pub async fn get_node_vss(
+        &self,
+        node_zpr_addr: &IpAddr,
+    ) -> Result<Option<SocketAddr>, StoreError> {
+        let vss_json_opt = self.db.get(&vss_key_for_node(node_zpr_addr)).await?;
+        if let Some(vss_json) = vss_json_opt {
+            let sa_wrapper: SAWrapper = serde_json::from_str(&vss_json)?;
+            Ok(Some(sa_wrapper.vss_addr))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Drop the vss info for the node.
+    pub async fn clear_node_vss(&self, node_zpr_addr: &IpAddr) -> Result<(), StoreError> {
+        self.db.del(&vss_key_for_node(node_zpr_addr)).await?;
+        Ok(())
+    }
+
+    /// Update the last seen time for the node to now.
+    pub async fn update_last_seen_time(&self, node_zpr_addr: &IpAddr) -> Result<(), StoreError> {
+        // store as a chrono string.
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .set(&lastseen_key_for_node(node_zpr_addr), &now)
             .await?;
         Ok(())
     }
@@ -140,6 +173,7 @@ impl NodeRepo {
             DbOp::Del(todo_crevoke_key_for_node(node_addr)),
             DbOp::Del(node_key_for_node(node_addr)),
             DbOp::Del(vss_key_for_node(node_addr)),
+            DbOp::Del(lastseen_key_for_node(node_addr)),
         ];
         self.db.atomic_pipeline(&ops).await?;
         debug!(target: DB, "removed node state for node at addr {}", node_addr);
@@ -229,6 +263,11 @@ impl Node {
 fn node_key_for_node(addr: &IpAddr) -> String {
     let zaddr = ZAddr::from(addr);
     format!("node:{zaddr}")
+}
+
+fn lastseen_key_for_node(addr: &IpAddr) -> String {
+    let zaddr = ZAddr::from(addr);
+    format!("node:{zaddr}:lastseen")
 }
 
 fn vss_key_for_node(addr: &IpAddr) -> String {

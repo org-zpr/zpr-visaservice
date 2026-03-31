@@ -56,8 +56,10 @@ impl fmt::Display for PolicyBundle {
 #[derive(Serialize, Debug, Deserialize, Eq)]
 pub struct VisaDescriptor {
     pub id: u64,
-    pub expires: u64, // milliseconds since the epoch
-    pub created: u64, // milliseconds since the epich
+    #[serde(rename = "expires")]
+    pub expires_secs: u64, // seconds since the epoch
+    #[serde(rename = "created")]
+    pub created_secs: u64, // seconds since the epoch
     pub policy_id: String,
     pub requesting_node: String, // ZPR address
     pub source_addr: String,     // ZPR address
@@ -89,15 +91,10 @@ impl fmt::Display for VisaDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let now = Utc::now();
 
-        let exp_secs = (self.expires / 1000) as i64;
-        let exp_nanos = ((self.expires % 1000) * 1_000_000) as u32;
-        let dt_exp: DateTime<Utc> = DateTime::from_timestamp(exp_secs, exp_nanos).unwrap();
+        let dt_exp: DateTime<Utc> = DateTime::from_timestamp(self.expires_secs as i64, 0).unwrap();
         let remain_exp = dt_exp.signed_duration_since(now);
-
-        let created_secs = (self.created / 1000) as i64;
-        let created_nanos = ((self.expires % 1000) * 1_000_000) as u32;
         let dt_created: DateTime<Utc> =
-            DateTime::from_timestamp(created_secs, created_nanos).unwrap();
+            DateTime::from_timestamp(self.created_secs as i64, 0).unwrap();
 
         write!(
             f,
@@ -150,7 +147,8 @@ impl fmt::Display for Revokes {
 #[derive(Debug, Serialize, Deserialize, Eq)]
 pub struct ActorDescriptor {
     pub cn: String,
-    pub ctime: u64, // milliseconds since the epoch
+    #[serde(rename = "created")]
+    pub ctime_secs: u64, // seconds since the epoch
     pub ident: String,
     pub node: bool,
     pub zpr_addr: String,
@@ -177,7 +175,7 @@ impl PartialOrd for ActorDescriptor {
 
 impl fmt::Display for ActorDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ts: DateTime<Utc> = DateTime::from_timestamp(self.ctime as i64, 0).unwrap();
+        let ts: DateTime<Utc> = DateTime::from_timestamp(self.ctime_secs as i64, 0).unwrap();
         write!(
             f,
             "{} {}{}{} @ {} {}{} {}{} {}",
