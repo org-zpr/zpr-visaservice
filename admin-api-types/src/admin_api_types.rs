@@ -305,7 +305,7 @@ impl fmt::Display for NodeRecordBrief {
         let last_contact: DateTime<Utc> = DateTime::from_timestamp(self.last_contact, 0).unwrap();
         write!(
             f,
-            "{}{} {} {} {}",
+            "{}{} {} {} {} {}",
             "pending: ".dimmed(),
             self.pending,
             format!(
@@ -348,6 +348,17 @@ impl fmt::Display for NodeRecordBrief {
                     self.connect_requests,
                     "]".dimmed()
                 ),
+            ),
+            format!(
+                "{} {}",
+                "last_request:".dimmed(),
+                if self.last_request == 0 {
+                    "never".to_string().red()
+                } else {
+                    last_request
+                        .to_rfc3339_opts(SecondsFormat::Secs, true)
+                        .cyan()
+                }
             ),
         )
     }
