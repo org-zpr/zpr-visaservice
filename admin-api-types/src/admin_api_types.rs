@@ -297,6 +297,7 @@ pub struct NodeRecordBrief {
     pub in_sync: bool,
     pub approved_reqs: u64,
     pub denied_reqs: u64,
+    pub last_request: i64, // unix SECONDS
 }
 
 impl fmt::Display for NodeRecordBrief {

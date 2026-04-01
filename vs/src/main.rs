@@ -1,4 +1,5 @@
 use clap::Parser;
+use dashmap::DashMap;
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -269,6 +270,7 @@ async fn main() -> std::process::ExitCode {
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
         counters: Default::default(),
+        visa_req_times: DashMap::default(),
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
         policy_mgr: policy_mgr,

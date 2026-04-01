@@ -88,6 +88,8 @@ pub async fn request_visa_wait_response(
 
     asm.counters
         .incr(CounterType::VisaRequests, Some(requesting_node));
+    asm.visa_req_times
+        .insert(*requesting_node, std::time::Instant::now());
 
     match tokio::time::timeout_at(deadline, asm.vreq_chan.reserve()).await {
         Ok(Ok(permit)) => {
