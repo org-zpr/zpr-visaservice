@@ -295,6 +295,12 @@ pub struct NodeRecordBrief {
     pub visa_requests: u64,
     pub connect_requests: u64,
     pub in_sync: bool,
+    pub adapters: Vec<String>,
+    pub links: Vec<String>,
+    pub visas: Vec<String>,
+    pub visas_enqueued: Vec<String>,
+    pub revocations_enqueued_count: u64,
+    pub vss_port: u16,
 }
 
 impl fmt::Display for NodeRecordBrief {
@@ -302,9 +308,8 @@ impl fmt::Display for NodeRecordBrief {
         let last_contact: DateTime<Utc> = DateTime::from_timestamp(self.last_contact, 0).unwrap();
         write!(
             f,
-            "{}{} {} {} {}",
-            "pending: ".dimmed(),
-            self.pending,
+            "{} {} {} {} {} {} {}",
+            format!("{}{}", "pending:".dimmed(), self.pending),
             format!(
                 "{}{}",
                 "SYNC:".dimmed(),
@@ -325,18 +330,35 @@ impl fmt::Display for NodeRecordBrief {
                         .cyan()
                 }
             ),
-            // '[visas: VAL' '|' 'connects: VAL]'
+            // '[vreqs: VAL' | vinstalled: [VAL, VAL, VAL] | venqueued: [VAL, VAL]]'
             format!(
-                "{} {} {}",
+                "{} {} {} {} {}",
                 format!("{}{}", "[vreqs:".dimmed(), self.visa_requests),
                 "|".dimmed(),
+                format!("{}{:?}", "vinstalled:".dimmed(), self.visas,),
+                "|".dimmed(),
                 format!(
-                    "{}{}{}",
-                    "creqs:".dimmed(),
-                    self.connect_requests,
+                    "{}{:?}{}",
+                    "venqueued:".dimmed(),
+                    self.visas_enqueued,
                     "]".dimmed()
                 ),
             ),
+            // [creqs: VAL | adapters: [VAL, VAL, VAL] | nodes: [VAL, VAL]]
+            format!(
+                "{} {} {} {} {}",
+                format!("{}{}", "creqs:".dimmed(), self.connect_requests,),
+                "|".dimmed(),
+                format!("{}{:?}", "[adapters:".dimmed(), self.adapters),
+                "|".dimmed(),
+                format!("{}{:?}{}", "nodes:".dimmed(), self.links, "]".dimmed()),
+            ),
+            format!(
+                "{}{}",
+                "revocations_enqueued:".dimmed(),
+                self.revocations_enqueued_count
+            ),
+            format!("{}{}", "vss_port:".dimmed(), self.vss_port),
         )
     }
 }
