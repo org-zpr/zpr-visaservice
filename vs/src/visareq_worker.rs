@@ -25,10 +25,11 @@ use futures::StreamExt;
 use futures::future::FutureExt;
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
-use libeval::eval::{EvalContext, EvalDecision};
+use libeval::eval::EvalContext;
+use libeval::eval_result::{FinalDeny, PartialEvalResult};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
 use crate::assembly::Assembly;
@@ -295,14 +296,14 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
     drop(ctx);
 
     match decision {
-        EvalDecision::NoMatch(message) => {
+        PartialEvalResult::Deny(FinalDeny::NoMatch(message)) => {
             info!(target: VREQ,
                 "visa request from {:?} denied (no match): {}",
                 job.requesting_node, message
             );
             Ok(VisaDecision::Deny(DenyCode::NoMatch))
         }
-        EvalDecision::Allow(hits) => {
+        PartialEvalResult::AllowWithoutRoute(hits) => {
             // TODO: For now we pick the first hit.
             match asm
                 .visa_mgr
@@ -319,12 +320,19 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
                 }
             }
         }
-        EvalDecision::Deny(_hits) => {
+        PartialEvalResult::Deny(FinalDeny::Deny(_hits)) => {
             info!(target: VREQ,
                 "visa request from {:?} denied by policy",
                 job.requesting_node
             );
             Ok(VisaDecision::Deny(DenyCode::Denied))
+        }
+        PartialEvalResult::NeedsRoute(_) => {
+            error!(target: VREQ,
+                "visa request from {:?} could not be evaluated due to route constraints (not implemented)",
+                job.requesting_node
+            );
+            Ok(VisaDecision::Deny(DenyCode::NoMatch))
         }
     }
 }

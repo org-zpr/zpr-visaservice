@@ -12,7 +12,7 @@ use crate::logging::targets::VISA;
 use crate::packet::make_fivetuple_tcp;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
-use libeval::eval::{Direction, Hit};
+use libeval::eval_result::{Direction, Hit};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
     CommFlag, DockPep, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa, VsapiFiveTuple,

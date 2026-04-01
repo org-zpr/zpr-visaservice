@@ -5,7 +5,9 @@ use chrono::{DateTime, Local, SecondsFormat};
 use colored::Colorize;
 
 use libeval::actor::Actor;
-use libeval::eval::{EvalError, Hit, VisaProps};
+use libeval::error::EvalError;
+use libeval::eval_result::Hit;
+use libeval::visa::VisaProps;
 
 /// The OutputFormatter defines a bunch of very specific output functions
 /// tied to the running of ZPT.

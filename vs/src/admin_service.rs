@@ -553,7 +553,7 @@ mod tests {
     use crate::apikey::ApiKey;
     use axum::body::Body;
     use http_body_util::BodyExt;
-    use libeval::eval::{Direction, Hit};
+    use libeval::eval_result::{Direction, Hit};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
