@@ -401,8 +401,14 @@ mod tests {
         let source_actor =
             make_node_actor_defexp("fd5a:5052:3000::1", "source-node", "10.0.0.1:10001");
         let dest_actor = make_node_actor_defexp("fd5a:5052:3000::2", "dest-node", "10.0.0.2:10002");
-        asm.actor_mgr.add_node(&source_actor, false).await.unwrap();
-        asm.actor_mgr.add_node(&dest_actor, false).await.unwrap();
+        asm.actor_mgr
+            .add_node(&source_actor, false, &asm.counters)
+            .await
+            .unwrap();
+        asm.actor_mgr
+            .add_node(&dest_actor, false, &asm.counters)
+            .await
+            .unwrap();
 
         let arena = tokio::spawn(launch_arena(asm.clone(), vreq_rx, 1));
 

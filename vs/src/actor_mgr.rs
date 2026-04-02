@@ -82,7 +82,12 @@ impl ActorMgr {
     }
 
     /// TODO: Support for reconnects (where we still have state).
-    pub async fn add_node(&self, actor: &Actor, reconnect: bool) -> Result<(), ServiceError> {
+    pub async fn add_node(
+        &self,
+        actor: &Actor,
+        reconnect: bool,
+        counters: &Counters,
+    ) -> Result<(), ServiceError> {
         if !actor.is_node() {
             return Err(ServiceError::Internal(
                 "attempt to add non-node actor as node".into(),
@@ -93,7 +98,7 @@ impl ActorMgr {
             self.node_db
                 .remove_node(actor.get_zpr_addr().unwrap())
                 .await?;
-
+            counters.remove_node_info(actor.get_zpr_addr().unwrap());
             self.actor_db.add_actor(actor).await?;
         } else {
             // Is a reconnect...
@@ -106,6 +111,7 @@ impl ActorMgr {
                 {
                     warn!(target: ACTOR, "add_node: failed to remove node at {} after failed update during reconnect: {}", actor.get_zpr_addr().unwrap(), ee);
                 }
+                counters.remove_node_info(actor.get_zpr_addr().unwrap());
                 return Err(e.into());
             }
         }
@@ -439,10 +445,12 @@ fn uri_for_service(
 mod test {
     use super::*;
     use crate::assembly::tests::new_assembly_for_tests;
+    use crate::counters::Counters;
     use crate::db::{ActorRepo, FakeDb, NodeRepo};
     use crate::test_helpers::{
         make_actor_with_services_defexp, make_adapter_actor_defexp, make_node_actor_defexp,
     };
+
     use bytes::Bytes;
     use libeval::attribute::ROLE_ADAPTER;
     use libeval::policy::Policy;
@@ -486,7 +494,9 @@ mod test {
         let actor = make_node_actor_defexp("fd5a:5052::1", "node-1", "[fd5a:5052::100]:1234");
         let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
 
-        mgr.add_node(&actor, false).await.unwrap();
+        mgr.add_node(&actor, false, &Counters::default())
+            .await
+            .unwrap();
         let loaded = mgr.get_actor_by_zpr_addr(&node_addr).await.unwrap();
         assert!(matches!(loaded, Some(a) if a.is_node()));
 
@@ -499,7 +509,10 @@ mod test {
         let mgr = make_mgr();
         let actor = make_adapter_actor_defexp("fd5a:5052::2", "adapter-1");
 
-        let err = mgr.add_node(&actor, false).await.unwrap_err();
+        let err = mgr
+            .add_node(&actor, false, &Counters::default())
+            .await
+            .unwrap_err();
         match err {
             ServiceError::Internal(_) => {}
             other => panic!("unexpected error: {:?}", other),
@@ -523,7 +536,9 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
 
-        mgr.add_node(&node_actor, false).await.unwrap();
+        mgr.add_node(&node_actor, false, &Counters::default())
+            .await
+            .unwrap();
         mgr.add_adapter_via_node(&adapter_actor, &node_addr)
             .await
             .unwrap();
@@ -546,7 +561,9 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::6".parse().unwrap();
         let adapter_addr: IpAddr = "fd5a:5052::7".parse().unwrap();
 
-        mgr.add_node(&node_actor, false).await.unwrap();
+        mgr.add_node(&node_actor, false, &Counters::default())
+            .await
+            .unwrap();
         mgr.add_adapter_via_node(&adapter_actor, &node_addr)
             .await
             .unwrap();
