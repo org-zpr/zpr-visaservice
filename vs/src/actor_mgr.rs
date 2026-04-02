@@ -127,13 +127,9 @@ impl ActorMgr {
 
     /// Use [ActorMgr::remove_actor_by_zpr_addr] to remove actor records which apply to both nodes and adapters.
     /// Use this function here in addition to remove node state.
-    pub async fn remove_node(
-        &self,
-        node_addr: &IpAddr,
-        counters: &Counters,
-    ) -> Result<(), ServiceError> {
+    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         self.node_db.remove_node(node_addr).await?;
-        counters.remove_node_info(node_addr);
+        self.counters.remove_node_info(node_addr);
         Ok(())
     }
 
