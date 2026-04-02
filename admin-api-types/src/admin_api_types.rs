@@ -291,19 +291,26 @@ impl fmt::Display for HostRecordBrief {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeRecordBrief {
     pub pending: u32,
-    pub last_contact: i64, // unix SECONDS
+    pub last_contact: Option<i64>, // unix SECONDS
     pub visa_requests: u64,
     pub connect_requests: u64,
     pub in_sync: bool,
     pub approved_reqs: u64,
     pub denied_reqs: u64,
-    pub last_request: i64, // unix SECONDS
+    pub last_request: Option<i64>, // unix SECONDS
 }
 
 impl fmt::Display for NodeRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let last_contact: DateTime<Utc> = DateTime::from_timestamp(self.last_contact, 0).unwrap();
-        let last_request: DateTime<Utc> = DateTime::from_timestamp(self.last_request, 0).unwrap();
+        let last_contact = match self.last_contact {
+            Some(lc) => Some(DateTime::from_timestamp(lc, 0).unwrap()),
+            None => None,
+        };
+        let last_request = match self.last_request {
+            Some(lr) => Some(DateTime::from_timestamp(lr, 0).unwrap()),
+            None => None,
+        };
+
         write!(
             f,
             "{}{} {} {} {} {}",
@@ -321,12 +328,9 @@ impl fmt::Display for NodeRecordBrief {
             format!(
                 "{} {}",
                 "last_contact:".dimmed(),
-                if self.last_contact == 0 {
-                    "never".to_string().red()
-                } else {
-                    last_contact
-                        .to_rfc3339_opts(SecondsFormat::Secs, true)
-                        .cyan()
+                match last_contact {
+                    Some(lc) => lc.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                    None => "never".to_string().red(),
                 }
             ),
             // '[visas: VAL' '|' 'connects: VAL]'
@@ -353,12 +357,9 @@ impl fmt::Display for NodeRecordBrief {
             format!(
                 "{} {}",
                 "last_request:".dimmed(),
-                if self.last_request == 0 {
-                    "never".to_string().red()
-                } else {
-                    last_request
-                        .to_rfc3339_opts(SecondsFormat::Secs, true)
-                        .cyan()
+                match last_request {
+                    Some(lr) => lr.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                    None => "never".to_string().red(),
                 }
             ),
         )

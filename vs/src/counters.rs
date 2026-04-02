@@ -15,18 +15,10 @@ pub struct Counter {
     value: AtomicU64,
 }
 
+#[derive(Default)]
 pub struct NodeInfo {
     counters: EnumMap<CounterType, Counter>,
-    last_visa_req: std::time::SystemTime,
-}
-
-impl Default for NodeInfo {
-    fn default() -> Self {
-        Self {
-            counters: EnumMap::default(),
-            last_visa_req: std::time::SystemTime::now(),
-        }
-    }
+    last_visa_req: Option<std::time::SystemTime>,
 }
 
 impl Counters {
@@ -47,13 +39,15 @@ impl Counters {
         self.per_node_counters
             .entry(*node)
             .or_default()
-            .last_visa_req = std::time::SystemTime::now();
+            .last_visa_req = Some(std::time::SystemTime::now());
     }
 
     #[allow(dead_code)]
+    // Returning None could mean either there is no matching node, OR the node has never had
+    // a visa request
     pub fn get_last_request_time(&self, node: &IpAddr) -> Option<std::time::SystemTime> {
         match self.per_node_counters.get(node) {
-            Some(node_info) => Some(node_info.last_visa_req),
+            Some(node_info) => node_info.last_visa_req,
             None => None,
         }
     }
