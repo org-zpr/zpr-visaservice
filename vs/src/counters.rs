@@ -17,14 +17,14 @@ pub struct Counter {
 
 pub struct NodeInfo {
     counters: EnumMap<CounterType, Counter>,
-    last_visa_req: std::time::Instant,
+    last_visa_req: std::time::SystemTime,
 }
 
 impl Default for NodeInfo {
     fn default() -> Self {
         Self {
             counters: EnumMap::default(),
-            last_visa_req: std::time::Instant::now(),
+            last_visa_req: std::time::SystemTime::now(),
         }
     }
 }
@@ -47,11 +47,11 @@ impl Counters {
         self.per_node_counters
             .entry(*node)
             .or_default()
-            .last_visa_req = std::time::Instant::now();
+            .last_visa_req = std::time::SystemTime::now();
     }
 
     #[allow(dead_code)]
-    pub fn get_last_request_time(&self, node: &IpAddr) -> Option<std::time::Instant> {
+    pub fn get_last_request_time(&self, node: &IpAddr) -> Option<std::time::SystemTime> {
         match self.per_node_counters.get(node) {
             Some(node_info) => Some(node_info.last_visa_req),
             None => None,

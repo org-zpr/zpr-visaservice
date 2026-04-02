@@ -599,7 +599,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         if let Err(e) = self
             .asm
             .actor_mgr
-            .add_node(&node_actor, self.reconnect, &self.asm.counters)
+            .add_node(&node_actor, self.reconnect)
             .await
         {
             error!(target: API, "failed to add authenticated node {:?} to actor db: {}", &node_cn, e);
