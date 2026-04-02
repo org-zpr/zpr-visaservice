@@ -298,6 +298,12 @@ pub struct NodeRecordBrief {
     pub approved_reqs: u64,
     pub denied_reqs: u64,
     pub last_request: Option<i64>, // unix SECONDS
+    pub adapters: Vec<String>,
+    pub links: Vec<String>,
+    pub visas: Vec<String>,
+    pub visas_enqueued: Vec<String>,
+    pub revocations_enqueued_count: u64,
+    pub vss_port: u16,
 }
 
 impl fmt::Display for NodeRecordBrief {
@@ -313,9 +319,8 @@ impl fmt::Display for NodeRecordBrief {
 
         write!(
             f,
-            "{}{} {} {} {} {}",
-            "pending: ".dimmed(),
-            self.pending,
+            "{} {} {} {} {} {} {} {}",
+            format!("{}{}", "pending:".dimmed(), self.pending),
             format!(
                 "{}{}",
                 "SYNC:".dimmed(),
@@ -333,24 +338,27 @@ impl fmt::Display for NodeRecordBrief {
                     None => "never".to_string().red(),
                 }
             ),
-            // '[visas: VAL' '|' 'connects: VAL]'
+            // '[vreqs: VAL' (vreqs_appr: VAL | vreqs_den: VAL) | vinstalled: [VAL, VAL, VAL] | venqueued: [VAL, VAL]]'
             format!(
-                "{} {} {}",
+                "{} {} {} {} {}",
                 format!(
-                    "{}{} {}{} {}{}{}",
+                    "{}{} {}{} {} {}{}{}",
                     "[vreqs:".dimmed(),
                     self.visa_requests,
                     "(vreqs_appr".dimmed(),
                     self.approved_reqs,
+                    "|".dimmed(),
                     "vreqs_den".dimmed(),
                     self.denied_reqs,
                     ")"
                 ),
                 "|".dimmed(),
+                format!("{}{:?}", "vinstalled:".dimmed(), self.visas,),
+                "|".dimmed(),
                 format!(
-                    "{}{}{}",
-                    "creqs:".dimmed(),
-                    self.connect_requests,
+                    "{}{:?}{}",
+                    "venqueued:".dimmed(),
+                    self.visas_enqueued,
                     "]".dimmed()
                 ),
             ),
@@ -362,6 +370,21 @@ impl fmt::Display for NodeRecordBrief {
                     None => "never".to_string().red(),
                 }
             ),
+            // [creqs: VAL | adapters: [VAL, VAL, VAL] | nodes: [VAL, VAL]]
+            format!(
+                "{} {} {} {} {}",
+                format!("{}{}", "creqs:".dimmed(), self.connect_requests,),
+                "|".dimmed(),
+                format!("{}{:?}", "[adapters:".dimmed(), self.adapters),
+                "|".dimmed(),
+                format!("{}{:?}{}", "nodes:".dimmed(), self.links, "]".dimmed()),
+            ),
+            format!(
+                "{}{}",
+                "revocations_enqueued:".dimmed(),
+                self.revocations_enqueued_count
+            ),
+            format!("{}{}", "vss_port:".dimmed(), self.vss_port),
         )
     }
 }
