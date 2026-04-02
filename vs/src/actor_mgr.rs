@@ -13,6 +13,7 @@ use zpr::policy_types::{Scope, ServiceType};
 use zpr::vsapi_types::ServiceDescriptor;
 
 use crate::assembly::Assembly;
+use crate::counters::Counters;
 use crate::db;
 use crate::db::ServiceEntry;
 use crate::error::{ServiceError, StoreError};
@@ -21,6 +22,7 @@ use crate::logging::targets::ACTOR;
 pub struct ActorMgr {
     actor_db: db::ActorRepo,
     node_db: db::NodeRepo,
+    counters: Arc<Counters>,
 }
 
 pub struct ServiceDetail {
@@ -38,10 +40,15 @@ pub struct ServiceDetail {
 }
 
 impl ActorMgr {
-    pub fn new(actor_repo: db::ActorRepo, node_repo: db::NodeRepo) -> Self {
+    pub fn new(
+        actor_repo: db::ActorRepo,
+        node_repo: db::NodeRepo,
+        counters: Arc<Counters>,
+    ) -> Self {
         ActorMgr {
             actor_db: actor_repo,
             node_db: node_repo,
+            counters,
         }
     }
 
@@ -92,6 +99,8 @@ impl ActorMgr {
             self.node_db
                 .remove_node(actor.get_zpr_addr().unwrap())
                 .await?;
+            self.counters
+                .remove_node_info(actor.get_zpr_addr().unwrap());
             self.actor_db.add_actor(actor).await?;
         } else {
             // Is a reconnect...
@@ -120,6 +129,7 @@ impl ActorMgr {
     /// Use this function here in addition to remove node state.
     pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         self.node_db.remove_node(node_addr).await?;
+        self.counters.remove_node_info(node_addr);
         Ok(())
     }
 
@@ -432,10 +442,12 @@ fn uri_for_service(
 mod test {
     use super::*;
     use crate::assembly::tests::new_assembly_for_tests;
+    use crate::counters::Counters;
     use crate::db::{ActorRepo, FakeDb, NodeRepo};
     use crate::test_helpers::{
         make_actor_with_services_defexp, make_adapter_actor_defexp, make_node_actor_defexp,
     };
+
     use bytes::Bytes;
     use libeval::attribute::ROLE_ADAPTER;
     use libeval::policy::Policy;
@@ -448,7 +460,7 @@ mod test {
         let db = Arc::new(FakeDb::new());
         let actor_repo = ActorRepo::new(db.clone());
         let node_repo = NodeRepo::new(db);
-        ActorMgr::new(actor_repo, node_repo)
+        ActorMgr::new(actor_repo, node_repo, Arc::new(Counters::default()))
     }
 
     fn make_policy_with_services(services: Vec<Service>) -> Policy {

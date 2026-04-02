@@ -87,6 +87,9 @@ pub async fn request_visa_wait_response(
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
 
     asm.counters.incr(CounterType::VisaRequests);
+    asm.counters
+        .incr_node(CounterType::VisaRequests, requesting_node);
+    asm.counters.update_request_time(requesting_node);
 
     match tokio::time::timeout_at(deadline, asm.vreq_chan.reserve()).await {
         Ok(Ok(permit)) => {
@@ -115,10 +118,15 @@ pub async fn request_visa_wait_response(
         Ok(Ok(vr_result)) => match vr_result {
             Ok(VisaDecision::Allow(_)) => {
                 asm.counters.incr(CounterType::VisaRequestsApproved);
+                asm.counters
+                    .incr_node(CounterType::VisaRequestsApproved, requesting_node);
+
                 vr_result
             }
             Ok(VisaDecision::Deny(_)) => {
                 asm.counters.incr(CounterType::VisaRequestsDenied);
+                asm.counters
+                    .incr_node(CounterType::VisaRequestsDenied, requesting_node);
                 vr_result
             }
             Err(_) => {
