@@ -13,6 +13,7 @@ use zpr::policy_types::{Scope, ServiceType};
 use zpr::vsapi_types::ServiceDescriptor;
 
 use crate::assembly::Assembly;
+use crate::counters::Counters;
 use crate::db;
 use crate::db::ServiceEntry;
 use crate::error::{ServiceError, StoreError};
@@ -92,6 +93,7 @@ impl ActorMgr {
             self.node_db
                 .remove_node(actor.get_zpr_addr().unwrap())
                 .await?;
+
             self.actor_db.add_actor(actor).await?;
         } else {
             // Is a reconnect...
@@ -118,8 +120,13 @@ impl ActorMgr {
 
     /// Use [ActorMgr::remove_actor_by_zpr_addr] to remove actor records which apply to both nodes and adapters.
     /// Use this function here in addition to remove node state.
-    pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
+    pub async fn remove_node(
+        &self,
+        node_addr: &IpAddr,
+        counters: &Counters,
+    ) -> Result<(), ServiceError> {
         self.node_db.remove_node(node_addr).await?;
+        counters.remove_node_info(node_addr);
         Ok(())
     }
 

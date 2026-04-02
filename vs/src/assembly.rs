@@ -1,5 +1,3 @@
-use dashmap::DashMap;
-use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::error;
@@ -20,7 +18,6 @@ use crate::vss_mgr::VssMgr;
 pub struct Assembly {
     pub config: VSConfig,
     pub counters: Counters,
-    pub visa_req_times: DashMap<IpAddr, std::time::Instant>,
     pub system_start_time: std::time::Instant,
     pub cc: ConnectionControl,
     pub policy_mgr: PolicyMgr,
@@ -108,7 +105,6 @@ pub mod tests {
         Assembly {
             config: VSConfig::default(),
             counters: Default::default(),
-            visa_req_times: DashMap::default(),
             system_start_time: std::time::Instant::now(),
             cc: ConnectionControl::new(),
             policy_mgr: PolicyMgr::new_with_initial_policy(initial_policy, policy_repo)

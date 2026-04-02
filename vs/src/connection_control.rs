@@ -411,7 +411,7 @@ impl ConnectionControl {
                         }
                     }
                 }
-                asm.actor_mgr.remove_node(&zpr_addr).await?;
+                asm.actor_mgr.remove_node(&zpr_addr, &asm.counters).await?;
                 asm.visa_mgr.remove_visas_for_node(&zpr_addr).await?;
             }
         }

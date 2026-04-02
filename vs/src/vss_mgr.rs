@@ -283,7 +283,7 @@ async fn vss_worker_loop(
         Ok(sock) => sock,
         Err(e) => {
             error!(target: VSS, "failed to connect to VSS at {}: {}", node_addr, e);
-            asm.counters.incr(CounterType::VssErrors, None);
+            asm.counters.incr(CounterType::VssErrors);
             return; // TODO: How to signal manager?
         }
     };
@@ -316,7 +316,7 @@ async fn vss_worker_loop(
             Ok(req_resp) => req_resp,
             Err(e) => {
                 error!(target: VSS, "VSS connect request failed: {}", e);
-                asm.counters.incr(CounterType::VssErrors, None);
+                asm.counters.incr(CounterType::VssErrors);
                 return; // TODO: Signal manager?
             }
         };
@@ -328,7 +328,7 @@ async fn vss_worker_loop(
         v1::result::Which::Error(err_obj) => {
             let err_obj = err_obj.unwrap();
             error!(target: VSS, "VSS connect error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
-            asm.counters.incr(CounterType::VssErrors, None);
+            asm.counters.incr(CounterType::VssErrors);
             return; // TODO: Signal manager?
         }
     };
@@ -353,31 +353,31 @@ async fn vss_worker_loop(
                         VssCmd::PushVisas(_visas, resp_tx) => {
                             if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("push-visas not implemented".to_string()))) {
                                 error!(target: VSS, "failed to send response for push-visas command: {:?}", e);
-                                asm.counters.incr(CounterType::VssErrors, None);
+                                asm.counters.incr(CounterType::VssErrors);
                             }
                         }
                         VssCmd::RevokeVisasById(_visa_id, resp_tx) => {
                             if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("revoke-visas not implemented".to_string()))) {
                                 error!(target: VSS, "failed to send response for revoke-visas command: {:?}", e);
-                                asm.counters.incr(CounterType::VssErrors, None);
+                                asm.counters.incr(CounterType::VssErrors);
                             }
                         }
                         VssCmd::RevokeAuthsByZprAddr(_zpr_addr, resp_tx) => {
                             if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("revoke-auths not implemented".to_string()))) {
                                 error!(target: VSS, "failed to send response for revoke-auths command: {:?}", e);
-                                asm.counters.incr(CounterType::VssErrors, None);
+                                asm.counters.incr(CounterType::VssErrors);
                             }
                         }
                         VssCmd::SetServices(services, resp_tx) => {
                             if let Err(e) = resp_tx.send(do_set_services(&vss_handle, services).await) {
                                 error!(target: VSS, "failed to send response for set-services command: {:?}", e);
-                                asm.counters.incr(CounterType::VssErrors, None);
+                                asm.counters.incr(CounterType::VssErrors);
                             }
                         }
                         VssCmd::Configure(params, resp_tx) => {
                             if let Err(e) = resp_tx.send(do_configure(&vss_handle, params).await) {
                                 error!(target: VSS, "failed to send response for configure command: {:?}", e);
-                                asm.counters.incr(CounterType::VssErrors, None);
+                                asm.counters.incr(CounterType::VssErrors);
                             }
                         }
                     }
@@ -402,7 +402,7 @@ async fn vss_worker_loop(
                             v1::ok_or_error::Which::Error(err_rdr) => {
                                 let err_obj = err_rdr.unwrap();
                                 error!(target: VSS, "VSS ping returns error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
-                                asm.counters.incr(CounterType::VssErrors, None);
+                                asm.counters.incr(CounterType::VssErrors);
                                 // TODO: What does this even mean? We got a reply but it is a coded error message? Should we just disconnect from node?
                                 ping_failures += 1;
                             }
@@ -410,12 +410,12 @@ async fn vss_worker_loop(
                     }
                     Err(VssSyncError::Timeout(_)) => {
                         warn!(target: VSS, "ping to VSS at {} timed out", node_addr);
-                        asm.counters.incr(CounterType::VssErrors, None);
+                        asm.counters.incr(CounterType::VssErrors);
                         ping_failures += 1;
                     }
                     Err(_) => {
                         warn!(target: VSS, "ping to VSS at {} failed", node_addr);
-                        asm.counters.incr(CounterType::VssErrors, None);
+                        asm.counters.incr(CounterType::VssErrors);
                         ping_failures += 1;
                     }
                 }
@@ -454,7 +454,7 @@ async fn do_vss_initialization(
         }
         Err(e) => {
             warn!(target: VSS, "failed to configure VSS at {node_addr}: {e}");
-            asm.counters.incr(CounterType::VssErrors, None);
+            asm.counters.incr(CounterType::VssErrors);
         }
     }
 
@@ -463,7 +463,7 @@ async fn do_vss_initialization(
             debug!(target: VSS, "sending initial auth services list to VSS at {}", node_addr);
             if let Err(e) = do_set_services(&vss_handle, services).await {
                 error!(target: VSS, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
-                asm.counters.incr(CounterType::VssErrors, None);
+                asm.counters.incr(CounterType::VssErrors);
             } else {
                 debug!(target: VSS, "initial auth services list sent to VSS at {}", node_addr);
             }

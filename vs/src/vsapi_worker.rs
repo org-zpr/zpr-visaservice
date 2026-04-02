@@ -317,9 +317,7 @@ impl VisaServiceImpl {
         code: vsapi::ErrorCode,
         message: &str,
     ) -> Result<(), capnp::Error> {
-        self.asm
-            .counters
-            .incr(CounterType::NodeConnectionsFailed, None);
+        self.asm.counters.incr(CounterType::NodeConnectionsFailed);
         let res_builder = results.get().init_resp();
         let mut err_builder = res_builder.init_error();
         write_error(&mut err_builder, code, message);
@@ -431,9 +429,7 @@ impl VSGateImpl {
         code: vsapi::ErrorCode,
         message: &str,
     ) -> Result<(), capnp::Error> {
-        self.asm
-            .counters
-            .incr(CounterType::NodeConnectionsFailed, None);
+        self.asm.counters.incr(CounterType::NodeConnectionsFailed);
         let res_builder = results.get().init_res();
         let mut err_builder = res_builder.init_error();
         write_error(&mut err_builder, code, message);
@@ -618,9 +614,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         if let Err(e) = self.asm.event_mgr.record_event(evt).await {
             warn!(target: API, "failed to record actor joins event for node {:?}: {}", &node_cn, e);
         }
-        self.asm
-            .counters
-            .incr(CounterType::NodeConnectionsSuccess, None);
+        self.asm.counters.incr(CounterType::NodeConnectionsSuccess);
 
         let vs_handle: vsapi::v_s_handle::Client =
             capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
@@ -966,7 +960,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     ) -> Result<(), capnp::Error> {
         debug!(target: API, "visa_request from {:?}", self.node.get_cn());
 
-        self.asm.counters.incr(CounterType::VsApiVisaRequests, None);
+        self.asm.counters.incr(CounterType::VsApiVisaRequests);
 
         // A node must have an address.
         let requestor_addr = self
@@ -1021,7 +1015,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         if let Some(addr) = self.node.get_zpr_addr() {
             self.update_last_seen_time(addr).await;
         }
-        self.asm.counters.incr(CounterType::VsApiPings, None);
+        self.asm.counters.incr(CounterType::VsApiPings);
 
         if let Some(node_addr) = self.node.get_zpr_addr() {
             if let Some(vssaddr) = self

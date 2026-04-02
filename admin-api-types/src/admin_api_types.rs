@@ -303,6 +303,7 @@ pub struct NodeRecordBrief {
 impl fmt::Display for NodeRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let last_contact: DateTime<Utc> = DateTime::from_timestamp(self.last_contact, 0).unwrap();
+        let last_request: DateTime<Utc> = DateTime::from_timestamp(self.last_request, 0).unwrap();
         write!(
             f,
             "{}{} {} {} {} {}",

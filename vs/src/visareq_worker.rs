@@ -86,10 +86,10 @@ pub async fn request_visa_wait_response(
     let deadline = tokio::time::Instant::now() + timeout;
     let (job, response_rx) = VisaRequestJob::new(requesting_node.clone(), pkt_data);
 
+    asm.counters.incr(CounterType::VisaRequests);
     asm.counters
-        .incr(CounterType::VisaRequests, Some(requesting_node));
-    asm.visa_req_times
-        .insert(*requesting_node, std::time::Instant::now());
+        .incr_node(CounterType::VisaRequests, requesting_node);
+    asm.counters.update_request_time(requesting_node);
 
     match tokio::time::timeout_at(deadline, asm.vreq_chan.reserve()).await {
         Ok(Ok(permit)) => {
@@ -98,14 +98,14 @@ pub async fn request_visa_wait_response(
         }
 
         Ok(Err(_closed)) => {
-            asm.counters.incr(CounterType::VisaRequestQueueError, None);
+            asm.counters.incr(CounterType::VisaRequestQueueError);
             Err(ServiceError::Internal(
                 "internal error enqueuing visa request".to_string(),
             ))
         }
 
         Err(_timedout) => {
-            asm.counters.incr(CounterType::VisaRequestQueueFull, None);
+            asm.counters.incr(CounterType::VisaRequestQueueFull);
             Err(ServiceError::Timeout(
                 "timeout enqueuing visa request".into(),
             ))
@@ -117,30 +117,33 @@ pub async fn request_visa_wait_response(
         // Increment the appropriate counters before returning.
         Ok(Ok(vr_result)) => match vr_result {
             Ok(VisaDecision::Allow(_)) => {
+                asm.counters.incr(CounterType::VisaRequestsApproved);
                 asm.counters
-                    .incr(CounterType::VisaRequestsApproved, Some(requesting_node));
+                    .incr_node(CounterType::VisaRequestsApproved, requesting_node);
+
                 vr_result
             }
             Ok(VisaDecision::Deny(_)) => {
+                asm.counters.incr(CounterType::VisaRequestsDenied);
                 asm.counters
-                    .incr(CounterType::VisaRequestsDenied, Some(requesting_node));
+                    .incr_node(CounterType::VisaRequestsDenied, requesting_node);
                 vr_result
             }
             Err(_) => {
-                asm.counters.incr(CounterType::VisaRequestFailed, None);
+                asm.counters.incr(CounterType::VisaRequestFailed);
                 vr_result
             }
         },
         Ok(Err(e)) => {
             // Queue read error -- probably closed?
-            asm.counters.incr(CounterType::VisaRequestQueueError, None);
+            asm.counters.incr(CounterType::VisaRequestQueueError);
             Err(ServiceError::Internal(format!(
                 "queue error receiving visa request response: {}",
                 e
             )))
         }
         Err(_timedout) => {
-            asm.counters.incr(CounterType::VisaRequestTimeout, None);
+            asm.counters.incr(CounterType::VisaRequestTimeout);
             Err(ServiceError::Timeout(format!(
                 "timeout waiting for visa request response after {:?}",
                 timeout
