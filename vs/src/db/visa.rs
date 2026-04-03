@@ -656,4 +656,75 @@ mod test {
             other => panic!("unexpected error: {:?}", other),
         }
     }
+
+    /// Verifies that a VisaMetadata with non-default values for all new fields
+    /// survives a serialize → deserialize round-trip with all fields intact.
+    #[test]
+    fn test_visa_metadata_round_trip() {
+        let node_addr: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let original = VisaMetadata {
+            requesting_node: node_addr,
+            ctime: 1_700_000_000,
+            policy_version: 42,
+            zpl: "permit src any dst any".to_string(),
+            signal_msgs: vec!["sig-a".to_string(), "sig-b".to_string()],
+            direction: Direction::Reverse,
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: VisaMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.requesting_node, original.requesting_node);
+        assert_eq!(decoded.ctime, original.ctime);
+        assert_eq!(decoded.policy_version, original.policy_version);
+        assert_eq!(decoded.zpl, original.zpl);
+        assert_eq!(decoded.signal_msgs, original.signal_msgs);
+        assert_eq!(decoded.direction, original.direction);
+    }
+
+    /// Verifies that signal_msgs is preserved correctly when non-empty across
+    /// a serialize → deserialize round-trip.
+    #[test]
+    fn test_visa_metadata_signal_msgs_preserved() {
+        let node_addr: IpAddr = "fd5a:5052::12".parse().unwrap();
+        let signals = vec![
+            "msg-1".to_string(),
+            "msg-2".to_string(),
+            "msg-3".to_string(),
+        ];
+        let original = VisaMetadata {
+            requesting_node: node_addr,
+            ctime: 1_700_000_001,
+            policy_version: 1,
+            zpl: String::new(),
+            signal_msgs: signals.clone(),
+            direction: Direction::Forward,
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: VisaMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.signal_msgs, signals);
+    }
+
+    /// Verifies that Direction::Forward and Direction::Reverse each survive a
+    /// serialize → deserialize round-trip without being altered.
+    #[test]
+    fn test_visa_metadata_direction_round_trip_both_variants() {
+        let node_addr: IpAddr = "fd5a:5052::13".parse().unwrap();
+
+        for direction in [Direction::Forward, Direction::Reverse] {
+            let original = VisaMetadata {
+                requesting_node: node_addr,
+                ctime: 1_700_000_002,
+                policy_version: 0,
+                zpl: String::new(),
+                signal_msgs: Vec::new(),
+                direction,
+            };
+            let json = serde_json::to_string(&original).unwrap();
+            let decoded: VisaMetadata = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded.direction, direction);
+        }
+    }
 }
