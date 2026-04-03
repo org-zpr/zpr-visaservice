@@ -300,39 +300,23 @@ async fn get_visa(
     debug!(target: ADMIN, "GET /admin/visas/{}", id);
     let rstate = state.read().await;
 
-    match rstate.asm.visa_mgr.get_visa_by_id(id).await {
+    match rstate.asm.visa_mgr.get_visa_with_metadata_by_id(id).await {
         Err(e) => {
             error!(target: ADMIN, "error getting visa {}: {}", id, e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
-        Ok(opt_visa) => match opt_visa {
+        Ok(opt_visa_and_md) => match opt_visa_and_md {
             None => Err(StatusCode::NOT_FOUND),
-            Some(visa) => {
+            Some(visa_and_md) => {
+                let visa = &visa_and_md.visa;
+                let metadata = &visa_and_md.metadata;
                 let (source_port, dest_port) = ports_from_pep(&visa.dock_pep);
 
-                let (ctime, requesting_node) = match rstate
-                    .asm
-                    .visa_mgr
-                    .get_visa_metadata_by_id(visa.issuer_id)
-                    .await
-                {
-                    Ok(metadata) => match metadata {
-                        Some(md) => (md.ctime, md.requesting_node.to_string()),
-                        None => (0, "".to_string()),
-                    },
-                    Err(e) => {
-                        error!(
-                            target: ADMIN,
-                            "error getting visa metadata for visa {}: {}", id, e
-                        );
-                        (0, "".to_string())
-                    }
-                };
                 let vd = VisaDescriptor {
                     id: visa.issuer_id,
                     expires_secs: system_time_to_unix_seconds(visa.expires),
-                    created_secs: ctime,
-                    requesting_node,
+                    created_secs: metadata.ctime,
+                    requesting_node: metadata.requesting_node.to_string(),
                     policy_id: "0".into(), // TODO: not tracked yet
                     source_addr: visa.source_addr.to_string(),
                     dest_addr: visa.dest_addr.to_string(),
@@ -618,7 +602,7 @@ mod tests {
         // Add a visa.
         let v = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc, &hit)
+            .create_visa(&node_addr, &pdesc, &hit, "", 0)
             .await
             .unwrap();
 
@@ -665,17 +649,17 @@ mod tests {
 
         let v0 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc0, &hit)
+            .create_visa(&node_addr, &pdesc0, &hit, "", 0)
             .await
             .unwrap();
         let v1 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc1, &hit)
+            .create_visa(&node_addr, &pdesc1, &hit, "", 0)
             .await
             .unwrap();
         let v2 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc2, &hit)
+            .create_visa(&node_addr, &pdesc2, &hit, "", 0)
             .await
             .unwrap();
 

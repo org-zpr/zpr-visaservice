@@ -8,7 +8,7 @@ use zpr::vsapi_types::PacketDesc;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
 use enumset::EnumSet;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -69,7 +69,7 @@ pub enum EvalError {
 
 /// A "hit" is a single matching permission or deny line in policy
 /// that matches against the actors and packet description.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct Hit {
     /// Index into the policies for the matching policy.
@@ -103,7 +103,7 @@ impl Hit {
     }
 }
 
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Forward,
     Reverse,
@@ -192,7 +192,7 @@ pub enum CommOpt {
     // others TBD?
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct Signal {
     pub message: String,
