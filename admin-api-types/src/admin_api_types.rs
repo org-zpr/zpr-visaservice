@@ -53,6 +53,13 @@ impl fmt::Display for PolicyBundle {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VisaMatchDirection {
+    Forward,
+    Reverse,
+}
+
 #[derive(Serialize, Debug, Deserialize, Eq)]
 pub struct VisaDescriptor {
     pub id: u64,
@@ -61,12 +68,15 @@ pub struct VisaDescriptor {
     #[serde(rename = "created")]
     pub created_secs: u64, // seconds since the epoch
     pub policy_id: String,
+    pub zpl: String,
+    pub direction: VisaMatchDirection,
     pub requesting_node: String, // ZPR address
     pub source_addr: String,     // ZPR address
     pub dest_addr: String,       // ZPR address
     pub source_port: u16,
     pub dest_port: u16,
     pub proto: String,
+    pub signals: Vec<String>,
 }
 
 impl PartialEq for VisaDescriptor {
@@ -90,38 +100,56 @@ impl PartialOrd for VisaDescriptor {
 impl fmt::Display for VisaDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let now = Utc::now();
-
         let dt_exp: DateTime<Utc> = DateTime::from_timestamp(self.expires_secs as i64, 0).unwrap();
-        let remain_exp = dt_exp.signed_duration_since(now);
         let dt_created: DateTime<Utc> =
             DateTime::from_timestamp(self.created_secs as i64, 0).unwrap();
+        let remain = dt_exp.signed_duration_since(now);
 
+        write!(f, "{} {}", "id".dimmed(), self.id)?;
         write!(
             f,
-            "{} {} {} {} {} {}  {}:{} {} {}:{}  {} {}  {} {}   {} {} {}{}:{:02}:{:02} {}",
-            format!("{}", "id".dimmed()),
-            self.id,
-            format!("{}", "requesting node".dimmed()),
-            self.requesting_node.yellow(),
-            format!("{}", "policy id".dimmed()),
-            self.policy_id,
-            format!("{}", self.source_addr).yellow(),
-            format!("{}", self.source_port).yellow(),
+            "  {} {}",
+            "requesting node".dimmed(),
+            self.requesting_node.yellow()
+        )?;
+        write!(f, "  {} {}", "policy id".dimmed(), self.policy_id)?;
+        write!(
+            f,
+            "  {} [{:?}] {}",
+            "zpl".dimmed(),
+            self.direction,
+            self.zpl.yellow()
+        )?;
+        write!(
+            f,
+            "  {}:{} {} {}:{}",
+            self.source_addr.yellow(),
+            self.source_port,
             "->".bold().green(),
-            format!("{}", self.dest_addr).yellow(),
-            format!("{}", self.dest_port).yellow(),
-            format!("{}", "proto".dimmed()),
-            self.proto,
-            format!("{}", "created".dimmed()),
-            dt_created.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
-            format!("{}", "exp".dimmed()),
+            self.dest_addr.yellow(),
+            self.dest_port,
+        )?;
+        write!(f, "  {} {}", "proto".dimmed(), self.proto)?;
+        write!(
+            f,
+            "  {} {}",
+            "created".dimmed(),
+            dt_created.to_rfc3339_opts(SecondsFormat::Secs, true).cyan()
+        )?;
+        write!(
+            f,
+            "  {} {} ({}:{:02}:{:02} remain)",
+            "exp".dimmed(),
             dt_exp.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
-            "(".dimmed(),
-            remain_exp.num_hours(),
-            remain_exp.num_minutes() % 60,
-            remain_exp.num_seconds() % 60,
-            format!("{}", "remain)".dimmed()),
-        )
+            remain.num_hours(),
+            remain.num_minutes() % 60,
+            remain.num_seconds() % 60,
+        )?;
+        if !self.signals.is_empty() {
+            write!(f, "  {} {:?}", "signals".dimmed(), self.signals)?;
+        }
+
+        Ok(())
     }
 }
 

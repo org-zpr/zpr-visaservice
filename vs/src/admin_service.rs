@@ -317,12 +317,22 @@ async fn get_visa(
                     expires_secs: system_time_to_unix_seconds(visa.expires),
                     created_secs: metadata.ctime,
                     requesting_node: metadata.requesting_node.to_string(),
-                    policy_id: "0".into(), // TODO: not tracked yet
+                    policy_id: metadata.policy_version.to_string(),
+                    zpl: metadata.zpl.to_string(),
+                    direction: match metadata.direction {
+                        libeval::eval::Direction::Forward => {
+                            admin_api_types::VisaMatchDirection::Forward
+                        }
+                        libeval::eval::Direction::Reverse => {
+                            admin_api_types::VisaMatchDirection::Reverse
+                        }
+                    },
                     source_addr: visa.source_addr.to_string(),
                     dest_addr: visa.dest_addr.to_string(),
                     source_port,
                     dest_port,
                     proto: "TCP".into(),
+                    signals: metadata.signal_msgs.clone(),
                 };
                 return Ok(Json(vd));
             }
