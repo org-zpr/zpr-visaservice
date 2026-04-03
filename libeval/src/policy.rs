@@ -271,12 +271,30 @@ mod test {
     use std::env;
     use std::path::PathBuf;
 
+    use zpr::policy::v1 as policy_capnp;
+
     const MIN_COMPILER_VERSION: Version = Version(0, 9, 2);
 
     fn read_policy_from_test_file(filename: &str) -> Policy {
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
         let fpath = PathBuf::from(manifest_dir).join("test-data").join(filename);
         load_policy(&fpath, MIN_COMPILER_VERSION).unwrap()
+    }
+
+    /// Build a Policy from a list of ZPL source strings by constructing a capnp
+    /// policy message in memory, without needing a compiled policy file.
+    fn policy_with_cpol_sources(zpls: &[&str]) -> Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy = msg.init_root::<policy_capnp::policy::Builder>();
+            let mut coms = policy.reborrow().init_com_policies(zpls.len() as u32);
+            for (i, zpl) in zpls.iter().enumerate() {
+                coms.reborrow().get(i as u32).set_zpl(zpl);
+            }
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        Policy::new_from_policy_bytes(Bytes::from(bytes)).unwrap()
     }
 
     #[test]
@@ -302,5 +320,35 @@ mod test {
                 "expected to find bootstrap key for cn '{cn}'"
             );
         }
+    }
+
+    #[test]
+    /// get_cpol_source returns the expected ZPL string for known indices when the
+    /// policy contains communication policies.
+    fn test_get_cpol_source_returns_zpl_for_known_index() {
+        let zpls = ["allow all traffic.", "deny all traffic."];
+        let policy = policy_with_cpol_sources(&zpls);
+
+        assert_eq!(policy.get_cpol_source(0), Some("allow all traffic."));
+        assert_eq!(policy.get_cpol_source(1), Some("deny all traffic."));
+    }
+
+    #[test]
+    /// get_cpol_source returns None when the requested index is out of bounds.
+    fn test_get_cpol_source_out_of_bounds_returns_none() {
+        let zpls = ["allow all traffic."];
+        let policy = policy_with_cpol_sources(&zpls);
+
+        assert!(policy.get_cpol_source(1).is_none());
+        assert!(policy.get_cpol_source(99).is_none());
+    }
+
+    #[test]
+    /// get_cpol_source returns None for any index on an empty policy that has no
+    /// communication policies.
+    fn test_get_cpol_source_empty_policy_returns_none() {
+        let policy = Policy::new_empty();
+
+        assert!(policy.get_cpol_source(0).is_none());
     }
 }
