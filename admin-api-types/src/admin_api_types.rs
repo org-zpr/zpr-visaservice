@@ -60,8 +60,18 @@ pub enum VisaMatchDirection {
     Reverse,
 }
 
+impl fmt::Display for VisaMatchDirection {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            VisaMatchDirection::Forward => write!(f, "forward"),
+            VisaMatchDirection::Reverse => write!(f, "reverse"),
+        }
+    }
+}
+
 #[derive(Serialize, Debug, Deserialize, Eq)]
 pub struct VisaDescriptor {
+    /// Policy reported version number
     pub id: u64,
     #[serde(rename = "expires")]
     pub expires_secs: u64, // seconds since the epoch
@@ -115,7 +125,7 @@ impl fmt::Display for VisaDescriptor {
         write!(f, "  {} {}", "policy id".dimmed(), self.policy_id)?;
         write!(
             f,
-            "  {} [{:?}] {}",
+            "  {} [{}] {}",
             "zpl".dimmed(),
             self.direction,
             self.zpl.yellow()
@@ -146,7 +156,7 @@ impl fmt::Display for VisaDescriptor {
             remain.num_seconds() % 60,
         )?;
         if !self.signals.is_empty() {
-            write!(f, "  {} {:?}", "signals".dimmed(), self.signals)?;
+            write!(f, "  {} [{}]", "signals".dimmed(), self.signals.join(", "))?;
         }
 
         Ok(())

@@ -311,6 +311,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             Ok(VisaDecision::Deny(DenyCode::NoMatch))
         }
         EvalDecision::Allow(hits) => {
+            debug_assert!(!hits.is_empty(), "allow decision with no hits"); // should never happen.
             let policy_version = policy.get_version().unwrap_or(0);
             // TODO: For now we pick the first hit.
             let zpl = policy

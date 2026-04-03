@@ -25,7 +25,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
-use zpr::vsapi_types::DockPep;
+use zpr::vsapi_types::{DockPep, Visa};
 
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
@@ -62,6 +62,13 @@ struct RoleFilter {
 enum ActorRole {
     Node,
     Adapter,
+}
+
+struct ProtocolDetails {
+    /// Human readable protocol name, e.g. "TCP", "UDP", "ICMP"
+    protocol: String,
+    source_port: u16,
+    dest_port: u16,
 }
 
 /// Blocking start of the admin server.
@@ -281,14 +288,6 @@ fn system_time_to_unix_seconds(st: std::time::SystemTime) -> u64 {
     }
 }
 
-fn ports_from_pep(pep: &DockPep) -> (u16, u16) {
-    match pep {
-        DockPep::TCP(tu_pep) => (tu_pep.source_port, tu_pep.dest_port),
-        DockPep::UDP(tu_pep) => (tu_pep.source_port, tu_pep.dest_port),
-        DockPep::ICMP(icmp_pep) => (icmp_pep.icmp_type as u16, icmp_pep.icmp_code as u16),
-    }
-}
-
 async fn get_visa(
     Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
@@ -310,7 +309,7 @@ async fn get_visa(
             Some(visa_and_md) => {
                 let visa = &visa_and_md.visa;
                 let metadata = &visa_and_md.metadata;
-                let (source_port, dest_port) = ports_from_pep(&visa.dock_pep);
+                let proto_deets = protocol_details_for_visa(visa);
 
                 let vd = VisaDescriptor {
                     id: visa.issuer_id,
@@ -329,14 +328,32 @@ async fn get_visa(
                     },
                     source_addr: visa.source_addr.to_string(),
                     dest_addr: visa.dest_addr.to_string(),
-                    source_port,
-                    dest_port,
-                    proto: "TCP".into(),
+                    source_port: proto_deets.source_port,
+                    dest_port: proto_deets.dest_port,
+                    proto: proto_deets.protocol,
                     signals: metadata.signal_msgs.clone(),
                 };
                 return Ok(Json(vd));
             }
         },
+    }
+}
+
+fn protocol_details_for_visa(visa: &Visa) -> ProtocolDetails {
+    let (proto_name, source_port, dest_port) = match &visa.dock_pep {
+        DockPep::ICMP(icmp_pep) => (
+            "ICMP".to_string(),
+            icmp_pep.icmp_type as u16,
+            icmp_pep.icmp_code as u16,
+        ),
+        DockPep::UDP(tu_pep) => ("UDP".to_string(), tu_pep.source_port, tu_pep.dest_port),
+        DockPep::TCP(tu_pep) => ("TCP".to_string(), tu_pep.source_port, tu_pep.dest_port),
+    };
+
+    ProtocolDetails {
+        protocol: proto_name,
+        source_port,
+        dest_port,
     }
 }
 
