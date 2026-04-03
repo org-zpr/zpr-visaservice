@@ -562,9 +562,10 @@ mod tests {
     use super::*;
 
     use crate::apikey::ApiKey;
+    use admin_api_types::VisaMatchDirection;
     use axum::body::Body;
     use http_body_util::BodyExt;
-    use libeval::eval::{Direction, Hit};
+    use libeval::eval::{Direction, Hit, Signal};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
@@ -877,6 +878,152 @@ mod tests {
         let actors_adapters: Vec<CnEntry> = serde_json::from_slice(&body_adapters).unwrap();
         assert_eq!(actors_adapters.len(), 1);
         assert_eq!(actors_adapters[0].cn, "adapter-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_not_found() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/visas/9999")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_fields_forward_no_signal() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+
+        let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
+        let pdesc =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let zpl_str = "permit tcp from groupA to groupB port 80";
+        let policy_version: u64 = 42;
+        let hit = Hit::new_no_signal(0, Direction::Forward);
+
+        let v = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc, &hit, zpl_str, policy_version)
+            .await
+            .unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/admin/visas/{}", v.issuer_id))
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let vd: VisaDescriptor = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(vd.id, v.issuer_id);
+        assert_eq!(vd.policy_id, "42");
+        assert_eq!(vd.zpl, zpl_str);
+        assert_eq!(vd.direction, VisaMatchDirection::Forward);
+        assert!(vd.signals.is_empty());
+
+        // Verify JSON encodes direction as lowercase string.
+        let raw: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(raw["direction"], "forward");
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_direction_reverse() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+
+        let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
+        let pdesc =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let hit = Hit::new_no_signal(0, Direction::Reverse);
+
+        let v = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc, &hit, "", 0)
+            .await
+            .unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/admin/visas/{}", v.issuer_id))
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let vd: VisaDescriptor = serde_json::from_slice(&body).unwrap();
+        assert_eq!(vd.direction, VisaMatchDirection::Reverse);
+
+        let raw: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(raw["direction"], "reverse");
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_with_signal() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+
+        let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
+        let pdesc =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let signal = Signal {
+            message: "alert: suspicious traffic".to_string(),
+            service: "svc1".to_string(),
+        };
+        let hit = Hit::new_with_signal(0, Direction::Forward, signal);
+
+        let v = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc, &hit, "", 0)
+            .await
+            .unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/admin/visas/{}", v.issuer_id))
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let vd: VisaDescriptor = serde_json::from_slice(&body).unwrap();
+        assert_eq!(vd.signals, vec!["alert: suspicious traffic".to_string()]);
     }
 
     #[tokio::test]
