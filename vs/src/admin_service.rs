@@ -25,7 +25,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
-use zpr::vsapi_types::DockPep;
+use zpr::vsapi_types::{DockPep, Visa};
 
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
@@ -64,6 +64,13 @@ struct RoleFilter {
 enum ActorRole {
     Node,
     Adapter,
+}
+
+struct ProtocolDetails {
+    /// Human readable protocol name, e.g. "TCP", "UDP", "ICMP"
+    protocol: String,
+    source_port: u16,
+    dest_port: u16,
 }
 
 /// Blocking start of the admin server.
@@ -283,14 +290,6 @@ fn system_time_to_unix_seconds(st: std::time::SystemTime) -> u64 {
     }
 }
 
-fn ports_from_pep(pep: &DockPep) -> (u16, u16) {
-    match pep {
-        DockPep::TCP(tu_pep) => (tu_pep.source_port, tu_pep.dest_port),
-        DockPep::UDP(tu_pep) => (tu_pep.source_port, tu_pep.dest_port),
-        DockPep::ICMP(icmp_pep) => (icmp_pep.icmp_type as u16, icmp_pep.icmp_code as u16),
-    }
-}
-
 async fn get_visa(
     Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
@@ -302,49 +301,61 @@ async fn get_visa(
     debug!(target: ADMIN, "GET /admin/visas/{}", id);
     let rstate = state.read().await;
 
-    match rstate.asm.visa_mgr.get_visa_by_id(id).await {
+    match rstate.asm.visa_mgr.get_visa_with_metadata_by_id(id).await {
         Err(e) => {
             error!(target: ADMIN, "error getting visa {}: {}", id, e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
-        Ok(opt_visa) => match opt_visa {
+        Ok(opt_visa_and_md) => match opt_visa_and_md {
             None => Err(StatusCode::NOT_FOUND),
-            Some(visa) => {
-                let (source_port, dest_port) = ports_from_pep(&visa.dock_pep);
+            Some(visa_and_md) => {
+                let visa = &visa_and_md.visa;
+                let metadata = &visa_and_md.metadata;
+                let proto_deets = protocol_details_for_visa(visa);
 
-                let (ctime, requesting_node) = match rstate
-                    .asm
-                    .visa_mgr
-                    .get_visa_metadata_by_id(visa.issuer_id)
-                    .await
-                {
-                    Ok(metadata) => match metadata {
-                        Some(md) => (md.ctime, md.requesting_node.to_string()),
-                        None => (0, "".to_string()),
-                    },
-                    Err(e) => {
-                        error!(
-                            target: ADMIN,
-                            "error getting visa metadata for visa {}: {}", id, e
-                        );
-                        (0, "".to_string())
-                    }
-                };
                 let vd = VisaDescriptor {
                     id: visa.issuer_id,
                     expires_secs: system_time_to_unix_seconds(visa.expires),
-                    created_secs: ctime,
-                    requesting_node,
-                    policy_id: "0".into(), // TODO: not tracked yet
+                    created_secs: metadata.ctime,
+                    requesting_node: metadata.requesting_node.to_string(),
+                    policy_id: metadata.policy_version.to_string(),
+                    zpl: metadata.zpl.to_string(),
+                    direction: match metadata.direction {
+                        libeval::eval::Direction::Forward => {
+                            admin_api_types::VisaMatchDirection::Forward
+                        }
+                        libeval::eval::Direction::Reverse => {
+                            admin_api_types::VisaMatchDirection::Reverse
+                        }
+                    },
                     source_addr: visa.source_addr.to_string(),
                     dest_addr: visa.dest_addr.to_string(),
-                    source_port,
-                    dest_port,
-                    proto: "TCP".into(),
+                    source_port: proto_deets.source_port,
+                    dest_port: proto_deets.dest_port,
+                    proto: proto_deets.protocol,
+                    signals: metadata.signal_msgs.clone(),
                 };
                 return Ok(Json(vd));
             }
         },
+    }
+}
+
+fn protocol_details_for_visa(visa: &Visa) -> ProtocolDetails {
+    let (proto_name, source_port, dest_port) = match &visa.dock_pep {
+        DockPep::ICMP(icmp_pep) => (
+            "ICMP".to_string(),
+            icmp_pep.icmp_type as u16,
+            icmp_pep.icmp_code as u16,
+        ),
+        DockPep::UDP(tu_pep) => ("UDP".to_string(), tu_pep.source_port, tu_pep.dest_port),
+        DockPep::TCP(tu_pep) => ("TCP".to_string(), tu_pep.source_port, tu_pep.dest_port),
+    };
+
+    ProtocolDetails {
+        protocol: proto_name,
+        source_port,
+        dest_port,
     }
 }
 
@@ -638,9 +649,10 @@ mod tests {
     use super::*;
 
     use crate::apikey::ApiKey;
+    use admin_api_types::VisaMatchDirection;
     use axum::body::Body;
     use http_body_util::BodyExt;
-    use libeval::eval::{Direction, Hit};
+    use libeval::eval::{Direction, Hit, Signal};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
@@ -705,7 +717,7 @@ mod tests {
         // Add a visa.
         let v = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc, &hit)
+            .create_visa(&node_addr, &pdesc, &hit, "", 0)
             .await
             .unwrap();
 
@@ -752,17 +764,17 @@ mod tests {
 
         let v0 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc0, &hit)
+            .create_visa(&node_addr, &pdesc0, &hit, "", 0)
             .await
             .unwrap();
         let v1 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc1, &hit)
+            .create_visa(&node_addr, &pdesc1, &hit, "", 0)
             .await
             .unwrap();
         let v2 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc2, &hit)
+            .create_visa(&node_addr, &pdesc2, &hit, "", 0)
             .await
             .unwrap();
 
@@ -953,6 +965,152 @@ mod tests {
         let actors_adapters: Vec<CnEntry> = serde_json::from_slice(&body_adapters).unwrap();
         assert_eq!(actors_adapters.len(), 1);
         assert_eq!(actors_adapters[0].cn, "adapter-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_not_found() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/visas/9999")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_fields_forward_no_signal() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+
+        let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
+        let pdesc =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let zpl_str = "permit tcp from groupA to groupB port 80";
+        let policy_version: u64 = 42;
+        let hit = Hit::new_no_signal(0, Direction::Forward);
+
+        let v = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc, &hit, zpl_str, policy_version)
+            .await
+            .unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/admin/visas/{}", v.issuer_id))
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let vd: VisaDescriptor = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(vd.id, v.issuer_id);
+        assert_eq!(vd.policy_id, "42");
+        assert_eq!(vd.zpl, zpl_str);
+        assert_eq!(vd.direction, VisaMatchDirection::Forward);
+        assert!(vd.signals.is_empty());
+
+        // Verify JSON encodes direction as lowercase string.
+        let raw: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(raw["direction"], "forward");
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_direction_reverse() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+
+        let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
+        let pdesc =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let hit = Hit::new_no_signal(0, Direction::Reverse);
+
+        let v = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc, &hit, "", 0)
+            .await
+            .unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/admin/visas/{}", v.issuer_id))
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let vd: VisaDescriptor = serde_json::from_slice(&body).unwrap();
+        assert_eq!(vd.direction, VisaMatchDirection::Reverse);
+
+        let raw: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(raw["direction"], "reverse");
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_with_signal() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+
+        let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
+        let pdesc =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let signal = Signal {
+            message: "alert: suspicious traffic".to_string(),
+            service: "svc1".to_string(),
+        };
+        let hit = Hit::new_with_signal(0, Direction::Forward, signal);
+
+        let v = asm
+            .visa_mgr
+            .create_visa(&node_addr, &pdesc, &hit, "", 0)
+            .await
+            .unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/admin/visas/{}", v.issuer_id))
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let vd: VisaDescriptor = serde_json::from_slice(&body).unwrap();
+        assert_eq!(vd.signals, vec!["alert: suspicious traffic".to_string()]);
     }
 
     #[tokio::test]

@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime};
 use tracing::{debug, error, warn};
 
 use ::zpr::vsapi::v1 as vsapi;
+use libeval::eval::Direction;
 use zpr::vsapi_types::Visa;
 use zpr::write_to::WriteTo;
 
@@ -35,10 +36,15 @@ pub enum NodeVisaState {
     Revoked,
 }
 
+/// Metadata around an issued visa.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisaMetadata {
     pub requesting_node: IpAddr,
     pub ctime: u64, // unix timestamp (seconds since epoch)
+    pub policy_version: u64,
+    pub zpl: String,
+    pub signal_msgs: Vec<String>, // note we do not keep the signal destination
+    pub direction: Direction,
 }
 
 pub struct VisaRepo {
@@ -46,13 +52,21 @@ pub struct VisaRepo {
 }
 
 impl VisaMetadata {
-    pub fn new(requesting_node: IpAddr) -> Self {
+    /// `requesting_node` is the node that requested the visa.
+    /// `pver` is the policy version that was in effect at the time of the visa request.
+    /// `zpl` is the ZPL is a copy of the ZPL line that matched in policy.
+    /// `direction` is the direction of the match as reported by the hit.
+    pub fn new(requesting_node: IpAddr, pver: u64, zpl: String, direction: Direction) -> Self {
         VisaMetadata {
             requesting_node,
             ctime: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_secs() as u64,
+            policy_version: pver,
+            zpl,
+            signal_msgs: Vec::new(),
+            direction,
         }
     }
 }
@@ -134,11 +148,10 @@ impl VisaRepo {
     ///
     pub async fn store_visa(
         &self,
-        requesting_node: &IpAddr,
         visa: &Visa,
+        metadata: VisaMetadata,
         nstate: NodeVisaState,
     ) -> Result<(), StoreError> {
-        let metadata = VisaMetadata::new(*requesting_node);
         match self.try_store_visa(&metadata, visa, nstate).await {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -400,7 +413,8 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::1".parse().unwrap();
         let visa = make_visa(42, Duration::from_secs(60));
 
-        repo.store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+        let metadata = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa, metadata, NodeVisaState::PendingInstall)
             .await
             .unwrap();
 
@@ -459,7 +473,8 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::3".parse().unwrap();
         let visa = make_visa(7, Duration::from_secs(60));
 
-        repo.store_visa(&node_addr, &visa, NodeVisaState::Installed)
+        let metadata = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa, metadata, NodeVisaState::Installed)
             .await
             .unwrap();
 
@@ -482,8 +497,9 @@ mod test {
         let mut visa = make_visa(8, Duration::from_secs(1));
         visa.expires = SystemTime::now() - Duration::from_secs(1);
 
+        let metadata = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
         let err = repo
-            .store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+            .store_visa(&visa, metadata, NodeVisaState::PendingInstall)
             .await
             .unwrap_err();
         match err {
@@ -499,7 +515,8 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::5".parse().unwrap();
         let visa = make_visa(9, Duration::from_secs(5));
 
-        repo.store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+        let metadata = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa, metadata, NodeVisaState::PendingInstall)
             .await
             .unwrap();
 
@@ -523,10 +540,12 @@ mod test {
         let visa_a = make_visa(10, Duration::from_secs(60));
         let visa_b = make_visa(11, Duration::from_secs(60));
 
-        repo.store_visa(&node_addr, &visa_a, NodeVisaState::PendingInstall)
+        let metadata_a = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa_a, metadata_a, NodeVisaState::PendingInstall)
             .await
             .unwrap();
-        repo.store_visa(&node_addr, &visa_b, NodeVisaState::PendingInstall)
+        let metadata_b = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa_b, metadata_b, NodeVisaState::PendingInstall)
             .await
             .unwrap();
 
@@ -550,15 +569,27 @@ mod test {
         let visa_b = make_visa(5, Duration::from_secs(60));
         let visa_c = make_visa(42, Duration::from_secs(60));
 
-        repo.store_visa(&node_addr, &visa_a, NodeVisaState::PendingInstall)
-            .await
-            .unwrap();
-        repo.store_visa(&node_addr, &visa_b, NodeVisaState::PendingInstall)
-            .await
-            .unwrap();
-        repo.store_visa(&node_addr, &visa_c, NodeVisaState::PendingInstall)
-            .await
-            .unwrap();
+        repo.store_visa(
+            &visa_a,
+            VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward),
+            NodeVisaState::PendingInstall,
+        )
+        .await
+        .unwrap();
+        repo.store_visa(
+            &visa_b,
+            VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward),
+            NodeVisaState::PendingInstall,
+        )
+        .await
+        .unwrap();
+        repo.store_visa(
+            &visa_c,
+            VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward),
+            NodeVisaState::PendingInstall,
+        )
+        .await
+        .unwrap();
 
         let mut ids = repo.list_visa_ids().await.unwrap();
         ids.sort_unstable();
@@ -573,7 +604,8 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::8".parse().unwrap();
         let visa = make_visa(77, Duration::from_secs(60));
 
-        repo.store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+        let metadata = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa, metadata, NodeVisaState::PendingInstall)
             .await
             .unwrap();
 
@@ -602,7 +634,8 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::9".parse().unwrap();
         let visa = make_visa(88, Duration::from_secs(60));
 
-        repo.store_visa(&node_addr, &visa, NodeVisaState::PendingInstall)
+        let stored_metadata = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa, stored_metadata, NodeVisaState::PendingInstall)
             .await
             .unwrap();
 
@@ -620,6 +653,77 @@ mod test {
         match err {
             StoreError::NotFound(_) => {}
             other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    /// Verifies that a VisaMetadata with non-default values for all new fields
+    /// survives a serialize → deserialize round-trip with all fields intact.
+    #[test]
+    fn test_visa_metadata_round_trip() {
+        let node_addr: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let original = VisaMetadata {
+            requesting_node: node_addr,
+            ctime: 1_700_000_000,
+            policy_version: 42,
+            zpl: "permit src any dst any".to_string(),
+            signal_msgs: vec!["sig-a".to_string(), "sig-b".to_string()],
+            direction: Direction::Reverse,
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: VisaMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.requesting_node, original.requesting_node);
+        assert_eq!(decoded.ctime, original.ctime);
+        assert_eq!(decoded.policy_version, original.policy_version);
+        assert_eq!(decoded.zpl, original.zpl);
+        assert_eq!(decoded.signal_msgs, original.signal_msgs);
+        assert_eq!(decoded.direction, original.direction);
+    }
+
+    /// Verifies that signal_msgs is preserved correctly when non-empty across
+    /// a serialize → deserialize round-trip.
+    #[test]
+    fn test_visa_metadata_signal_msgs_preserved() {
+        let node_addr: IpAddr = "fd5a:5052::12".parse().unwrap();
+        let signals = vec![
+            "msg-1".to_string(),
+            "msg-2".to_string(),
+            "msg-3".to_string(),
+        ];
+        let original = VisaMetadata {
+            requesting_node: node_addr,
+            ctime: 1_700_000_001,
+            policy_version: 1,
+            zpl: String::new(),
+            signal_msgs: signals.clone(),
+            direction: Direction::Forward,
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: VisaMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.signal_msgs, signals);
+    }
+
+    /// Verifies that Direction::Forward and Direction::Reverse each survive a
+    /// serialize → deserialize round-trip without being altered.
+    #[test]
+    fn test_visa_metadata_direction_round_trip_both_variants() {
+        let node_addr: IpAddr = "fd5a:5052::13".parse().unwrap();
+
+        for direction in [Direction::Forward, Direction::Reverse] {
+            let original = VisaMetadata {
+                requesting_node: node_addr,
+                ctime: 1_700_000_002,
+                policy_version: 0,
+                zpl: String::new(),
+                signal_msgs: Vec::new(),
+                direction,
+            };
+            let json = serde_json::to_string(&original).unwrap();
+            let decoded: VisaMetadata = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded.direction, direction);
         }
     }
 }
