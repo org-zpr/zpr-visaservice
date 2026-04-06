@@ -405,7 +405,6 @@ mod test {
     use crate::db::DbConnection;
     use crate::db::db_fake::FakeDb;
     use crate::test_helpers::make_visa;
-    use libeval::eval::Direction;
 
     #[tokio::test]
     async fn test_store_and_get_visas_by_state() {
