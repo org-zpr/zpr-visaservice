@@ -11,6 +11,7 @@ use zpr::vsapi_types::PacketDesc;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
 use enumset::EnumSet;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -18,6 +19,185 @@ use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 use zpr::policy::v1 as policy_capnp;
+
+/// The result of evaluating a policy against a communicating pair of
+/// actors and a description of the packet.
+///
+/// Note that this does not select a winner when where are multiple
+/// policy hits.  The hits are returned in policy order.
+#[derive(Debug)]
+pub enum EvalDecision {
+    /// Takes an explanator string.
+    NoMatch(String),
+
+    /// All matching allow permissions are returned.
+    Allow(Vec<Hit>),
+
+    /// All matching deny permissions are returned.
+    Deny(Vec<Hit>),
+}
+
+#[derive(Debug, Error)]
+pub enum EvalError {
+    #[error("Cap'n Proto error: {0}")]
+    Capnp(#[from] capnp::Error),
+
+    #[error("Unsupported protocol: {0}")]
+    UnsupportedProtocol(String),
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
+    #[error("Internal error: {0}")]
+    InternalError(String),
+
+    #[error("empty policy")]
+    EmptyPolicy,
+
+    #[error("attribute missing: {0}")]
+    AttributeMissing(String),
+
+    #[error("no match")]
+    NoMatch,
+
+    #[error("invalid claim: {0}")]
+    InvalidClaim(String),
+
+    #[error("claim missing: {0}")]
+    ClaimMissing(String),
+}
+
+/// A "hit" is a single matching permission or deny line in policy
+/// that matches against the actors and packet description.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct Hit {
+    /// Index into the policies for the matching policy.
+    /// Caller can use this to find the ZPL line and the conditions.
+    pub match_idx: usize,
+
+    /// If 'Forward' then this the Hit was on the "forward" client->service direction.
+    pub direction: Direction,
+
+    /// If there is a signal attached to this permission it is returned here.
+    pub signal: Option<Signal>,
+}
+
+impl Hit {
+    /// Create Hit without a signal.
+    pub fn new_no_signal(index: usize, direction: Direction) -> Self {
+        Hit {
+            match_idx: index,
+            direction,
+            signal: None,
+        }
+    }
+    /// Create Hit with a signal.
+    #[allow(dead_code)]
+    pub fn new_with_signal(index: usize, direction: Direction, signal: Signal) -> Self {
+        Hit {
+            match_idx: index,
+            direction,
+            signal: Some(signal),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Forward,
+    Reverse,
+}
+
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Direction::Forward => write!(f, "FWD"),
+            Direction::Reverse => write!(f, "REV"),
+        }
+    }
+}
+
+/// VisaProps is most of the information needed to create a visa.
+/// Does not set an expiration unless one is part of a policy constraint.
+#[derive(Serialize, Debug)]
+#[allow(dead_code)]
+pub struct VisaProps {
+    source_addr: net::IpAddr,
+    dest_addr: net::IpAddr,
+    protocol: u8,
+    source_port: u16,
+    dest_port: u16,
+    constraints: Option<Vec<Constraint>>,
+    comm_opts: Option<Vec<CommOpt>>,
+    zpl: String,
+}
+
+/// Just a bunch of accessors to help keep API clean.
+impl VisaProps {
+    pub fn get_source_addr(&self) -> net::IpAddr {
+        self.source_addr
+    }
+    pub fn get_dest_addr(&self) -> net::IpAddr {
+        self.dest_addr
+    }
+    pub fn get_protocol(&self) -> u8 {
+        self.protocol
+    }
+    pub fn get_source_port(&self) -> u16 {
+        self.source_port
+    }
+    pub fn get_dest_port(&self) -> u16 {
+        self.dest_port
+    }
+    pub fn get_constraints(&self) -> Option<&[Constraint]> {
+        self.constraints.as_deref()
+    }
+    pub fn get_comm_opts(&self) -> Option<&[CommOpt]> {
+        self.comm_opts.as_deref()
+    }
+    pub fn get_zpl(&self) -> &str {
+        &self.zpl
+    }
+}
+
+/// Canonical "short-form" visa stringer.
+impl fmt::Display for VisaProps {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}]:{} -> [{}]:{} proto {} [opts:{:?}]",
+            self.source_addr,
+            self.source_port,
+            self.dest_addr,
+            self.dest_port,
+            self.protocol,
+            self.comm_opts
+        )
+    }
+}
+
+/// Policy may include constraints on the permission.
+#[derive(Debug, Serialize)]
+pub enum Constraint {
+    /// unix time seconds for expiration of permission.
+    ExpiresAtUnixSeconds(u64),
+}
+
+/// Policy may dictate certain communication pattern options.
+#[derive(Debug, Serialize)]
+pub enum CommOpt {
+    // TODO: How to use this?
+    ReversePinhole,
+    // others TBD?
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct Signal {
+    pub message: String,
+    pub service: String,
+}
 
 // TODO: Not yet sure if this is useful. Maybe the context can build up
 // some cache or something to make future eval calls faster?

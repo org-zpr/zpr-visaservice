@@ -53,20 +53,40 @@ impl fmt::Display for PolicyBundle {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VisaMatchDirection {
+    Forward,
+    Reverse,
+}
+
+impl fmt::Display for VisaMatchDirection {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            VisaMatchDirection::Forward => write!(f, "forward"),
+            VisaMatchDirection::Reverse => write!(f, "reverse"),
+        }
+    }
+}
+
 #[derive(Serialize, Debug, Deserialize, Eq)]
 pub struct VisaDescriptor {
+    /// Policy reported version number
     pub id: u64,
     #[serde(rename = "expires")]
     pub expires_secs: u64, // seconds since the epoch
     #[serde(rename = "created")]
     pub created_secs: u64, // seconds since the epoch
     pub policy_id: String,
+    pub zpl: String,
+    pub direction: VisaMatchDirection,
     pub requesting_node: String, // ZPR address
     pub source_addr: String,     // ZPR address
     pub dest_addr: String,       // ZPR address
     pub source_port: u16,
     pub dest_port: u16,
     pub proto: String,
+    pub signals: Vec<String>,
 }
 
 impl PartialEq for VisaDescriptor {
@@ -90,38 +110,56 @@ impl PartialOrd for VisaDescriptor {
 impl fmt::Display for VisaDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let now = Utc::now();
-
         let dt_exp: DateTime<Utc> = DateTime::from_timestamp(self.expires_secs as i64, 0).unwrap();
-        let remain_exp = dt_exp.signed_duration_since(now);
         let dt_created: DateTime<Utc> =
             DateTime::from_timestamp(self.created_secs as i64, 0).unwrap();
+        let remain = dt_exp.signed_duration_since(now);
 
+        write!(f, "{} {}", "id".dimmed(), self.id)?;
         write!(
             f,
-            "{} {} {} {} {} {}  {}:{} {} {}:{}  {} {}  {} {}   {} {} {}{}:{:02}:{:02} {}",
-            format!("{}", "id".dimmed()),
-            self.id,
-            format!("{}", "requesting node".dimmed()),
-            self.requesting_node.yellow(),
-            format!("{}", "policy id".dimmed()),
-            self.policy_id,
-            format!("{}", self.source_addr).yellow(),
-            format!("{}", self.source_port).yellow(),
+            "  {} {}",
+            "requesting node".dimmed(),
+            self.requesting_node.yellow()
+        )?;
+        write!(f, "  {} {}", "policy id".dimmed(), self.policy_id)?;
+        write!(
+            f,
+            "  {} [{}] {}",
+            "zpl".dimmed(),
+            self.direction,
+            self.zpl.yellow()
+        )?;
+        write!(
+            f,
+            "  {}:{} {} {}:{}",
+            self.source_addr.yellow(),
+            self.source_port,
             "->".bold().green(),
-            format!("{}", self.dest_addr).yellow(),
-            format!("{}", self.dest_port).yellow(),
-            format!("{}", "proto".dimmed()),
-            self.proto,
-            format!("{}", "created".dimmed()),
-            dt_created.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
-            format!("{}", "exp".dimmed()),
+            self.dest_addr.yellow(),
+            self.dest_port,
+        )?;
+        write!(f, "  {} {}", "proto".dimmed(), self.proto)?;
+        write!(
+            f,
+            "  {} {}",
+            "created".dimmed(),
+            dt_created.to_rfc3339_opts(SecondsFormat::Secs, true).cyan()
+        )?;
+        write!(
+            f,
+            "  {} {} ({}:{:02}:{:02} remain)",
+            "exp".dimmed(),
             dt_exp.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
-            "(".dimmed(),
-            remain_exp.num_hours(),
-            remain_exp.num_minutes() % 60,
-            remain_exp.num_seconds() % 60,
-            format!("{}", "remain)".dimmed()),
-        )
+            remain.num_hours(),
+            remain.num_minutes() % 60,
+            remain.num_seconds() % 60,
+        )?;
+        if !self.signals.is_empty() {
+            write!(f, "  {} [{}]", "signals".dimmed(), self.signals.join(", "))?;
+        }
+
+        Ok(())
     }
 }
 
@@ -291,20 +329,36 @@ impl fmt::Display for HostRecordBrief {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeRecordBrief {
     pub pending: u32,
-    pub last_contact: i64, // unix SECONDS
+    pub last_contact: Option<i64>, // unix SECONDS
     pub visa_requests: u64,
     pub connect_requests: u64,
     pub in_sync: bool,
+    pub approved_reqs: u64,
+    pub denied_reqs: u64,
+    pub last_request: Option<i64>, // unix SECONDS
+    pub adapters: Vec<String>,
+    pub links: Vec<String>,
+    pub visas: Vec<String>,
+    pub visas_enqueued: Vec<String>,
+    pub revocations_enqueued_count: u64,
+    pub vss_port: u16,
 }
 
 impl fmt::Display for NodeRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let last_contact: DateTime<Utc> = DateTime::from_timestamp(self.last_contact, 0).unwrap();
+        let last_contact = match self.last_contact {
+            Some(lc) => Some(DateTime::from_timestamp(lc, 0).unwrap()),
+            None => None,
+        };
+        let last_request = match self.last_request {
+            Some(lr) => Some(DateTime::from_timestamp(lr, 0).unwrap()),
+            None => None,
+        };
+
         write!(
             f,
-            "{}{} {} {} {}",
-            "pending: ".dimmed(),
-            self.pending,
+            "{} {} {} {} {} {} {} {}",
+            format!("{}{}", "pending:".dimmed(), self.pending),
             format!(
                 "{}{}",
                 "SYNC:".dimmed(),
@@ -317,26 +371,58 @@ impl fmt::Display for NodeRecordBrief {
             format!(
                 "{} {}",
                 "last_contact:".dimmed(),
-                if self.last_contact == 0 {
-                    "never".to_string().red()
-                } else {
-                    last_contact
-                        .to_rfc3339_opts(SecondsFormat::Secs, true)
-                        .cyan()
+                match last_contact {
+                    Some(lc) => lc.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                    None => "never".to_string().red(),
                 }
             ),
-            // '[visas: VAL' '|' 'connects: VAL]'
+            // '[vreqs: VAL' (vreqs_appr: VAL | vreqs_den: VAL) | vinstalled: [VAL, VAL, VAL] | venqueued: [VAL, VAL]]'
             format!(
-                "{} {} {}",
-                format!("{}{}", "[vreqs:".dimmed(), self.visa_requests),
+                "{} {} {} {} {}",
+                format!(
+                    "{}{} {}{} {} {}{}{}",
+                    "[vreqs:".dimmed(),
+                    self.visa_requests,
+                    "(vreqs_appr".dimmed(),
+                    self.approved_reqs,
+                    "|".dimmed(),
+                    "vreqs_den".dimmed(),
+                    self.denied_reqs,
+                    ")"
+                ),
+                "|".dimmed(),
+                format!("{}{:?}", "vinstalled:".dimmed(), self.visas,),
                 "|".dimmed(),
                 format!(
-                    "{}{}{}",
-                    "creqs:".dimmed(),
-                    self.connect_requests,
+                    "{}{:?}{}",
+                    "venqueued:".dimmed(),
+                    self.visas_enqueued,
                     "]".dimmed()
                 ),
             ),
+            format!(
+                "{} {}",
+                "last_request:".dimmed(),
+                match last_request {
+                    Some(lr) => lr.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                    None => "never".to_string().red(),
+                }
+            ),
+            // [creqs: VAL | adapters: [VAL, VAL, VAL] | nodes: [VAL, VAL]]
+            format!(
+                "{} {} {} {} {}",
+                format!("{}{}", "creqs:".dimmed(), self.connect_requests,),
+                "|".dimmed(),
+                format!("{}{:?}", "[adapters:".dimmed(), self.adapters),
+                "|".dimmed(),
+                format!("{}{:?}{}", "nodes:".dimmed(), self.links, "]".dimmed()),
+            ),
+            format!(
+                "{}{}",
+                "revocations_enqueued:".dimmed(),
+                self.revocations_enqueued_count
+            ),
+            format!("{}{}", "vss_port:".dimmed(), self.vss_port),
         )
     }
 }

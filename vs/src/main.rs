@@ -42,6 +42,7 @@ use crate::admin_service::start_admin_server;
 use crate::assembly::Assembly;
 use crate::config::VSConfig;
 use crate::connection_control::ConnectionControl;
+use crate::counters::Counters;
 use crate::db::{DbConnection, LockDescriptor, LockType};
 use crate::error::ServiceError;
 use crate::event_mgr::EventMgr;
@@ -202,10 +203,12 @@ async fn main() -> std::process::ExitCode {
 
     let mut js = JoinSet::new();
 
+    let counters = Arc::new(Counters::default());
+
     let (vreq_tx, vreq_rx) =
         mpsc::channel::<visareq_worker::VisaRequestJob>(config::VISA_REQUEST_QUEUE_DEPTH);
 
-    let actor_mgr = match create_actor_mgr(db_handle.clone()).await {
+    let actor_mgr = match create_actor_mgr(db_handle.clone(), counters.clone()).await {
         Ok(adb) => adb,
         Err(e) => {
             error!(target: MAIN, "failed to instantiate actor database: {}", e);
@@ -268,7 +271,7 @@ async fn main() -> std::process::ExitCode {
 
     let asm = Arc::new(Assembly {
         config: cfg.clone(),
-        counters: Default::default(),
+        counters,
         system_start_time: std::time::Instant::now(),
         cc: ConnectionControl::new(),
         policy_mgr: policy_mgr,
@@ -356,10 +359,13 @@ fn load_config(explicit: Option<&std::path::Path>) -> Result<VSConfig, ServiceEr
     }
 }
 
-async fn create_actor_mgr(dbh: Arc<dyn DbConnection>) -> Result<ActorMgr, ServiceError> {
+async fn create_actor_mgr(
+    dbh: Arc<dyn DbConnection>,
+    counters: Arc<Counters>,
+) -> Result<ActorMgr, ServiceError> {
     let adb = db::ActorRepo::new(dbh.clone());
     let ndb = db::NodeRepo::new(dbh);
-    let mgr = ActorMgr::new(adb, ndb);
+    let mgr = ActorMgr::new(adb, ndb, counters);
     Ok(mgr)
 }
 

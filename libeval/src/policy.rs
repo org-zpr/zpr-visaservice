@@ -50,6 +50,7 @@ pub struct Policy {
     bootstrap_keys: HashMap<String, PKey<Public>>,
     join_policies: Vec<JPolicy>,
     services: HashMap<String, Service>,
+    cpol_sources: Vec<String>,
     serialized: Bytes,
 }
 
@@ -72,15 +73,17 @@ impl Policy {
 
         let policy = policy_reader.get_root::<policy_capnp::policy::Reader>()?;
 
-        let bootstrap_keys = Self::load_bootstrap_keys(&Policy::default(), &policy)?;
-        let join_policies = Self::load_join_policies(&Policy::default(), &policy)?;
-        let services = Self::load_services(&Policy::default(), &policy)?;
+        let bootstrap_keys = load_bootstrap_keys(&policy)?;
+        let join_policies = load_join_policies(&policy)?;
+        let services = load_services(&policy)?;
+        let cpol_sources = load_cpol_sources(&policy)?;
 
         Ok(Policy {
             policy_rdr: Some(Arc::new(policy_reader)),
             bootstrap_keys,
             join_policies,
             services,
+            cpol_sources,
             serialized,
             ..Default::default()
         })
@@ -178,76 +181,87 @@ impl Policy {
             .collect()
     }
 
-    fn load_bootstrap_keys(
-        &self,
-        policy: &policy_capnp::policy::Reader,
-    ) -> Result<HashMap<String, PKey<Public>>, PolicyError> {
-        let mut bootstrap_keys: HashMap<String, PKey<Public>> = HashMap::new();
-        if policy.has_keys() {
-            for key in policy.get_keys()?.iter() {
-                // Only take the key if it is for bootstrap.
-                let allows = key.get_key_allows()?;
-                for allowance in allows.iter() {
-                    if let Ok(aw) = allowance {
-                        if aw == policy_capnp::KeyAllowance::Bootstrap {
-                            let cn = key.get_id()?.to_string()?;
-                            if key.get_key_type()? != policy_capnp::KeyMaterialT::RsaPub {
-                                return Err(PolicyError::InvalidFormat(format!(
-                                    "Unsupported key type in bootstrap key for cn '{cn}': {:?}",
-                                    key.get_key_type()?
-                                )));
-                            }
-                            let key_der = key.get_key_data()?;
-                            let pkey = PKey::public_key_from_der(&key_der)?;
-                            bootstrap_keys.insert(cn.to_string(), pkey);
-                        }
-                    }
-                }
-            }
-        }
-        Ok(bootstrap_keys)
+    /// Get the ZPL source for the communication policy by policy index.
+    pub fn get_cpol_source(&self, idx: usize) -> Option<&str> {
+        self.cpol_sources.get(idx).map(|s| s.as_str())
     }
+}
 
-    // Load (cache) the set of join policies found in the binary policy object.
-    fn load_join_policies(
-        &self,
-        policy: &policy_capnp::policy::Reader,
-    ) -> Result<Vec<JPolicy>, PolicyError> {
-        let mut join_policies: Vec<JPolicy> = Vec::new();
-        if policy.has_join_policies() {
-            for jp_rdr in policy.get_join_policies()?.iter() {
-                let jp = JPolicy::try_from(jp_rdr)?;
-                join_policies.push(jp);
-            }
-        }
-        Ok(join_policies)
-    }
-
-    // Load (cache) the set of services found in the binary policy object. The services are
-    // stored in binary policy as part of the join policies but our join-policy loader doesn't
-    // fully load them since it doesn't need to.
-    fn load_services(
-        &self,
-        policy: &policy_capnp::policy::Reader,
-    ) -> Result<HashMap<String, Service>, PolicyError> {
-        let mut services = HashMap::new();
-        if policy.has_join_policies() {
-            for jp_rdr in policy.get_join_policies()?.iter() {
-                if jp_rdr.has_provides() {
-                    for svc_rdr in jp_rdr.get_provides()?.iter() {
-                        let svc = Service::try_from(svc_rdr)?;
-                        if let Some(previous) = services.insert(svc.id.clone(), svc) {
+fn load_bootstrap_keys(
+    policy: &policy_capnp::policy::Reader,
+) -> Result<HashMap<String, PKey<Public>>, PolicyError> {
+    let mut bootstrap_keys: HashMap<String, PKey<Public>> = HashMap::new();
+    if policy.has_keys() {
+        for key in policy.get_keys()?.iter() {
+            // Only take the key if it is for bootstrap.
+            let allows = key.get_key_allows()?;
+            for allowance in allows.iter() {
+                if let Ok(aw) = allowance {
+                    if aw == policy_capnp::KeyAllowance::Bootstrap {
+                        let cn = key.get_id()?.to_string()?;
+                        if key.get_key_type()? != policy_capnp::KeyMaterialT::RsaPub {
                             return Err(PolicyError::InvalidFormat(format!(
-                                "duplicate service id in policy: {}",
-                                previous.id
+                                "Unsupported key type in bootstrap key for cn '{cn}': {:?}",
+                                key.get_key_type()?
                             )));
                         }
+                        let key_der = key.get_key_data()?;
+                        let pkey = PKey::public_key_from_der(&key_der)?;
+                        bootstrap_keys.insert(cn.to_string(), pkey);
                     }
                 }
             }
         }
-        Ok(services)
     }
+    Ok(bootstrap_keys)
+}
+
+// Load (cache) the set of join policies found in the binary policy object.
+fn load_join_policies(policy: &policy_capnp::policy::Reader) -> Result<Vec<JPolicy>, PolicyError> {
+    let mut join_policies: Vec<JPolicy> = Vec::new();
+    if policy.has_join_policies() {
+        for jp_rdr in policy.get_join_policies()?.iter() {
+            let jp = JPolicy::try_from(jp_rdr)?;
+            join_policies.push(jp);
+        }
+    }
+    Ok(join_policies)
+}
+
+fn load_cpol_sources(policy: &policy_capnp::policy::Reader) -> Result<Vec<String>, PolicyError> {
+    let mut cpol_sources = Vec::new();
+    if policy.has_com_policies() {
+        for cp_rdr in policy.get_com_policies()?.iter() {
+            let zpl = cp_rdr.get_zpl()?.to_string()?;
+            cpol_sources.push(zpl);
+        }
+    }
+    Ok(cpol_sources)
+}
+
+// Load (cache) the set of services found in the binary policy object. The services are
+// stored in binary policy as part of the join policies but our join-policy loader doesn't
+// fully load them since it doesn't need to.
+fn load_services(
+    policy: &policy_capnp::policy::Reader,
+) -> Result<HashMap<String, Service>, PolicyError> {
+    let mut services = HashMap::new();
+    if policy.has_join_policies() {
+        for jp_rdr in policy.get_join_policies()?.iter() {
+            if jp_rdr.has_provides() {
+                for svc_rdr in jp_rdr.get_provides()?.iter() {
+                    let svc = Service::try_from(svc_rdr)?;
+                    if let Some(previous) = services.insert(svc.id.clone(), svc) {
+                        return Err(PolicyError::InvalidFormat(format!(
+                            "duplicate service id in policy: {}",
+                            previous.id
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(services)
 }
 
 #[cfg(test)]
@@ -257,12 +271,30 @@ mod test {
     use std::env;
     use std::path::PathBuf;
 
+    use zpr::policy::v1 as policy_capnp;
+
     const MIN_COMPILER_VERSION: Version = Version(0, 9, 2);
 
     fn read_policy_from_test_file(filename: &str) -> Policy {
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
         let fpath = PathBuf::from(manifest_dir).join("test-data").join(filename);
         load_policy(&fpath, MIN_COMPILER_VERSION).unwrap()
+    }
+
+    /// Build a Policy from a list of ZPL source strings by constructing a capnp
+    /// policy message in memory, without needing a compiled policy file.
+    fn policy_with_cpol_sources(zpls: &[&str]) -> Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy = msg.init_root::<policy_capnp::policy::Builder>();
+            let mut coms = policy.reborrow().init_com_policies(zpls.len() as u32);
+            for (i, zpl) in zpls.iter().enumerate() {
+                coms.reborrow().get(i as u32).set_zpl(zpl);
+            }
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        Policy::new_from_policy_bytes(Bytes::from(bytes)).unwrap()
     }
 
     #[test]
@@ -288,5 +320,35 @@ mod test {
                 "expected to find bootstrap key for cn '{cn}'"
             );
         }
+    }
+
+    #[test]
+    /// get_cpol_source returns the expected ZPL string for known indices when the
+    /// policy contains communication policies.
+    fn test_get_cpol_source_returns_zpl_for_known_index() {
+        let zpls = ["allow all traffic.", "deny all traffic."];
+        let policy = policy_with_cpol_sources(&zpls);
+
+        assert_eq!(policy.get_cpol_source(0), Some("allow all traffic."));
+        assert_eq!(policy.get_cpol_source(1), Some("deny all traffic."));
+    }
+
+    #[test]
+    /// get_cpol_source returns None when the requested index is out of bounds.
+    fn test_get_cpol_source_out_of_bounds_returns_none() {
+        let zpls = ["allow all traffic."];
+        let policy = policy_with_cpol_sources(&zpls);
+
+        assert!(policy.get_cpol_source(1).is_none());
+        assert!(policy.get_cpol_source(99).is_none());
+    }
+
+    #[test]
+    /// get_cpol_source returns None for any index on an empty policy that has no
+    /// communication policies.
+    fn test_get_cpol_source_empty_policy_returns_none() {
+        let policy = Policy::new_empty();
+
+        assert!(policy.get_cpol_source(0).is_none());
     }
 }

@@ -24,6 +24,11 @@ pub struct VisaMgr {
     repo: db::VisaRepo,
 }
 
+pub struct VisaWithMetadata {
+    pub visa: Visa,
+    pub metadata: db::VisaMetadata,
+}
+
 impl VisaMgr {
     pub fn new(db: db::VisaRepo) -> Self {
         VisaMgr { repo: db }
@@ -143,6 +148,8 @@ impl VisaMgr {
         requesting_node: &IpAddr,
         pdesc: &PacketDesc,
         hit: &Hit,
+        source_zpl: impl Into<String>,
+        policy_version: u64,
     ) -> Result<Visa, ServiceError> {
         let expiration_time = std::time::SystemTime::now()
             .checked_add(config::DEFAULT_VISA_EXPIRATION)
@@ -198,6 +205,17 @@ impl VisaMgr {
         };
 
         let visa_id = self.repo.get_next_visa_id().await?;
+
+        let mut metadata = db::VisaMetadata::new(
+            requesting_node.clone(),
+            policy_version,
+            source_zpl.into(),
+            hit.direction,
+        );
+        if let Some(sig) = hit.signal.as_ref() {
+            metadata.signal_msgs.push(sig.message.clone());
+        }
+
         let visa = Visa {
             issuer_id: visa_id,
             config: 0,
@@ -210,7 +228,7 @@ impl VisaMgr {
         };
 
         self.repo
-            .store_visa(requesting_node, &visa, db::NodeVisaState::PendingInstall)
+            .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
             .await?;
 
         info!("created visa {visa_id}");
@@ -285,20 +303,18 @@ impl VisaMgr {
         Ok(visa_ids)
     }
 
-    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Option<Visa>, ServiceError> {
-        match self.repo.get_visa_by_id(visa_id).await {
-            Ok(visa) => Ok(Some(visa)),
-            Err(StoreError::NotFound(_)) => Ok(None),
-            Err(e) => Err(ServiceError::from(e)),
-        }
-    }
-
-    pub async fn get_visa_metadata_by_id(
+    /// Shorthand and slightly more race-condition safe way of calling `get_visa_by_id` and `get_visa_metadata_by_id`.
+    /// Returns None if either the visa or the metadata is not found.
+    pub async fn get_visa_with_metadata_by_id(
         &self,
         visa_id: u64,
-    ) -> Result<Option<db::VisaMetadata>, ServiceError> {
-        match self.repo.get_visa_metadata_by_id(visa_id).await {
-            Ok(md) => Ok(Some(md)),
+    ) -> Result<Option<VisaWithMetadata>, ServiceError> {
+        match self.repo.get_visa_by_id(visa_id).await {
+            Ok(visa) => match self.repo.get_visa_metadata_by_id(visa_id).await {
+                Ok(md) => Ok(Some(VisaWithMetadata { visa, metadata: md })),
+                Err(StoreError::NotFound(_)) => Ok(None),
+                Err(e) => Err(ServiceError::from(e)),
+            },
             Err(StoreError::NotFound(_)) => Ok(None),
             Err(e) => Err(ServiceError::from(e)),
         }
@@ -340,8 +356,11 @@ mod tests {
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(1, std::time::Duration::from_secs(60));
 
+        let metadata =
+            db::VisaMetadata::new(node_addr.clone(), 0, "zpl".to_string(), Direction::Forward);
+
         mgr.repo
-            .store_visa(&node_addr, &visa, db::NodeVisaState::Installed)
+            .store_visa(&visa, metadata, db::NodeVisaState::Installed)
             .await
             .unwrap();
 
@@ -388,9 +407,11 @@ mod tests {
         let mgr = make_mgr().await;
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(2, std::time::Duration::from_secs(60));
+        let metadata =
+            db::VisaMetadata::new(node_addr.clone(), 0, "zpl".to_string(), Direction::Forward);
 
         mgr.repo
-            .store_visa(&node_addr, &visa, db::NodeVisaState::Installed)
+            .store_visa(&visa, metadata, db::NodeVisaState::Installed)
             .await
             .unwrap();
 
@@ -416,9 +437,11 @@ mod tests {
         let mgr = make_mgr().await;
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(3, std::time::Duration::from_secs(60));
+        let metadata =
+            db::VisaMetadata::new(node_addr.clone(), 0, "zpl".to_string(), Direction::Forward);
 
         mgr.repo
-            .store_visa(&node_addr, &visa, db::NodeVisaState::PendingInstall)
+            .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
             .await
             .unwrap();
 

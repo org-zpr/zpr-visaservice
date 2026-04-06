@@ -17,7 +17,7 @@ use crate::vss_mgr::VssMgr;
 #[allow(dead_code)]
 pub struct Assembly {
     pub config: VSConfig,
-    pub counters: Counters,
+    pub counters: Arc<Counters>,
     pub system_start_time: std::time::Instant,
     pub cc: ConnectionControl,
     pub policy_mgr: PolicyMgr,
@@ -99,18 +99,20 @@ pub mod tests {
         let node_repo = NodeRepo::new(db_handle.clone());
         let visa_repo = VisaRepo::new(db_handle.clone(), 1).await.unwrap();
 
+        let counters: Arc<Counters> = Arc::new(Default::default());
+
         let (event_tx, _event_rx) = mpsc::channel(100);
         // TODO: Start event manager worker?
 
         Assembly {
             config: VSConfig::default(),
-            counters: Default::default(),
+            counters: counters.clone(),
             system_start_time: std::time::Instant::now(),
             cc: ConnectionControl::new(),
             policy_mgr: PolicyMgr::new_with_initial_policy(initial_policy, policy_repo)
                 .await
                 .expect("failed to initialize PolicyMgr"),
-            actor_mgr: Arc::new(ActorMgr::new(actor_repo, node_repo)),
+            actor_mgr: Arc::new(ActorMgr::new(actor_repo, node_repo, counters)),
             state_db: db_handle,
             vreq_chan: vreq_tx,
             visa_mgr: VisaMgr::new(visa_repo),

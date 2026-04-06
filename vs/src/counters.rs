@@ -1,22 +1,55 @@
 //! Counters: Track various interesting events in the visa service operations.
-
+use dashmap::DashMap;
 use enum_map::{Enum, EnumMap};
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
 pub struct Counters {
     pub counters: EnumMap<CounterType, Counter>,
+    per_node_counters: DashMap<IpAddr, NodeInfo>,
 }
 
 pub struct Counter {
     value: AtomicU64,
 }
 
+#[derive(Default)]
+pub struct NodeInfo {
+    counters: EnumMap<CounterType, Counter>,
+    last_visa_req: Option<std::time::SystemTime>,
+}
+
 impl Counters {
     /// Shorthand for `Counters::counters[<TYPE>].increment()`.
     pub fn incr(&self, c: CounterType) {
         self.counters[c].increment();
+    }
+
+    pub fn incr_node(&self, c: CounterType, node: &IpAddr) {
+        self.per_node_counters.entry(*node).or_default().counters[c].increment();
+    }
+
+    pub fn remove_node_info(&self, node: &IpAddr) {
+        self.per_node_counters.remove(node);
+    }
+
+    pub fn update_request_time(&self, node: &IpAddr) {
+        self.per_node_counters
+            .entry(*node)
+            .or_default()
+            .last_visa_req = Some(std::time::SystemTime::now());
+    }
+
+    #[allow(dead_code)]
+    // Returning None could mean either there is no matching node, OR the node has never had
+    // a visa request
+    pub fn get_last_request_time(&self, node: &IpAddr) -> Option<std::time::SystemTime> {
+        match self.per_node_counters.get(node) {
+            Some(node_info) => node_info.last_visa_req,
+            None => None,
+        }
     }
 }
 
