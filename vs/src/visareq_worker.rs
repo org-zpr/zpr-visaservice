@@ -289,7 +289,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
     let dest_actor = dest_actor.unwrap();
 
     let policy = asm.policy_mgr.get_current();
-    let ctx = EvalContext::new(policy);
+    let ctx = EvalContext::new(policy.clone());
     let decision = match ctx.eval_request(&source_actor, &dest_actor, &job.packet_desc) {
         Ok(decision) => decision,
         Err(e) => {
@@ -311,10 +311,22 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             Ok(VisaDecision::Deny(DenyCode::NoMatch))
         }
         EvalDecision::Allow(hits) => {
+            debug_assert!(!hits.is_empty(), "allow decision with no hits"); // should never happen.
+            let policy_version = policy.get_version().unwrap_or(0);
             // TODO: For now we pick the first hit.
+            let zpl = policy
+                .get_cpol_source(hits[0].match_idx)
+                .unwrap_or("")
+                .to_string();
             match asm
                 .visa_mgr
-                .create_visa(&job.requesting_node, &job.packet_desc, &hits[0])
+                .create_visa(
+                    &job.requesting_node,
+                    &job.packet_desc,
+                    &hits[0],
+                    zpl,
+                    policy_version,
+                )
                 .await
             {
                 Ok(visa) => Ok(VisaDecision::Allow(visa)),
