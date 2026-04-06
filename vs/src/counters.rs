@@ -35,6 +35,13 @@ impl Counters {
         self.per_node_counters.remove(node);
     }
 
+    pub fn get_node_counter(&self, node: &IpAddr, c: CounterType) -> Option<u64> {
+        match self.per_node_counters.get(node) {
+            Some(node_info) => Some(node_info.value().counters[c].get_count()),
+            None => None,
+        }
+    }
+
     pub fn update_request_time(&self, node: &IpAddr) {
         self.per_node_counters
             .entry(*node)
