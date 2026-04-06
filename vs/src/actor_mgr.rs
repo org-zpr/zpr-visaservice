@@ -776,10 +776,7 @@ mod test {
             .unwrap();
         cns.sort();
         assert_eq!(cns.len(), 3);
-        assert_eq!(
-            cns,
-            vec!["adapter-1", "adapter-2", "adapter-3"]
-        );
+        assert_eq!(cns, vec!["adapter-1", "adapter-2", "adapter-3"]);
     }
 
     #[tokio::test]
