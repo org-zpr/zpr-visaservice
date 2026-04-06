@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use tracing::{debug, error, warn};
 
 use ::zpr::vsapi::v1 as vsapi;
-use libeval::eval::Direction;
+use libeval::eval_result::Direction;
 use zpr::vsapi_types::Visa;
 use zpr::write_to::WriteTo;
 

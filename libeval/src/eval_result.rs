@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::route::{Route, RouteResidualEvaluator};
@@ -54,7 +54,7 @@ pub struct Signal {
     pub service: String,
 }
 
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum Direction {
     Forward,
     Reverse,
