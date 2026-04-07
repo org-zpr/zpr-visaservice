@@ -413,7 +413,7 @@ async fn get_actor(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    match state.read().await.asm.actor_mgr.get_actor_by_cn(&cn).await {
+    match rstate.asm.actor_mgr.get_actor_by_cn(&cn).await {
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
         Ok(opt_a) => match opt_a {
             None => Err(StatusCode::NOT_FOUND),
