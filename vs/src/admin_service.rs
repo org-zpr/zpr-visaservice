@@ -486,8 +486,8 @@ async fn build_node_record_brief(
         .get_node_counter(zpr_addr, CounterType::VisaRequestsDenied)
         .unwrap_or(0);
     let last_vreq = match counters.get_last_request_time(zpr_addr) {
-        Some(st) => st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64,
-        None => 0,
+        Some(st) => Some(st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64),
+        None => None,
     };
     let adapters = actor_mgr
         .get_adapter_cns_connected_to_node(zpr_addr)
@@ -517,7 +517,7 @@ async fn build_node_record_brief(
 
     Ok(NodeRecordBrief {
         pending_install,
-        last_contact: 0, // TODO don't think we currently store last contact
+        last_contact: None, // TODO don't think we currently store last contact
         visa_requests,
         connect_requests: 0, // TODO blocked on tracking calls to authorize_connect
         in_sync,

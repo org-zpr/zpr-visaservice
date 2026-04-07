@@ -331,7 +331,7 @@ pub struct NodeRecordBrief {
     // Number of visas pending install on the node
     pub pending_install: u32,
     // Last time node was contacted by the visa service, 0 if there was no contact
-    pub last_contact: i64, // unix SECONDS
+    pub last_contact: Option<i64>, // unix SECONDS
     // Number of visa requests on the node
     pub visa_requests: u64,
     // Number of calls to authorize_connect by the node
@@ -343,7 +343,7 @@ pub struct NodeRecordBrief {
     // Denied visa requests
     pub denied_vreqs: u64,
     // Time of last visa request, 0 if there was no request
-    pub last_vreq: i64, // unix SECONDS
+    pub last_vreq: Option<i64>, // unix SECONDS
     // CNs of all adapters connected to the node
     pub adapters: Vec<String>,
     // CNs of all other nodes connected to the node
@@ -352,15 +352,22 @@ pub struct NodeRecordBrief {
     pub visas: Vec<u64>,
     // IDs of all pending visas on the node
     pub visas_enqueued: Vec<u64>,
-    // Number of
+    // Number of visas pending revocation on the node
     pub pending_revocation: u32,
+    // Port of the VSS the node is connected to
     pub vss_port: Option<u16>,
 }
 
 impl fmt::Display for NodeRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let last_contact = DateTime::from_timestamp(self.last_contact, 0).unwrap();
-        let last_vreq = DateTime::from_timestamp(self.last_vreq, 0).unwrap();
+        let last_contact = match self.last_contact {
+            Some(lc) => Some(DateTime::from_timestamp(lc, 0).unwrap()),
+            None => None,
+        };
+        let last_vreq = match self.last_vreq {
+            Some(lr) => Some(DateTime::from_timestamp(lr, 0).unwrap()),
+            None => None,
+        };
 
         write!(
             f,
@@ -378,12 +385,9 @@ impl fmt::Display for NodeRecordBrief {
             format!(
                 "{} {}",
                 "last_contact:".dimmed(),
-                if self.last_contact == 0 {
-                    "never".to_string().red()
-                } else {
-                    last_contact
-                        .to_rfc3339_opts(SecondsFormat::Secs, true)
-                        .cyan()
+                match last_contact {
+                    Some(lc) => lc.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                    None => "never".to_string().red(),
                 }
             ),
             // '[vreqs: VAL' (vreqs_appr: VAL | vreqs_den: VAL) | vinstalled: [VAL, VAL, VAL] | venqueued: [VAL, VAL]]'
@@ -413,10 +417,9 @@ impl fmt::Display for NodeRecordBrief {
             format!(
                 "{} {}",
                 "last_request:".dimmed(),
-                if self.last_vreq == 0 {
-                    "never".to_string().red()
-                } else {
-                    last_vreq.to_rfc3339_opts(SecondsFormat::Secs, true).cyan()
+                match last_vreq {
+                    Some(lr) => lr.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                    None => "never".to_string().red(),
                 }
             ),
             // [creqs: VAL | adapters: [VAL, VAL, VAL] | nodes: [VAL, VAL]]
