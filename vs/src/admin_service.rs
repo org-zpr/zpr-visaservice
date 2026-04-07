@@ -408,12 +408,14 @@ async fn get_actor(
 ) -> Result<Json<ActorDescriptor>, StatusCode> {
     debug!(target: ADMIN, "GET /admin/actor/{}", cn);
     let rstate = state.read().await;
+    let asm = rstate.asm.clone();
+    drop(rstate);
 
     if !perm.can_read() {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    match rstate.asm.actor_mgr.get_actor_by_cn(&cn).await {
+    match asm.actor_mgr.get_actor_by_cn(&cn).await {
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
         Ok(opt_a) => match opt_a {
             None => Err(StatusCode::NOT_FOUND),
@@ -440,7 +442,7 @@ async fn get_actor(
                 };
 
                 let node_details = match is_node {
-                    true => Some(build_node_record_brief(rstate, actor).await?),
+                    true => Some(build_node_record_brief(&asm, actor).await?),
                     false => None,
                 };
 
@@ -459,40 +461,33 @@ async fn get_actor(
 }
 
 async fn build_node_record_brief(
-    rstate: tokio::sync::RwLockReadGuard<'_, AdminState>,
+    asm: &Assembly,
     actor: libeval::actor::Actor,
 ) -> Result<NodeRecordBrief, StatusCode> {
-    let counters = rstate.asm.counters.clone();
-    let actor_mgr = rstate.asm.actor_mgr.clone();
-    let visa_mgr = &rstate.asm.visa_mgr;
+    let counters = asm.counters.clone();
+    let actor_mgr = asm.actor_mgr.clone();
+    let visa_mgr = &asm.visa_mgr;
 
     let zpr_addr = match actor.get_zpr_addr() {
         Some(addr) => addr,
         None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
-    let pending = visa_mgr
-        .get_pending_visas_for_node(zpr_addr)
+    let pending_install = visa_mgr
+        .get_num_pending_install_visas(zpr_addr)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .len() as u32;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let visa_requests = counters
         .get_node_counter(zpr_addr, CounterType::VisaRequests)
         .unwrap_or(0);
-    let connect_requests = counters
-        .get_node_counter(zpr_addr, CounterType::NodeConnectionsFailed)
-        .unwrap_or(0)
-        + counters
-            .get_node_counter(zpr_addr, CounterType::NodeConnectionsSuccess)
-            .unwrap_or(0);
     let approved_vreqs = counters
         .get_node_counter(zpr_addr, CounterType::VisaRequestsApproved)
         .unwrap_or(0);
     let denied_vreqs = counters
         .get_node_counter(zpr_addr, CounterType::VisaRequestsDenied)
         .unwrap_or(0);
-    let last_vreq = match rstate.asm.counters.get_last_request_time(zpr_addr) {
-        Some(st) => Some(st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64),
-        None => None,
+    let last_vreq = match counters.get_last_request_time(zpr_addr) {
+        Some(st) => st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64,
+        None => 0,
     };
     let adapters = actor_mgr
         .get_adapter_cns_connected_to_node(zpr_addr)
@@ -507,8 +502,8 @@ async fn build_node_record_brief(
         .get_pending_visa_ids_for_node(zpr_addr)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let revocations_enqueued_count = visa_mgr
-        .num_pending_revokes(zpr_addr)
+    let pending_revocation = visa_mgr
+        .get_num_pending_revoked_visas(zpr_addr)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let (vss_port, in_sync) = match actor_mgr
@@ -521,10 +516,10 @@ async fn build_node_record_brief(
     };
 
     Ok(NodeRecordBrief {
-        pending,
-        last_contact: Some(0), // TODO don't think we currently store last contact
+        pending_install,
+        last_contact: 0, // TODO don't think we currently store last contact
         visa_requests,
-        connect_requests,
+        connect_requests: 0, // TODO blocked on tracking calls to authorize_connect
         in_sync,
         approved_vreqs,
         denied_vreqs,
@@ -533,7 +528,7 @@ async fn build_node_record_brief(
         links: Vec::new(), // TODO blocked on multi-node support
         visas,
         visas_enqueued,
-        revocations_enqueued_count,
+        pending_revocation,
         vss_port,
     })
 }

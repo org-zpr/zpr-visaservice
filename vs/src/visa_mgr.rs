@@ -250,44 +250,44 @@ impl VisaMgr {
         &self,
         node_addr: &IpAddr,
     ) -> Result<Vec<u64>, ServiceError> {
-        Ok(self
-            .get_pending_visas_for_node(node_addr)
-            .await?
-            .iter()
-            .map(|v| v.issuer_id)
-            .collect())
-    }
-
-    pub async fn get_installed_visas_for_node(
-        &self,
-        node_addr: &IpAddr,
-    ) -> Result<Vec<Visa>, ServiceError> {
-        let visas = self
+        let visa_ids = self
             .repo
-            .get_visas_for_node_by_state(node_addr, db::NodeVisaState::Installed)
+            .get_visa_ids_for_node_by_state(node_addr, db::NodeVisaState::PendingInstall)
             .await?;
-        Ok(visas)
+        Ok(visa_ids)
     }
 
     pub async fn get_installed_visa_ids_for_node(
         &self,
         node_addr: &IpAddr,
     ) -> Result<Vec<u64>, ServiceError> {
-        Ok(self
-            .get_installed_visas_for_node(node_addr)
-            .await?
-            .iter()
-            .map(|v| v.issuer_id)
-            .collect())
+        let visa_ids = self
+            .repo
+            .get_visa_ids_for_node_by_state(node_addr, db::NodeVisaState::Installed)
+            .await?;
+        Ok(visa_ids)
     }
 
-    pub async fn num_pending_revokes(&self, node_addr: &IpAddr) -> Result<u64, ServiceError> {
+    pub async fn get_num_pending_install_visas(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<u32, ServiceError> {
         let pending_revokes = self
             .repo
-            .get_visas_for_node_by_state(node_addr, db::NodeVisaState::PendingRevoke)
-            .await?
-            .len();
-        Ok(pending_revokes as u64)
+            .get_count_visas_for_node_by_state(node_addr, db::NodeVisaState::PendingInstall)
+            .await?;
+        Ok(pending_revokes)
+    }
+
+    pub async fn get_num_pending_revoked_visas(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<u32, ServiceError> {
+        let pending_revokes = self
+            .repo
+            .get_count_visas_for_node_by_state(node_addr, db::NodeVisaState::PendingRevoke)
+            .await?;
+        Ok(pending_revokes)
     }
 
     /// Register that visa `visa_id` has been installed on node at ZPR address `node_addr`.
