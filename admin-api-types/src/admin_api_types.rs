@@ -1,5 +1,6 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use colored::{Color, Colorize};
+use libeval::attribute::Attribute;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -190,6 +191,8 @@ pub struct ActorDescriptor {
     pub ident: String,
     pub node: bool,
     pub zpr_addr: String,
+    pub attrs: Vec<Attribute>,
+    pub auth_exp: Option<u64>, // seconds since epoch
     pub node_details: Option<NodeRecordBrief>,
 }
 

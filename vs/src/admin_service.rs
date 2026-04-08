@@ -441,6 +441,13 @@ async fn get_actor(
                     None => "".to_string(),
                 };
 
+                let attrs = actor.get_all_attrs();
+
+                let auth_exp = match actor.get_authentication_expiration() {
+                    Some(st) => Some(st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()),
+                    None => None,
+                };
+
                 let node_details = match is_node {
                     true => Some(build_node_record_brief(&asm, actor).await?),
                     false => None,
@@ -452,6 +459,8 @@ async fn get_actor(
                     ident,
                     node: is_node,
                     zpr_addr: zpr_addr_str,
+                    attrs,
+                    auth_exp,
                     node_details,
                 };
                 return Ok(Json(descriptor));

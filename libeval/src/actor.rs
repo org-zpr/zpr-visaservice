@@ -154,6 +154,10 @@ impl Actor {
         self.provider
     }
 
+    pub fn get_all_attrs(&self) -> Vec<Attribute> {
+        self.attrs.clone()
+    }
+
     pub fn is_node(&self) -> bool {
         matches!(self.role, Role::Node)
     }
