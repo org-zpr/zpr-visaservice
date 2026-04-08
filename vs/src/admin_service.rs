@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use libeval::attribute::{ROLE_NODE, key};
+use libeval::attribute::{Attribute, ROLE_NODE, key};
 use tracing::{debug, error, info, warn};
 
 use axum::{
@@ -441,7 +441,7 @@ async fn get_actor(
                     None => "".to_string(),
                 };
 
-                let attrs = actor.attrs_iter().map(|a| ApiAttribute::from(a)).collect();
+                let attrs = actor.attrs_iter().map(|a| to_api_attribute(a)).collect();
 
                 let auth_exp = match actor.get_authentication_expiration() {
                     Some(st) => Some(
@@ -649,6 +649,14 @@ async fn add_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
 
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
+}
+
+fn to_api_attribute(attr: &Attribute) -> ApiAttribute {
+    ApiAttribute {
+        key: attr.get_key().to_string(),
+        value: attr.get_value().to_vec(),
+        expires_at: attr.get_expires(),
+    }
 }
 
 #[cfg(test)]

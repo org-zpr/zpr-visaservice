@@ -200,16 +200,6 @@ impl Attribute {
     }
 }
 
-impl From<&Attribute> for ApiAttribute {
-    fn from(attr: &Attribute) -> Self {
-        Self {
-            key: attr.get_key().to_string(),
-            value: attr.get_value().to_vec(),
-            expires_at: attr.get_expires(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
