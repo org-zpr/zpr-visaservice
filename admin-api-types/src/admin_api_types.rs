@@ -159,18 +159,13 @@ impl fmt::Display for VisaDescriptor {
         if !self.signals.is_empty() {
             write!(f, "  {} [{}]", "signals".dimmed(), self.signals.join(", "))?;
         }
-        write!(
-            f,
-            "{} {}",
-            "session_key ".dimmed(),
-            self.session_key,
-        )?;
+        write!(f, "{} {}", "session_key ".dimmed(), self.session_key,)?;
 
         Ok(())
     }
 }
 
-// intentionally match the zpr::vsapi_types KeySet and KeyFormat, but 
+// intentionally match the zpr::vsapi_types KeySet and KeyFormat, but
 // reproduced here to prevent coupling of the API types from the internal types
 #[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ApiKeySet {
@@ -183,13 +178,13 @@ pub struct ApiKeySet {
     pub egress_key: Vec<u8>,
 }
 
-// Due to encryption, didn't want to leak too much information in the display, 
+// Due to encryption, didn't want to leak too much information in the display,
 // so only have the length of the keys
 impl fmt::Display for ApiKeySet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "[format: {}] [ingress_key: {}B] [egress_key: {}B)",
+            "[format: {}] [ingress_key: {}B] [egress_key: {}B]",
             self.format,
             self.ingress_key.len(),
             self.egress_key.len()
@@ -211,10 +206,10 @@ impl fmt::Display for ApiKeyFormat {
     }
 }
 
-// Allows ingress_key and egress_key to be serialized as b64 encoded text, not as 
+// Allows ingress_key and egress_key to be serialized as b64 encoded text, not as
 // vectors, which would be more unwieldy
 mod base64_serde {
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(bytes: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
