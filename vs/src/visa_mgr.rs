@@ -246,6 +246,50 @@ impl VisaMgr {
         Ok(visas)
     }
 
+    pub async fn get_pending_visa_ids_for_node(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<Vec<u64>, ServiceError> {
+        let visa_ids = self
+            .repo
+            .get_visa_ids_for_node_by_state(node_addr, db::NodeVisaState::PendingInstall)
+            .await?;
+        Ok(visa_ids)
+    }
+
+    pub async fn get_installed_visa_ids_for_node(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<Vec<u64>, ServiceError> {
+        let visa_ids = self
+            .repo
+            .get_visa_ids_for_node_by_state(node_addr, db::NodeVisaState::Installed)
+            .await?;
+        Ok(visa_ids)
+    }
+
+    pub async fn get_num_pending_install_visas(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<u32, ServiceError> {
+        let pending_revokes = self
+            .repo
+            .get_count_visas_for_node_by_state(node_addr, db::NodeVisaState::PendingInstall)
+            .await?;
+        Ok(pending_revokes)
+    }
+
+    pub async fn get_num_pending_revoked_visas(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<u32, ServiceError> {
+        let pending_revokes = self
+            .repo
+            .get_count_visas_for_node_by_state(node_addr, db::NodeVisaState::PendingRevoke)
+            .await?;
+        Ok(pending_revokes)
+    }
+
     /// Register that visa `visa_id` has been installed on node at ZPR address `node_addr`.
     pub async fn visa_installed(
         &self,

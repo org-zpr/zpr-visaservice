@@ -319,6 +319,64 @@ impl VisaRepo {
         Ok(visas)
     }
 
+    /// Get the visa IDs for a node filtered by state, without loading the visa blobs.
+    pub async fn get_visa_ids_for_node_by_state(
+        &self,
+        node_addr: &IpAddr,
+        state: NodeVisaState,
+    ) -> Result<Vec<u64>, StoreError> {
+        let zaddr = ZAddr::from(node_addr);
+        let mut visa_ids = Vec::new();
+
+        let vkeys = self
+            .db
+            .scan_match_all(format!("{KEY_NODEVISA}:{zaddr}:*"))
+            .await?;
+
+        for key in &vkeys {
+            let state_str: String = self.db.hget(key, "state").await?.unwrap_or_default();
+            let entry_state: NodeVisaState = serde_json::from_str(&state_str)?;
+            if entry_state == state {
+                let parts: Vec<&str> = key.rsplitn(2, ':').collect();
+                if parts.len() != 2 {
+                    warn!(target: DB, "malformed nodevisa key: {}", key);
+                    continue;
+                }
+                let visa_id: u64 = parts[0].parse().map_err(|_| {
+                    StoreError::InvalidData(format!("invalid visa ID in nodevisa key: {}", key))
+                })?;
+                visa_ids.push(visa_id);
+            }
+        }
+
+        Ok(visa_ids)
+    }
+
+    /// Count the number of visas for a node that are in the given state.
+    pub async fn get_count_visas_for_node_by_state(
+        &self,
+        node_addr: &IpAddr,
+        state: NodeVisaState,
+    ) -> Result<u32, StoreError> {
+        let zaddr = ZAddr::from(node_addr);
+        let mut count = 0;
+
+        let vkeys = self
+            .db
+            .scan_match_all(format!("{KEY_NODEVISA}:{zaddr}:*"))
+            .await?;
+
+        for key in &vkeys {
+            let state_str: String = self.db.hget(key, "state").await?.unwrap_or_default();
+            let entry_state: NodeVisaState = serde_json::from_str(&state_str)?;
+            if entry_state == state {
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
+
     /// Get the visa by ID.
     ///
     /// ## Errors
@@ -725,5 +783,49 @@ mod test {
             let decoded: VisaMetadata = serde_json::from_str(&json).unwrap();
             assert_eq!(decoded.direction, direction);
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_visa_ids_for_node_by_state_filters_correctly() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db, 1).await.unwrap();
+        let node_addr: IpAddr = "fd5a:5052::20".parse().unwrap();
+
+        let visa_a = make_visa(10, Duration::from_secs(60));
+        let visa_b = make_visa(11, Duration::from_secs(60));
+
+        let metadata_a = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa_a, metadata_a, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        let metadata_b = VisaMetadata::new(node_addr, 0, String::new(), Direction::Forward);
+        repo.store_visa(&visa_b, metadata_b, NodeVisaState::Installed)
+            .await
+            .unwrap();
+
+        let pending_ids = repo
+            .get_visa_ids_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        let pending_len = repo
+            .get_count_visas_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        assert_eq!(pending_len, 1);
+        assert_eq!(pending_ids.len(), 1);
+        assert_eq!(pending_ids[0], 10);
+
+        let installed_ids = repo
+            .get_visa_ids_for_node_by_state(&node_addr, NodeVisaState::Installed)
+            .await
+            .unwrap();
+        let installed_len = repo
+            .get_count_visas_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        assert_eq!(installed_len, 1);
+        assert_eq!(installed_ids.len(), 1);
+        assert_eq!(installed_ids[0], 11);
     }
 }

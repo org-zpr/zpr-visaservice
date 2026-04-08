@@ -30,18 +30,20 @@ use zpr::vsapi_types::{DockPep, Visa};
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
 use serde::Deserialize;
+use std::time::SystemTime;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 use crate::admin_apikeys::Permission;
 use crate::apikey::ApiKey;
 use crate::assembly::Assembly;
+use crate::counters::CounterType;
 use crate::db::Role;
 use crate::logging::targets::ADMIN;
 
 use admin_api_types::{
-    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry, PolicyBundle,
-    Revokes, ServiceDescriptor, VisaDescriptor,
+    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry, NodeRecordBrief,
+    PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.
@@ -406,12 +408,14 @@ async fn get_actor(
 ) -> Result<Json<ActorDescriptor>, StatusCode> {
     debug!(target: ADMIN, "GET /admin/actor/{}", cn);
     let rstate = state.read().await;
+    let asm = rstate.asm.clone();
+    drop(rstate);
 
     if !perm.can_read() {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    match rstate.asm.actor_mgr.get_actor_by_cn(&cn).await {
+    match asm.actor_mgr.get_actor_by_cn(&cn).await {
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
         Ok(opt_a) => match opt_a {
             None => Err(StatusCode::NOT_FOUND),
@@ -437,18 +441,96 @@ async fn get_actor(
                     None => "".to_string(),
                 };
 
+                let node_details = match is_node {
+                    true => Some(build_node_record_brief(&asm, actor).await?),
+                    false => None,
+                };
+
                 let descriptor = ActorDescriptor {
                     cn: cn.clone(),
                     ctime_secs: 0, // TODO: Not tracked yet
                     ident,
                     node: is_node,
                     zpr_addr: zpr_addr_str,
-                    node_details: None, // TODO
+                    node_details,
                 };
                 return Ok(Json(descriptor));
             }
         },
     }
+}
+
+async fn build_node_record_brief(
+    asm: &Assembly,
+    actor: libeval::actor::Actor,
+) -> Result<NodeRecordBrief, StatusCode> {
+    let counters = asm.counters.clone();
+    let actor_mgr = asm.actor_mgr.clone();
+    let visa_mgr = &asm.visa_mgr;
+
+    let zpr_addr = match actor.get_zpr_addr() {
+        Some(addr) => addr,
+        None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    let pending_install = visa_mgr
+        .get_num_pending_install_visas(zpr_addr)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let visa_requests = counters
+        .get_node_counter(zpr_addr, CounterType::VisaRequests)
+        .unwrap_or(0);
+    let approved_vreqs = counters
+        .get_node_counter(zpr_addr, CounterType::VisaRequestsApproved)
+        .unwrap_or(0);
+    let denied_vreqs = counters
+        .get_node_counter(zpr_addr, CounterType::VisaRequestsDenied)
+        .unwrap_or(0);
+    let last_vreq = match counters.get_last_request_time(zpr_addr) {
+        Some(st) => Some(st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64),
+        None => None,
+    };
+    let adapters = actor_mgr
+        .get_adapter_cns_connected_to_node(zpr_addr)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // TODO I don't think we have connected nodes yet, since we don't yet have multi-node
+    let visas = visa_mgr
+        .get_installed_visa_ids_for_node(zpr_addr)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let visas_enqueued = visa_mgr
+        .get_pending_visa_ids_for_node(zpr_addr)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let pending_revocation = visa_mgr
+        .get_num_pending_revoked_visas(zpr_addr)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (vss_port, in_sync) = match actor_mgr
+        .get_node_vss(zpr_addr)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        Some(socket_addr) => (Some(socket_addr.port()), true),
+        None => (None, false),
+    };
+
+    Ok(NodeRecordBrief {
+        pending_install,
+        last_contact: None, // TODO don't think we currently store last contact
+        visa_requests,
+        connect_requests: 0, // TODO blocked on tracking calls to authorize_connect
+        in_sync,
+        approved_vreqs,
+        denied_vreqs,
+        last_vreq,
+        adapters,
+        links: Vec::new(), // TODO blocked on multi-node support
+        visas,
+        visas_enqueued,
+        pending_revocation,
+        vss_port,
+    })
 }
 
 async fn revoke_actor(EPath(cn): EPath<String>) -> impl IntoResponse {

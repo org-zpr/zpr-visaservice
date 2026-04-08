@@ -328,20 +328,34 @@ impl fmt::Display for HostRecordBrief {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeRecordBrief {
-    pub pending: u32,
+    // Number of visas pending install on the node
+    pub pending_install: u32,
+    // Last time node was contacted by the visa service, 0 if there was no contact
     pub last_contact: Option<i64>, // unix SECONDS
+    // Number of visa requests on the node
     pub visa_requests: u64,
+    // Number of calls to authorize_connect by the node
     pub connect_requests: u64,
+    // If the node is connected to the vss
     pub in_sync: bool,
-    pub approved_reqs: u64,
-    pub denied_reqs: u64,
-    pub last_request: Option<i64>, // unix SECONDS
+    // Approved visa requests
+    pub approved_vreqs: u64,
+    // Denied visa requests
+    pub denied_vreqs: u64,
+    // Time of last visa request, 0 if there was no request
+    pub last_vreq: Option<i64>, // unix SECONDS
+    // CNs of all adapters connected to the node
     pub adapters: Vec<String>,
+    // CNs of all other nodes connected to the node
     pub links: Vec<String>,
-    pub visas: Vec<String>,
-    pub visas_enqueued: Vec<String>,
-    pub revocations_enqueued_count: u64,
-    pub vss_port: u16,
+    // IDs of all visas installed on the node
+    pub visas: Vec<u64>,
+    // IDs of all pending visas on the node
+    pub visas_enqueued: Vec<u64>,
+    // Number of visas pending revocation on the node
+    pub pending_revocation: u32,
+    // Port of the VSS the node is connected to
+    pub vss_port: Option<u16>,
 }
 
 impl fmt::Display for NodeRecordBrief {
@@ -350,7 +364,7 @@ impl fmt::Display for NodeRecordBrief {
             Some(lc) => Some(DateTime::from_timestamp(lc, 0).unwrap()),
             None => None,
         };
-        let last_request = match self.last_request {
+        let last_vreq = match self.last_vreq {
             Some(lr) => Some(DateTime::from_timestamp(lr, 0).unwrap()),
             None => None,
         };
@@ -358,7 +372,7 @@ impl fmt::Display for NodeRecordBrief {
         write!(
             f,
             "{} {} {} {} {} {} {} {}",
-            format!("{}{}", "pending:".dimmed(), self.pending),
+            format!("{}{}", "pending installs:".dimmed(), self.pending_install),
             format!(
                 "{}{}",
                 "SYNC:".dimmed(),
@@ -384,10 +398,10 @@ impl fmt::Display for NodeRecordBrief {
                     "[vreqs:".dimmed(),
                     self.visa_requests,
                     "(vreqs_appr".dimmed(),
-                    self.approved_reqs,
+                    self.approved_vreqs,
                     "|".dimmed(),
                     "vreqs_den".dimmed(),
-                    self.denied_reqs,
+                    self.denied_vreqs,
                     ")"
                 ),
                 "|".dimmed(),
@@ -403,7 +417,7 @@ impl fmt::Display for NodeRecordBrief {
             format!(
                 "{} {}",
                 "last_request:".dimmed(),
-                match last_request {
+                match last_vreq {
                     Some(lr) => lr.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
                     None => "never".to_string().red(),
                 }
@@ -419,10 +433,17 @@ impl fmt::Display for NodeRecordBrief {
             ),
             format!(
                 "{}{}",
-                "revocations_enqueued:".dimmed(),
-                self.revocations_enqueued_count
+                "pending revocations:".dimmed(),
+                self.pending_revocation
             ),
-            format!("{}{}", "vss_port:".dimmed(), self.vss_port),
+            format!(
+                "{}{}",
+                "vss_port:".dimmed(),
+                match self.vss_port {
+                    Some(port) => port.to_string(),
+                    None => "no vss".to_string(),
+                }
+            ),
         )
     }
 }
