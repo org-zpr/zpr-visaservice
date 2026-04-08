@@ -252,7 +252,7 @@ impl fmt::Display for ActorDescriptor {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[allow(dead_code)]
 pub struct ApiAttribute {
     pub key: String,
