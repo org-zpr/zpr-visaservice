@@ -217,9 +217,14 @@ impl PartialOrd for ActorDescriptor {
 impl fmt::Display for ActorDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let ts: DateTime<Utc> = DateTime::from_timestamp(self.ctime_secs as i64, 0).unwrap();
+        let auth_exp = match self.auth_exp {
+            Some(ae) => Some(DateTime::from_timestamp(ae as i64, 0).unwrap()),
+            None => None,
+        };
+
         write!(
             f,
-            "{} {}{}{} @ {} {}{} {}{} {}",
+            "{} {}{}{} @ {} {}{} {}{} {}{:?} {}{} {}",
             self.cn,
             "(created: ".dimmed(),
             ts.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
@@ -229,10 +234,16 @@ impl fmt::Display for ActorDescriptor {
             self.ident,
             "is node: ".dimmed(),
             self.node,
-            if self.node_details.is_some() {
-                "[has node details]".green()
-            } else {
-                "".normal()
+            "attributes: ".dimmed(),
+            self.attrs,
+            "auth exp: ".dimmed(),
+            match auth_exp {
+                Some(ae) => ae.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                None => "No auth".to_string().red(),
+            },
+            match &self.node_details {
+                Some(nd) => format!("{} {} {}", "[Node Details".green(), nd, "]".green()),
+                None => "".normal().to_string(),
             },
         )
     }
