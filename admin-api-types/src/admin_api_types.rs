@@ -87,6 +87,7 @@ pub struct VisaDescriptor {
     pub dest_port: u16,
     pub proto: String,
     pub signals: Vec<String>,
+    pub session_key: ApiKeySet,
 }
 
 impl PartialEq for VisaDescriptor {
@@ -161,6 +162,21 @@ impl fmt::Display for VisaDescriptor {
 
         Ok(())
     }
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ApiKeySet {
+    pub format: ApiKeyFormat,
+    /// session key encrypted for ingress node to read
+    pub ingress_key: Vec<u8>,
+    /// session key encrypted for egress node to read
+    pub egress_key: Vec<u8>,
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub enum ApiKeyFormat {
+    #[default]
+    ZprKF01,
 }
 
 #[derive(Serialize, Deserialize)]
