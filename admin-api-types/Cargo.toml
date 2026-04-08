@@ -8,5 +8,4 @@ chrono.workspace = true
 colored.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-libeval = { path = "../libeval" }
 

@@ -42,8 +42,8 @@ use crate::db::Role;
 use crate::logging::targets::ADMIN;
 
 use admin_api_types::{
-    ActorDescriptor, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry, NodeRecordBrief,
-    PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor,
+    ActorDescriptor, ApiAttribute, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry,
+    NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.
@@ -441,10 +441,14 @@ async fn get_actor(
                     None => "".to_string(),
                 };
 
-                let attrs = actor.get_all_attrs();
+                let attrs = actor.attrs_iter().map(|a| ApiAttribute::from(a)).collect();
 
                 let auth_exp = match actor.get_authentication_expiration() {
-                    Some(st) => Some(st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()),
+                    Some(st) => Some(
+                        st.duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    ),
                     None => None,
                 };
 

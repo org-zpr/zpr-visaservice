@@ -6,6 +6,7 @@ license = "Apache-2.0"
 description = "Packet/Actor evaluator library; a component of the ZPR visa service"
 
 [dependencies]
+admin-api-types = { path = "../admin-api-types" }
 bytes.workspace = true
 capnp.workspace = true
 enumset = "1.1.10"

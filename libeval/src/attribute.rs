@@ -1,3 +1,4 @@
+use admin_api_types::ApiAttribute;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
@@ -48,7 +49,7 @@ pub enum AttributeError {
     NotSingleValue(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 #[allow(dead_code)]
 pub struct Attribute {
     key: String,
@@ -196,6 +197,16 @@ impl Attribute {
             }
         }
         false
+    }
+}
+
+impl From<&Attribute> for ApiAttribute {
+    fn from(attr: &Attribute) -> Self {
+        Self {
+            key: attr.get_key().to_string(),
+            value: attr.get_value().to_vec(),
+            expires_at: attr.get_expires(),
+        }
     }
 }
 
