@@ -87,6 +87,7 @@ pub struct VisaDescriptor {
     pub dest_port: u16,
     pub proto: String,
     pub signals: Vec<String>,
+    pub session_key: ApiKeySet,
 }
 
 impl PartialEq for VisaDescriptor {
@@ -158,8 +159,66 @@ impl fmt::Display for VisaDescriptor {
         if !self.signals.is_empty() {
             write!(f, "  {} [{}]", "signals".dimmed(), self.signals.join(", "))?;
         }
+        write!(f, "{} {}", "session_key ".dimmed(), self.session_key,)?;
 
         Ok(())
+    }
+}
+
+// intentionally match the zpr::vsapi_types KeySet and KeyFormat, but
+// reproduced here to prevent coupling of the API types from the internal types
+#[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ApiKeySet {
+    pub format: ApiKeyFormat,
+    /// session key encrypted for ingress node to read
+    #[serde(with = "base64_serde")]
+    pub ingress_key: Vec<u8>,
+    /// session key encrypted for egress node to read
+    #[serde(with = "base64_serde")]
+    pub egress_key: Vec<u8>,
+}
+
+// Due to encryption, didn't want to leak too much information in the display,
+// so only have the length of the keys
+impl fmt::Display for ApiKeySet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[format: {}] [ingress_key: {}B] [egress_key: {}B]",
+            self.format,
+            self.ingress_key.len(),
+            self.egress_key.len()
+        )
+    }
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub enum ApiKeyFormat {
+    #[default]
+    ZprKF01,
+}
+
+impl fmt::Display for ApiKeyFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiKeyFormat::ZprKF01 => write!(f, "ZprKF01"),
+        }
+    }
+}
+
+// Allows ingress_key and egress_key to be serialized as b64 encoded text, not as
+// vectors, which would be more unwieldy
+mod base64_serde {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(d)?;
+        STANDARD.decode(s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -563,5 +622,45 @@ pub struct CnEntry {
 impl fmt::Display for CnEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} {}", format!("{}", "cn".dimmed()), self.cn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    #[test]
+    fn api_keyset_serializes_keys_as_base64() {
+        let ks = ApiKeySet {
+            format: ApiKeyFormat::ZprKF01,
+            ingress_key: vec![0xDE, 0xAD, 0xBE, 0xEF],
+            egress_key: vec![0xCA, 0xFE, 0xBA, 0xBE],
+        };
+
+        let json = serde_json::to_string(&ks).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Confirm they're strings, not arrays
+        assert!(v["ingress_key"].is_string());
+        assert!(v["egress_key"].is_string());
+
+        // Confirm the actual base64 values
+        assert_eq!(v["ingress_key"].as_str().unwrap(), "3q2+7w==");
+        assert_eq!(v["egress_key"].as_str().unwrap(), "yv66vg==");
+    }
+
+    #[test]
+    fn api_keyset_roundtrips_through_json() {
+        let original = ApiKeySet {
+            format: ApiKeyFormat::ZprKF01,
+            ingress_key: vec![0x01, 0x02, 0x03],
+            egress_key: vec![0xFF, 0xFE, 0xFD],
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ApiKeySet = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(original, decoded);
     }
 }
