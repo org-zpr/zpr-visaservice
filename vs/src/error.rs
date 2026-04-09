@@ -1,5 +1,5 @@
 use libeval::actor;
-use libeval::eval::EvalError;
+use libeval::error::EvalError;
 use std::net::SocketAddr;
 use thiserror::Error;
 

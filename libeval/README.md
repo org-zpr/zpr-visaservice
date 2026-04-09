@@ -16,16 +16,43 @@ allow/deny decision.
   (address, services, role, tags, etc.).
 - **EvalContext** -- The evaluation engine. Holds a policy and exposes methods
   to evaluate packets and approve connections.
-- **EvalDecision** -- The result of an evaluation: `Allow`, `Deny`, or
-  `NoMatch`, each carrying the list of matching policy hits.
 - **Join Policy** -- Rules that govern whether an actor is allowed to connect
   and which attributes/services it receives upon joining.
+
+### Two-Stage Evaluation
+
+Evaluation is split into two stages to support route-aware policy decisions:
+
+**Stage 1 — `EvalContext::eval_request`** returns a `PartialEvalResult`:
+
+| Variant | Meaning |
+|---|---|
+| `Deny(FinalDeny)` | Denied regardless of route; no further evaluation needed. |
+| `AllowWithoutRoute(hits)` | Allowed regardless of route; no further evaluation needed. |
+| `NeedsRoute(RouteResidualEvaluator)` | Route information is required to reach a final decision. |
+
+`FinalDeny` distinguishes between a deny-policy match (`Deny(hits)`) and no
+matching policy at all (`NoMatch(msg)`).
+
+**Stage 2 — `RouteResidualEvaluator::eval_route`** (scaffold, not yet
+implemented) takes the residual evaluator from stage 1 along with a `Route`
+and returns a `FinalEvalResult` (`Allow`, `Deny`, or `NoMatch`).
+
+### Supporting Types
+
+- **`Hit`** -- A single matching policy line, carrying its index, direction
+  (`Forward`/`Reverse`), an optional signal, and an optional route.
+- **`VisaProps`** -- The information needed to create a visa (addresses, ports,
+  protocol, constraints, communication options).
+- **`EvalError`** -- Typed errors covering Cap'n Proto decoding, unsupported
+  protocols, missing attributes/claims, and internal errors.
 
 
 ## Usage
 
 ```rust
 use libeval::eval::EvalContext;
+use libeval::eval_result::{FinalDeny, PartialEvalResult};
 use libeval::policy::Policy;
 use libeval::pio::load_policy;
 
@@ -35,8 +62,18 @@ let policy = load_policy(path, min_version)?;
 // Create the evaluation context.
 let ctx = EvalContext::new(Arc::new(policy));
 
-// Evaluate a packet.
-let decision = ctx.eval_request(&src_actor, &dst_actor, &packet)?;
+// Stage 1: evaluate a packet against policy.
+let partial = ctx.eval_request(&src_actor, &dst_actor, &packet)?;
+
+match partial {
+    PartialEvalResult::Deny(FinalDeny::Deny(hits))  => { /* deny */ }
+    PartialEvalResult::Deny(FinalDeny::NoMatch(msg)) => { /* no policy */ }
+    PartialEvalResult::AllowWithoutRoute(hits)       => { /* allow */ }
+    PartialEvalResult::NeedsRoute(residual) => {
+        // Stage 2: provide a route and get a final decision.
+        let final_result = residual.eval_route(&src_actor, &dst_actor, &packet, &route)?;
+    }
+}
 ```
 
 

@@ -13,7 +13,8 @@ use crate::pio;
 
 use libeval::actor::Actor;
 use libeval::attribute::Attribute;
-use libeval::eval::{EvalContext, EvalDecision};
+use libeval::eval::EvalContext;
+use libeval::eval_result::{FinalDeny, PartialEvalResult};
 use zpr::vsapi_types::PacketDesc;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
@@ -356,12 +357,12 @@ impl ZMachine {
     fn present_decision(
         &self,
         state: &State,
-        decision: &EvalDecision,
+        decision: &PartialEvalResult,
         pd: &PacketDesc,
         outfmt: &mut Box<dyn OutputFormatter>,
     ) {
         match decision {
-            EvalDecision::Allow(hits) => {
+            PartialEvalResult::AllowWithoutRoute(hits) => {
                 let mut vprops = Vec::new();
                 for hit in hits {
                     let vprop_or_error =
@@ -370,11 +371,14 @@ impl ZMachine {
                 }
                 outfmt.write_allow(self.eval_counter, hits, &vprops);
             }
-            EvalDecision::Deny(hits) => {
+            PartialEvalResult::Deny(FinalDeny::Deny(hits)) => {
                 outfmt.write_deny(self.eval_counter, hits);
             }
-            EvalDecision::NoMatch(reason) => {
+            PartialEvalResult::Deny(FinalDeny::NoMatch(reason)) => {
                 outfmt.write_no_match(self.eval_counter, reason);
+            }
+            PartialEvalResult::NeedsRoute(_) => {
+                outfmt.write_error("PartialEvalResult::NeedsRoute not handled"); // TODO
             }
         }
     }

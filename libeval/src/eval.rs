@@ -1,203 +1,23 @@
 use crate::actor::Actor;
 use crate::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
+use crate::error::EvalError;
+use crate::eval_result::{Direction, FinalDeny, Hit, PartialEvalResult, Signal};
 use crate::joinpolicy::JFlag;
 use crate::logging::targets::EVAL;
 use crate::policy::Policy;
+use crate::visa::VisaProps;
 
 use zpr::vsapi_types::PacketDesc;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
 use enumset::EnumSet;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::net;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use thiserror::Error;
 use tracing::{debug, warn};
 
 use zpr::policy::v1 as policy_capnp;
-
-/// The result of evaluating a policy against a communicating pair of
-/// actors and a description of the packet.
-///
-/// Note that this does not select a winner when where are multiple
-/// policy hits.  The hits are returned in policy order.
-#[derive(Debug)]
-pub enum EvalDecision {
-    /// Takes an explanator string.
-    NoMatch(String),
-
-    /// All matching allow permissions are returned.
-    Allow(Vec<Hit>),
-
-    /// All matching deny permissions are returned.
-    Deny(Vec<Hit>),
-}
-
-#[derive(Debug, Error)]
-pub enum EvalError {
-    #[error("Cap'n Proto error: {0}")]
-    Capnp(#[from] capnp::Error),
-
-    #[error("Unsupported protocol: {0}")]
-    UnsupportedProtocol(String),
-
-    #[error("Invalid request: {0}")]
-    InvalidRequest(String),
-
-    #[error("Internal error: {0}")]
-    InternalError(String),
-
-    #[error("empty policy")]
-    EmptyPolicy,
-
-    #[error("attribute missing: {0}")]
-    AttributeMissing(String),
-
-    #[error("no match")]
-    NoMatch,
-
-    #[error("invalid claim: {0}")]
-    InvalidClaim(String),
-
-    #[error("claim missing: {0}")]
-    ClaimMissing(String),
-}
-
-/// A "hit" is a single matching permission or deny line in policy
-/// that matches against the actors and packet description.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct Hit {
-    /// Index into the policies for the matching policy.
-    /// Caller can use this to find the ZPL line and the conditions.
-    pub match_idx: usize,
-
-    /// If 'Forward' then this the Hit was on the "forward" client->service direction.
-    pub direction: Direction,
-
-    /// If there is a signal attached to this permission it is returned here.
-    pub signal: Option<Signal>,
-}
-
-impl Hit {
-    /// Create Hit without a signal.
-    pub fn new_no_signal(index: usize, direction: Direction) -> Self {
-        Hit {
-            match_idx: index,
-            direction,
-            signal: None,
-        }
-    }
-    /// Create Hit with a signal.
-    #[allow(dead_code)]
-    pub fn new_with_signal(index: usize, direction: Direction, signal: Signal) -> Self {
-        Hit {
-            match_idx: index,
-            direction,
-            signal: Some(signal),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Forward,
-    Reverse,
-}
-
-impl fmt::Display for Direction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Direction::Forward => write!(f, "FWD"),
-            Direction::Reverse => write!(f, "REV"),
-        }
-    }
-}
-
-/// VisaProps is most of the information needed to create a visa.
-/// Does not set an expiration unless one is part of a policy constraint.
-#[derive(Serialize, Debug)]
-#[allow(dead_code)]
-pub struct VisaProps {
-    source_addr: net::IpAddr,
-    dest_addr: net::IpAddr,
-    protocol: u8,
-    source_port: u16,
-    dest_port: u16,
-    constraints: Option<Vec<Constraint>>,
-    comm_opts: Option<Vec<CommOpt>>,
-    zpl: String,
-}
-
-/// Just a bunch of accessors to help keep API clean.
-impl VisaProps {
-    pub fn get_source_addr(&self) -> net::IpAddr {
-        self.source_addr
-    }
-    pub fn get_dest_addr(&self) -> net::IpAddr {
-        self.dest_addr
-    }
-    pub fn get_protocol(&self) -> u8 {
-        self.protocol
-    }
-    pub fn get_source_port(&self) -> u16 {
-        self.source_port
-    }
-    pub fn get_dest_port(&self) -> u16 {
-        self.dest_port
-    }
-    pub fn get_constraints(&self) -> Option<&[Constraint]> {
-        self.constraints.as_deref()
-    }
-    pub fn get_comm_opts(&self) -> Option<&[CommOpt]> {
-        self.comm_opts.as_deref()
-    }
-    pub fn get_zpl(&self) -> &str {
-        &self.zpl
-    }
-}
-
-/// Canonical "short-form" visa stringer.
-impl fmt::Display for VisaProps {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}]:{} -> [{}]:{} proto {} [opts:{:?}]",
-            self.source_addr,
-            self.source_port,
-            self.dest_addr,
-            self.dest_port,
-            self.protocol,
-            self.comm_opts
-        )
-    }
-}
-
-/// Policy may include constraints on the permission.
-#[derive(Debug, Serialize)]
-pub enum Constraint {
-    /// unix time seconds for expiration of permission.
-    ExpiresAtUnixSeconds(u64),
-}
-
-/// Policy may dictate certain communication pattern options.
-#[derive(Debug, Serialize)]
-pub enum CommOpt {
-    // TODO: How to use this?
-    ReversePinhole,
-    // others TBD?
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct Signal {
-    pub message: String,
-    pub service: String,
-}
 
 // TODO: Not yet sure if this is useful. Maybe the context can build up
 // some cache or something to make future eval calls faster?
@@ -237,6 +57,8 @@ impl EvalContext {
         EvalContext { policy }
     }
 
+    /// Check if policy permits the described actor communication.
+    ///
     /// Caller must ensure that the two actors passed here are the ones
     /// involved in the communication described by `request`.
     pub fn eval_request(
@@ -244,24 +66,26 @@ impl EvalContext {
         src_actor: &Actor,
         dst_actor: &Actor,
         request: &PacketDesc,
-    ) -> Result<EvalDecision, EvalError> {
+    ) -> Result<PartialEvalResult, EvalError> {
         if !matches!(
             request.protocol(),
             ip_proto::TCP | ip_proto::UDP | ip_proto::IPV6_ICMP
         ) {
-            return Ok(EvalDecision::NoMatch(
+            return Ok(PartialEvalResult::Deny(FinalDeny::NoMatch(
                 "only TCP/UDP/ICMPv6 protocols supported".into(),
-            ));
+            )));
         }
         let rdr = match self.policy.get_policy_reader() {
             Some(r) => r,
             None => {
-                return Ok(EvalDecision::NoMatch("no policy available".into()));
+                return Ok(PartialEvalResult::deny_no_match(
+                    "no policy available".into(),
+                ));
             }
         };
         let policy = rdr.get_root::<policy_capnp::policy::Reader>()?;
         if !policy.has_com_policies() {
-            return Ok(EvalDecision::NoMatch(
+            return Ok(PartialEvalResult::deny_no_match(
                 "no communication policies defined".into(),
             ));
         }
@@ -269,16 +93,18 @@ impl EvalContext {
         // We will make two passes, once looking for denies, and then looking for allows (if needed).
         let deny_hits = self.match_policies(false, src_actor, dst_actor, request, &policy)?;
         if !deny_hits.is_empty() {
-            return Ok(EvalDecision::Deny(deny_hits));
+            return Ok(PartialEvalResult::deny_hits(deny_hits));
         }
 
         let allow_hits = self.match_policies(true, src_actor, dst_actor, request, &policy)?;
         // Different hits will have different constraints etc. We'll leave the picking of the
         // policy to apply to the caller.
         if !allow_hits.is_empty() {
-            return Ok(EvalDecision::Allow(allow_hits));
+            return Ok(PartialEvalResult::allow_hits(allow_hits));
         }
-        Ok(EvalDecision::NoMatch("no matching policy".into()))
+        Ok(PartialEvalResult::deny_no_match(
+            "no matching policy".into(),
+        ))
     }
 
     pub fn visa_info_for_hit(
@@ -869,7 +695,7 @@ mod test {
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
-            EvalDecision::Allow(hits) => {
+            PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
                 assert_eq!(hits[0].match_idx, 4);
                 assert!(hits[0].direction == Direction::Forward);
@@ -884,7 +710,7 @@ mod test {
             .unwrap();
         let decision = ctx.eval_request(&green_user, &service, &packet).unwrap();
         match decision {
-            EvalDecision::Deny(hits) => {
+            PartialEvalResult::Deny(FinalDeny::Deny(hits)) => {
                 assert_eq!(hits.len(), 1);
                 assert_eq!(hits[0].match_idx, 3);
                 assert!(hits[0].direction == Direction::Forward);
@@ -916,7 +742,7 @@ mod test {
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
-            EvalDecision::Allow(hits) => {
+            PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
                 let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
                 assert_eq!(
@@ -960,7 +786,7 @@ mod test {
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
-            EvalDecision::Allow(hits) => {
+            PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
                 assert_eq!(hits[0].match_idx, 1);
                 assert!(hits[0].direction == Direction::Forward);
@@ -995,7 +821,7 @@ mod test {
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
-            EvalDecision::Allow(hits) => {
+            PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
                 assert_eq!(hits[0].match_idx, 1);
                 assert!(hits[0].direction == Direction::Forward);
@@ -1031,7 +857,7 @@ mod test {
 
         let decision = ctx.eval_request(&user, &service, &packet).unwrap();
         match decision {
-            EvalDecision::Allow(hits) => {
+            PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
                 let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
                 assert_eq!(vinfo.zpl, "(line 5) allow red users to access pingdb");
@@ -1071,7 +897,7 @@ mod test {
 
         let decision = ctx.eval_request(&service, &user, &packet).unwrap();
         match decision {
-            EvalDecision::Allow(hits) => {
+            PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
                 let vinfo = ctx.visa_info_for_hit(&hits[0], &packet).unwrap();
                 assert_eq!(vinfo.zpl, "(line 5) allow red users to access pingdb");
@@ -1109,7 +935,7 @@ mod test {
             PacketDesc::new_icmp("fd5a:5052:3000::2", "fd5a:5052:3000::1", 0x81, 0).unwrap();
         let decision = ctx.eval_request(&service, &user, &packet).unwrap();
         match decision {
-            EvalDecision::NoMatch(s) => {
+            PartialEvalResult::Deny(FinalDeny::NoMatch(s)) => {
                 assert_eq!(s, "no matching policy");
             }
             _ => panic!("expected deny decision, not {:?}", decision),

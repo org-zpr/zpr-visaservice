@@ -321,10 +321,10 @@ async fn get_visa(
                     policy_id: metadata.policy_version.to_string(),
                     zpl: metadata.zpl.to_string(),
                     direction: match metadata.direction {
-                        libeval::eval::Direction::Forward => {
+                        libeval::eval_result::Direction::Forward => {
                             admin_api_types::VisaMatchDirection::Forward
                         }
-                        libeval::eval::Direction::Reverse => {
+                        libeval::eval_result::Direction::Reverse => {
                             admin_api_types::VisaMatchDirection::Reverse
                         }
                     },
@@ -662,7 +662,7 @@ mod tests {
     use admin_api_types::VisaMatchDirection;
     use axum::body::Body;
     use http_body_util::BodyExt;
-    use libeval::eval::{Direction, Hit, Signal};
+    use libeval::eval_result::{Direction, Hit, Signal};
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
