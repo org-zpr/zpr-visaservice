@@ -25,7 +25,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
-use zpr::vsapi_types::{DockPep, Visa};
+use zpr::vsapi_types::{DockPep, KeyFormat, KeySet, Visa};
 
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
@@ -42,7 +42,7 @@ use crate::db::Role;
 use crate::logging::targets::ADMIN;
 
 use admin_api_types::{
-    ActorDescriptor, ApiAttribute, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry,
+    ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry,
     NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor,
 };
 
@@ -334,6 +334,7 @@ async fn get_visa(
                     dest_port: proto_deets.dest_port,
                     proto: proto_deets.protocol,
                     signals: metadata.signal_msgs.clone(),
+                    session_key: to_api_keyset(&visa.session_key),
                 };
                 return Ok(Json(vd));
             }
@@ -656,6 +657,20 @@ fn to_api_attribute(attr: &Attribute) -> ApiAttribute {
         key: attr.get_key().to_string(),
         value: attr.get_value().to_vec(),
         expires_at: attr.get_expires(),
+    }
+}
+
+fn to_api_keyset(ks: &KeySet) -> ApiKeySet {
+    ApiKeySet {
+        format: to_api_keyformat(&ks.format),
+        ingress_key: ks.ingress_key.clone(),
+        egress_key: ks.egress_key.clone(),
+    }
+}
+
+fn to_api_keyformat(kf: &KeyFormat) -> ApiKeyFormat {
+    match kf {
+        KeyFormat::ZprKF01 => ApiKeyFormat::ZprKF01,
     }
 }
 
