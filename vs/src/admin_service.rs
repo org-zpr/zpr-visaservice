@@ -42,8 +42,9 @@ use crate::db::Role;
 use crate::logging::targets::ADMIN;
 
 use admin_api_types::{
-    ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry, ListEntry, NamedListEntry,
-    NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor,
+    ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry,
+    ListEntry, NamedListEntry, NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor,
+    VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.
