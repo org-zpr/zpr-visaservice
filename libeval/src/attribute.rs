@@ -48,7 +48,7 @@ pub enum AttributeError {
     NotSingleValue(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
 #[allow(dead_code)]
 pub struct Attribute {
     key: String,

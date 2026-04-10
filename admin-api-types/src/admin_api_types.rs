@@ -3,6 +3,7 @@ use colored::{Color, Colorize};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::time::SystemTime;
 
 /// List entry is a list with a numeric ID.
 #[derive(Serialize, Deserialize)]
@@ -249,6 +250,8 @@ pub struct ActorDescriptor {
     pub ident: String,
     pub node: bool,
     pub zpr_addr: String,
+    pub attrs: Vec<ApiAttribute>,
+    pub auth_exp: Option<u64>, // seconds since epoch
     pub node_details: Option<NodeRecordBrief>,
 }
 
@@ -272,10 +275,18 @@ impl PartialOrd for ActorDescriptor {
 
 impl fmt::Display for ActorDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ts: DateTime<Utc> = DateTime::from_timestamp(self.ctime_secs as i64, 0).unwrap();
+        let ts: DateTime<Utc> =
+            DateTime::from_timestamp(self.ctime_secs as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
+        let auth_exp = match self.auth_exp {
+            Some(ae) => {
+                Some(DateTime::from_timestamp(ae as i64, 0).unwrap_or(DateTime::UNIX_EPOCH))
+            }
+            None => None,
+        };
+
         write!(
             f,
-            "{} {}{}{} @ {} {}{} {}{} {}",
+            "{} {}{}{} @ {} {}{} {}{} {}{:?} {}{} {}",
             self.cn,
             "(created: ".dimmed(),
             ts.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
@@ -285,13 +296,27 @@ impl fmt::Display for ActorDescriptor {
             self.ident,
             "is node: ".dimmed(),
             self.node,
-            if self.node_details.is_some() {
-                "[has node details]".green()
-            } else {
-                "".normal()
+            "attributes: ".dimmed(),
+            self.attrs,
+            "auth exp: ".dimmed(),
+            match auth_exp {
+                Some(ae) => ae.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                None => "No auth".to_string().red(),
+            },
+            match &self.node_details {
+                Some(nd) => format!("{} {} {}", "[Node Details".green(), nd, "]".green()),
+                None => "".normal().to_string(),
             },
         )
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[allow(dead_code)]
+pub struct ApiAttribute {
+    pub key: String,
+    pub value: Vec<String>,
+    pub expires_at: SystemTime,
 }
 
 #[derive(Serialize, Deserialize, Debug, Eq)]
@@ -420,11 +445,11 @@ pub struct NodeRecordBrief {
 impl fmt::Display for NodeRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let last_contact = match self.last_contact {
-            Some(lc) => Some(DateTime::from_timestamp(lc, 0).unwrap()),
+            Some(lc) => Some(DateTime::from_timestamp(lc, 0).unwrap_or(DateTime::UNIX_EPOCH)),
             None => None,
         };
         let last_vreq = match self.last_vreq {
-            Some(lr) => Some(DateTime::from_timestamp(lr, 0).unwrap()),
+            Some(lr) => Some(DateTime::from_timestamp(lr, 0).unwrap_or(DateTime::UNIX_EPOCH)),
             None => None,
         };
 

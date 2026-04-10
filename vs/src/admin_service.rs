@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use libeval::attribute::{ROLE_NODE, key};
+use libeval::attribute::{Attribute, ROLE_NODE, key};
 use tracing::{debug, error, info, warn};
 
 use axum::{
@@ -42,8 +42,9 @@ use crate::db::Role;
 use crate::logging::targets::ADMIN;
 
 use admin_api_types::{
-    ActorDescriptor, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry, ListEntry,
-    NamedListEntry, NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor, VisaDescriptor,
+    ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry,
+    ListEntry, NamedListEntry, NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor,
+    VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.
@@ -442,6 +443,17 @@ async fn get_actor(
                     None => "".to_string(),
                 };
 
+                let attrs = actor.attrs_iter().map(|a| to_api_attribute(a)).collect();
+
+                let auth_exp = match actor.get_authentication_expiration() {
+                    Some(st) => Some(
+                        st.duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    ),
+                    None => None,
+                };
+
                 let node_details = match is_node {
                     true => Some(build_node_record_brief(&asm, actor).await?),
                     false => None,
@@ -453,6 +465,8 @@ async fn get_actor(
                     ident,
                     node: is_node,
                     zpr_addr: zpr_addr_str,
+                    attrs,
+                    auth_exp,
                     node_details,
                 };
                 return Ok(Json(descriptor));
@@ -637,6 +651,14 @@ async fn add_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
 
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
+}
+
+fn to_api_attribute(attr: &Attribute) -> ApiAttribute {
+    ApiAttribute {
+        key: attr.get_key().to_string(),
+        value: attr.get_value().to_vec(),
+        expires_at: attr.get_expires(),
+    }
 }
 
 fn to_api_keyset(ks: &KeySet) -> ApiKeySet {
