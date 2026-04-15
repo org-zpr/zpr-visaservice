@@ -2,6 +2,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use colored::{Color, Colorize};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_with::base64::Base64;
+use serde_with::{TimestampSeconds, serde_as};
 use std::fmt;
 use std::time::SystemTime;
 
@@ -161,14 +163,15 @@ impl fmt::Display for VisaDescriptor {
 
 // intentionally match the zpr::vsapi_types KeySet and KeyFormat, but
 // reproduced here to prevent coupling of the API types from the internal types
+#[serde_as]
 #[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ApiKeySet {
     pub format: ApiKeyFormat,
     /// session key encrypted for ingress node to read
-    #[serde(with = "base64_serde")]
+    #[serde_as(as = "Base64")]
     pub ingress_key: Vec<u8>,
     /// session key encrypted for egress node to read
-    #[serde(with = "base64_serde")]
+    #[serde_as(as = "Base64")]
     pub egress_key: Vec<u8>,
 }
 
@@ -193,22 +196,6 @@ impl fmt::Display for ApiKeyFormat {
         match self {
             ApiKeyFormat::ZprKF01 => write!(f, "ZprKF01"),
         }
-    }
-}
-
-// Allows ingress_key and egress_key to be serialized as b64 encoded text, not as
-// vectors, which would be more unwieldy
-mod base64_serde {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let s = String::deserialize(d)?;
-        STANDARD.decode(s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -305,11 +292,13 @@ impl fmt::Display for ActorDescriptor {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[allow(dead_code)]
 pub struct ApiAttribute {
     pub key: String,
     pub value: Vec<String>,
+    #[serde_as(as = "TimestampSeconds<i64>")]
     pub expires_at: SystemTime,
 }
 
@@ -668,6 +657,44 @@ mod tests {
 
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ApiKeySet = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn api_attribute_serializes_expires_at_as_seconds() {
+        let attr = ApiAttribute {
+            key: "test_key".to_string(),
+            value: vec!["val1".to_string()],
+            expires_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12345),
+        };
+
+        let json = serde_json::to_string(&attr).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Should be a bare integer (seconds since epoch), not an object or string
+        assert_eq!(v["expires_at"].as_i64().unwrap(), 12345);
+    }
+
+    #[test]
+    fn api_attribute_deserializes_expires_at_from_seconds() {
+        let json = r#"{"key":"k","value":["v"],"expires_at":123}"#;
+        let attr: ApiAttribute = serde_json::from_str(json).unwrap();
+
+        let expected = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123);
+        assert_eq!(attr.expires_at, expected);
+    }
+
+    #[test]
+    fn api_attribute_roundtrips_through_json() {
+        let original = ApiAttribute {
+            key: "roundtrip".to_string(),
+            value: vec!["a".to_string(), "b".to_string()],
+            expires_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1234567890),
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ApiAttribute = serde_json::from_str(&json).unwrap();
 
         assert_eq!(original, decoded);
     }
