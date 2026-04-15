@@ -15,7 +15,7 @@ pub struct ListEntry {
 
 impl fmt::Display for ListEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}", "id".dimmed(), self.id,)
+        writeln!(f, "{} {}", "id".dimmed(), self.id,)
     }
 }
 
@@ -27,7 +27,7 @@ pub struct NamedListEntry {
 
 impl fmt::Display for NamedListEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}", "id".dimmed(), self.id)
+        writeln!(f, "{} {}", "id".dimmed(), self.id)
     }
 }
 
@@ -41,10 +41,10 @@ pub struct PolicyBundle {
 
 impl fmt::Display for PolicyBundle {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}, ", "id".dimmed(), self.config_id)?;
-        write!(f, "{} {}, ", "version".dimmed(), self.version)?;
-        write!(f, "{} {}, ", "format".dimmed(), self.format)?;
-        write!(f, "{} {}", "container".dimmed(), self.container)
+        write!(f, "{} {}  ", "id:".dimmed(), self.config_id)?;
+        write!(f, "{} {}  ", "version:".dimmed(), self.version)?;
+        write!(f, "{} {}  ", "format:".dimmed(), self.format)?;
+        write!(f, "{} {}\n", "container:".dimmed(), self.container)
     }
 }
 
@@ -112,50 +112,50 @@ impl fmt::Display for VisaDescriptor {
             DateTime::from_timestamp(self.created_secs as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
         let remain = dt_exp.signed_duration_since(now);
 
-        write!(f, "{} {}", "id".dimmed(), self.id)?;
+        write!(f, "{} {}  ", "id:".dimmed(), self.id)?;
         write!(
             f,
-            "  {} {}",
-            "requesting node".dimmed(),
+            "{} {}  ",
+            "requesting node:".dimmed(),
             self.requesting_node.yellow()
         )?;
-        write!(f, "  {} {}", "policy id".dimmed(), self.policy_id)?;
+        write!(f, "{} {}  ", "policy id:".dimmed(), self.policy_id)?;
         write!(
             f,
-            "  {} [{}] {}",
-            "zpl".dimmed(),
+            "{} [{}] {}  ",
+            "zpl:".dimmed(),
             self.direction,
             self.zpl.yellow()
         )?;
         write!(
             f,
-            "  {}:{} {} {}:{}",
+            "{}:{} {} {}:{}  ",
             self.source_addr.yellow(),
             self.source_port,
             "->".bold().green(),
             self.dest_addr.yellow(),
             self.dest_port,
         )?;
-        write!(f, "  {} {}", "proto".dimmed(), self.proto)?;
+        write!(f, "{} {}  ", "proto:".dimmed(), self.proto)?;
         write!(
             f,
-            "  {} {}",
-            "created".dimmed(),
+            "{} {}  ",
+            "created:".dimmed(),
             dt_created.to_rfc3339_opts(SecondsFormat::Secs, true).cyan()
         )?;
         write!(
             f,
-            "  {} {} ({}:{:02}:{:02} remain)",
-            "exp".dimmed(),
+            "{} {} ({}:{:02}:{:02} remain)  ",
+            "exp:".dimmed(),
             dt_exp.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
             remain.num_hours(),
             remain.num_minutes() % 60,
             remain.num_seconds() % 60,
         )?;
         if !self.signals.is_empty() {
-            write!(f, "  {} [{}]", "signals".dimmed(), self.signals.join(", "))?;
+            write!(f, "{} [{}]  ", "signals:".dimmed(), self.signals.join(", "))?;
         }
-        write!(f, "{} {}", "session_key ".dimmed(), self.session_key,)?;
+        write!(f, "{} {}\n", "session_key:".dimmed(), self.session_key,)?;
 
         Ok(())
     }
@@ -179,9 +179,14 @@ pub struct ApiKeySet {
 // so only have the length of the keys
 impl fmt::Display for ApiKeySet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", "format:".dimmed(), self.format)?;
-        write!(f, "{} {}B", "ingress_key:".dimmed(), self.ingress_key.len())?;
-        write!(f, "{} {}B", "egress_key:".dimmed(), self.egress_key.len())
+        write!(f, "{} {}  ", "format:".dimmed(), self.format)?;
+        write!(
+            f,
+            "{} {}B  ",
+            "ingress_key:".dimmed(),
+            self.ingress_key.len()
+        )?;
+        write!(f, "{} {}B\n", "egress_key:".dimmed(), self.egress_key.len())
     }
 }
 
@@ -207,14 +212,8 @@ pub struct Revokes {
 
 impl fmt::Display for Revokes {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{} {} {} {:?}",
-            "id".dimmed(),
-            self.id,
-            "revoked".dimmed(),
-            self.revoked
-        )
+        write!(f, "{} {}  ", "id:".dimmed(), self.id)?;
+        write!(f, "{} {:?}\n", "revoked:".dimmed(), self.revoked)
     }
 }
 
@@ -261,20 +260,19 @@ impl fmt::Display for ActorDescriptor {
         };
         write!(
             f,
-            "{} {}{}{} @ {}",
+            "{} ({} {}) @ {}  ",
             self.cn,
-            "(created: ".dimmed(),
+            "created:".dimmed(),
             ts.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
-            ")".dimmed(),
             self.zpr_addr.yellow()
         )?;
-        write!(f, "{} {}", "identity:".dimmed(), self.ident)?;
+        write!(f, "{} {}  ", "identity:".dimmed(), self.ident)?;
 
-        write!(f, "{} {}", "is node:".dimmed(), self.node)?;
-        write!(f, "{} {:?}", "attributes:".dimmed(), self.attrs)?;
+        write!(f, " {} {}  ", "is node:".dimmed(), self.node)?;
+        write!(f, " {} {:?}  ", "attributes:".dimmed(), self.attrs)?;
         write!(
             f,
-            "{} {}",
+            "{} {}  ",
             "auth exp:".dimmed(),
             match auth_exp {
                 Some(ae) => ae.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
@@ -283,9 +281,9 @@ impl fmt::Display for ActorDescriptor {
         )?;
         write!(
             f,
-            "{}",
+            "{}\n",
             match &self.node_details {
-                Some(nd) => format!("{} {} {}", "[Node Details".green(), nd, "]".green()),
+                Some(nd) => format!("[{} {}]", "node details:".green(), nd,),
                 None => "".normal().to_string(),
             },
         )
@@ -330,10 +328,10 @@ impl PartialOrd for ServiceDescriptor {
 
 impl fmt::Display for ServiceDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}", "name:".dimmed(), self.service_name)?;
-        write!(f, "{} {}", "cn:".dimmed(), self.actor_cn)?;
-        write!(f, "{} {}", "zpr_addr:".dimmed(), self.zpr_addr)?;
-        write!(f, "{} {}", "dock_zpr_addr:".dimmed(), self.dock_zpr_addr)
+        write!(f, "{} {}  ", "name:".dimmed(), self.service_name)?;
+        write!(f, "{} {}  ", "cn:".dimmed(), self.actor_cn)?;
+        write!(f, "{} {}  ", "zpr_addr:".dimmed(), self.zpr_addr)?;
+        write!(f, "{} {}\n", "dock_zpr_addr:".dimmed(), self.dock_zpr_addr)
     }
 }
 
@@ -369,13 +367,12 @@ impl fmt::Display for HostRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let ts: DateTime<Utc> =
             DateTime::from_timestamp(self.ctime, 0).unwrap_or(DateTime::UNIX_EPOCH);
-        write!(
+        writeln!(
             f,
-            "{} {}{}{} @ {} {}",
+            "{} ({} {}) @ {} {}",
             self.cn,
-            "(created: ".dimmed(),
+            "created:".dimmed(),
             ts.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
-            ")".dimmed(),
             self.zpr_addr.yellow(),
             if self.node {
                 "[node]".green()
@@ -430,13 +427,13 @@ impl fmt::Display for NodeRecordBrief {
         };
         write!(
             f,
-            "{}{}",
+            "{} {}  ",
             "pending installs:".dimmed(),
             self.pending_install
         )?;
         write!(
             f,
-            "{}{}",
+            "{} {}  ",
             "SYNC:".dimmed(),
             if self.in_sync {
                 "YES".green()
@@ -446,7 +443,7 @@ impl fmt::Display for NodeRecordBrief {
         )?;
         write!(
             f,
-            "{} {}",
+            "{} {}  ",
             "last_contact:".dimmed(),
             match last_contact {
                 Some(lc) => lc.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
@@ -454,18 +451,18 @@ impl fmt::Display for NodeRecordBrief {
             }
         )?;
         // [vreqs: VAL (vreqs_appr: VAL | vreqs_den: VAL ) (vinstalled: [VAL, VAL, VAL] | venqueued: [VAL, VAL])]'
-        write!(f, "[{} {}", "vreqs:".dimmed(), self.visa_requests)?;
+        write!(f, "[{} {} ", "vreqs:".dimmed(), self.visa_requests)?;
         write!(
             f,
-            "({} {} | {} {})",
-            "vreqs_appr".dimmed(),
+            "({} {} | {} {}) ",
+            "vreqs_appr:".dimmed(),
             self.approved_vreqs,
-            "vreqs_den".dimmed(),
+            "vreqs_den:".dimmed(),
             self.denied_vreqs
         )?;
         write!(
             f,
-            "({}{:?} | {} {:?})]",
+            "({}{:?} | {} {:?})]  ",
             "vinstalled:".dimmed(),
             self.visas,
             "venqueued:".dimmed(),
@@ -474,7 +471,7 @@ impl fmt::Display for NodeRecordBrief {
 
         write!(
             f,
-            "{} {}",
+            "{} {}  ",
             "last_request:".dimmed(),
             match last_vreq {
                 Some(lr) => lr.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
@@ -482,10 +479,10 @@ impl fmt::Display for NodeRecordBrief {
             }
         )?;
         // [creqs: VAL (adapters: [VAL, VAL, VAL] | nodes: [VAL, VAL])]
-        write!(f, "[{} {}", "creqs:".dimmed(), self.connect_requests)?;
+        write!(f, "[{} {} ", "creqs:".dimmed(), self.connect_requests)?;
         write!(
             f,
-            "({} {:?} | {} {:?})]",
+            "({} {:?} | {} {:?})]  ",
             "adapters:".dimmed(),
             self.adapters,
             "nodes:".dimmed(),
@@ -494,13 +491,13 @@ impl fmt::Display for NodeRecordBrief {
 
         write!(
             f,
-            "{} {}",
+            "{} {}  ",
             "pending revocations:".dimmed(),
             self.pending_revocation
         )?;
         write!(
             f,
-            "{} {}",
+            "{} {}\n",
             "vss_port:".dimmed(),
             match self.vss_port {
                 Some(port) => port.to_string(),
@@ -524,7 +521,7 @@ pub struct ServiceRecord {
 impl fmt::Display for ServiceRecord {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for svc in &self.services {
-            write!(
+            writeln!(
                 f,
                 "{:<36}  {}  @ {} {}\n",
                 svc,
@@ -567,8 +564,8 @@ pub struct AuthRevokeDescriptor {
 
 impl fmt::Display for AuthRevokeDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}", "type".dimmed(), self.ty)?;
-        write!(f, "{} {}", "cn".dimmed(), self.cn)
+        write!(f, "{} {}  ", "type:".dimmed(), self.ty)?;
+        write!(f, "{} {}\n", "cn:".dimmed(), self.cn)
     }
 }
 
@@ -598,6 +595,7 @@ impl fmt::Display for PolicyVersion {
             }
             write!(f, "{}", part.color(colors[i % 4]))?;
         }
+        writeln!(f, "")?;
         Ok(())
     }
 }
@@ -618,7 +616,7 @@ pub struct CnEntry {
 
 impl fmt::Display for CnEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}", "cn".dimmed(), self.cn)
+        writeln!(f, "{} {}", "cn".dimmed(), self.cn)
     }
 }
 

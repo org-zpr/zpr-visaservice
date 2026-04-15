@@ -9,4 +9,4 @@ colored.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_with = { version = "3.18.0", features = ["base64"] }
+serde_with = { version = "3.18.0", default-features = false, features = ["std", "macros", "base64", "chrono"] }
