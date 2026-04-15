@@ -13,7 +13,7 @@ pub struct ListEntry {
 
 impl fmt::Display for ListEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}", format!("{}", "id".dimmed()), self.id,)
+        write!(f, "{} {}", "id".dimmed(), self.id,)
     }
 }
 
@@ -25,7 +25,7 @@ pub struct NamedListEntry {
 
 impl fmt::Display for NamedListEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}", format!("{}", "id".dimmed()), self.id,)
+        write!(f, "{} {}", "id".dimmed(), self.id)
     }
 }
 
@@ -39,18 +39,10 @@ pub struct PolicyBundle {
 
 impl fmt::Display for PolicyBundle {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{} {}, {} {}, {} {}, {} {}",
-            format!("{}", "id".dimmed()),
-            self.config_id,
-            format!("{}", "version".dimmed()),
-            self.version,
-            format!("{}", "format".dimmed()),
-            self.format,
-            format!("{}", "container".dimmed()),
-            self.container,
-        )
+        write!(f, "{} {}, ", "id".dimmed(), self.config_id)?;
+        write!(f, "{} {}, ", "version".dimmed(), self.version)?;
+        write!(f, "{} {}, ", "format".dimmed(), self.format)?;
+        write!(f, "{} {}", "container".dimmed(), self.container)
     }
 }
 
@@ -112,9 +104,10 @@ impl PartialOrd for VisaDescriptor {
 impl fmt::Display for VisaDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let now = Utc::now();
-        let dt_exp: DateTime<Utc> = DateTime::from_timestamp(self.expires_secs as i64, 0).unwrap();
+        let dt_exp: DateTime<Utc> =
+            DateTime::from_timestamp(self.expires_secs as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
         let dt_created: DateTime<Utc> =
-            DateTime::from_timestamp(self.created_secs as i64, 0).unwrap();
+            DateTime::from_timestamp(self.created_secs as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
         let remain = dt_exp.signed_duration_since(now);
 
         write!(f, "{} {}", "id".dimmed(), self.id)?;
@@ -183,13 +176,9 @@ pub struct ApiKeySet {
 // so only have the length of the keys
 impl fmt::Display for ApiKeySet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[format: {}] [ingress_key: {}B] [egress_key: {}B]",
-            self.format,
-            self.ingress_key.len(),
-            self.egress_key.len()
-        )
+        write!(f, "{} {}", "format:".dimmed(), self.format)?;
+        write!(f, "{} {}B", "ingress_key:".dimmed(), self.ingress_key.len())?;
+        write!(f, "{} {}B", "egress_key:".dimmed(), self.egress_key.len())
     }
 }
 
@@ -234,9 +223,9 @@ impl fmt::Display for Revokes {
         write!(
             f,
             "{} {} {} {:?}",
-            format!("{}", "id".dimmed()),
+            "id".dimmed(),
             self.id,
-            format!("{}", "revoked".dimmed()),
+            "revoked".dimmed(),
             self.revoked
         )
     }
@@ -283,26 +272,31 @@ impl fmt::Display for ActorDescriptor {
             }
             None => None,
         };
-
         write!(
             f,
-            "{} {}{}{} @ {} {}{} {}{} {}{:?} {}{} {}",
+            "{} {}{}{} @ {}",
             self.cn,
             "(created: ".dimmed(),
             ts.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
             ")".dimmed(),
-            self.zpr_addr.yellow(),
-            "identity: ".dimmed(),
-            self.ident,
-            "is node: ".dimmed(),
-            self.node,
-            "attributes: ".dimmed(),
-            self.attrs,
-            "auth exp: ".dimmed(),
+            self.zpr_addr.yellow()
+        )?;
+        write!(f, "{} {}", "identity:".dimmed(), self.ident)?;
+
+        write!(f, "{} {}", "is node:".dimmed(), self.node)?;
+        write!(f, "{} {:?}", "attributes:".dimmed(), self.attrs)?;
+        write!(
+            f,
+            "{} {}",
+            "auth exp:".dimmed(),
             match auth_exp {
                 Some(ae) => ae.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
                 None => "No auth".to_string().red(),
-            },
+            }
+        )?;
+        write!(
+            f,
+            "{}",
             match &self.node_details {
                 Some(nd) => format!("{} {} {}", "[Node Details".green(), nd, "]".green()),
                 None => "".normal().to_string(),
@@ -347,18 +341,10 @@ impl PartialOrd for ServiceDescriptor {
 
 impl fmt::Display for ServiceDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}{} {}{} {}{} {}{}",
-            format!("{}", "name:".dimmed()),
-            self.service_name,
-            format!("{}", "cn:".dimmed()),
-            self.actor_cn,
-            format!("{}", "zpr_addr:".dimmed()),
-            self.zpr_addr,
-            format!("{}", "dock_zpr_addr:".dimmed()),
-            self.dock_zpr_addr,
-        )
+        write!(f, "{} {}", "name:".dimmed(), self.service_name)?;
+        write!(f, "{} {}", "cn:".dimmed(), self.actor_cn)?;
+        write!(f, "{} {}", "zpr_addr:".dimmed(), self.zpr_addr)?;
+        write!(f, "{} {}", "dock_zpr_addr:".dimmed(), self.dock_zpr_addr)
     }
 }
 
@@ -392,7 +378,8 @@ impl PartialOrd for HostRecordBrief {
 
 impl fmt::Display for HostRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ts: DateTime<Utc> = DateTime::from_timestamp(self.ctime, 0).unwrap();
+        let ts: DateTime<Utc> =
+            DateTime::from_timestamp(self.ctime, 0).unwrap_or(DateTime::UNIX_EPOCH);
         write!(
             f,
             "{} {}{}{} @ {} {}",
@@ -452,82 +439,84 @@ impl fmt::Display for NodeRecordBrief {
             Some(lr) => Some(DateTime::from_timestamp(lr, 0).unwrap_or(DateTime::UNIX_EPOCH)),
             None => None,
         };
+        write!(
+            f,
+            "{}{}",
+            "pending installs:".dimmed(),
+            self.pending_install
+        )?;
+        write!(
+            f,
+            "{}{}",
+            "SYNC:".dimmed(),
+            if self.in_sync {
+                "YES".green()
+            } else {
+                "NO".red()
+            }
+        )?;
+        write!(
+            f,
+            "{} {}",
+            "last_contact:".dimmed(),
+            match last_contact {
+                Some(lc) => lc.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                None => "never".to_string().red(),
+            }
+        )?;
+        // [vreqs: VAL (vreqs_appr: VAL | vreqs_den: VAL ) (vinstalled: [VAL, VAL, VAL] | venqueued: [VAL, VAL])]'
+        write!(f, "[{} {}", "vreqs:".dimmed(), self.visa_requests)?;
+        write!(
+            f,
+            "({} {} | {} {})",
+            "vreqs_appr".dimmed(),
+            self.approved_vreqs,
+            "vreqs_den".dimmed(),
+            self.denied_vreqs
+        )?;
+        write!(
+            f,
+            "({}{:?} | {} {:?})]",
+            "vinstalled:".dimmed(),
+            self.visas,
+            "venqueued:".dimmed(),
+            self.visas_enqueued
+        )?;
 
         write!(
             f,
-            "{} {} {} {} {} {} {} {}",
-            format!("{}{}", "pending installs:".dimmed(), self.pending_install),
-            format!(
-                "{}{}",
-                "SYNC:".dimmed(),
-                if self.in_sync {
-                    "YES".green()
-                } else {
-                    "NO".red()
-                }
-            ),
-            format!(
-                "{} {}",
-                "last_contact:".dimmed(),
-                match last_contact {
-                    Some(lc) => lc.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
-                    None => "never".to_string().red(),
-                }
-            ),
-            // '[vreqs: VAL' (vreqs_appr: VAL | vreqs_den: VAL) | vinstalled: [VAL, VAL, VAL] | venqueued: [VAL, VAL]]'
-            format!(
-                "{} {} {} {} {}",
-                format!(
-                    "{}{} {}{} {} {}{}{}",
-                    "[vreqs:".dimmed(),
-                    self.visa_requests,
-                    "(vreqs_appr".dimmed(),
-                    self.approved_vreqs,
-                    "|".dimmed(),
-                    "vreqs_den".dimmed(),
-                    self.denied_vreqs,
-                    ")"
-                ),
-                "|".dimmed(),
-                format!("{}{:?}", "vinstalled:".dimmed(), self.visas,),
-                "|".dimmed(),
-                format!(
-                    "{}{:?}{}",
-                    "venqueued:".dimmed(),
-                    self.visas_enqueued,
-                    "]".dimmed()
-                ),
-            ),
-            format!(
-                "{} {}",
-                "last_request:".dimmed(),
-                match last_vreq {
-                    Some(lr) => lr.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
-                    None => "never".to_string().red(),
-                }
-            ),
-            // [creqs: VAL | adapters: [VAL, VAL, VAL] | nodes: [VAL, VAL]]
-            format!(
-                "{} {} {} {} {}",
-                format!("{}{}", "creqs:".dimmed(), self.connect_requests,),
-                "|".dimmed(),
-                format!("{}{:?}", "[adapters:".dimmed(), self.adapters),
-                "|".dimmed(),
-                format!("{}{:?}{}", "nodes:".dimmed(), self.links, "]".dimmed()),
-            ),
-            format!(
-                "{}{}",
-                "pending revocations:".dimmed(),
-                self.pending_revocation
-            ),
-            format!(
-                "{}{}",
-                "vss_port:".dimmed(),
-                match self.vss_port {
-                    Some(port) => port.to_string(),
-                    None => "no vss".to_string(),
-                }
-            ),
+            "{} {}",
+            "last_request:".dimmed(),
+            match last_vreq {
+                Some(lr) => lr.to_rfc3339_opts(SecondsFormat::Secs, true).cyan(),
+                None => "never".to_string().red(),
+            }
+        )?;
+        // [creqs: VAL (adapters: [VAL, VAL, VAL] | nodes: [VAL, VAL])]
+        write!(f, "[{} {}", "creqs:".dimmed(), self.connect_requests)?;
+        write!(
+            f,
+            "({} {:?} | {} {:?})]",
+            "adapters:".dimmed(),
+            self.adapters,
+            "nodes:".dimmed(),
+            self.links
+        )?;
+
+        write!(
+            f,
+            "{} {}",
+            "pending revocations:".dimmed(),
+            self.pending_revocation
+        )?;
+        write!(
+            f,
+            "{} {}",
+            "vss_port:".dimmed(),
+            match self.vss_port {
+                Some(port) => port.to_string(),
+                None => "no vss".to_string(),
+            }
         )
     }
 }
@@ -589,14 +578,8 @@ pub struct AuthRevokeDescriptor {
 
 impl fmt::Display for AuthRevokeDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{} {} {} {}",
-            format!("{}", "type".dimmed()),
-            self.ty,
-            format!("{}", "cn".dimmed()),
-            self.cn
-        )
+        write!(f, "{} {}", "type".dimmed(), self.ty)?;
+        write!(f, "{} {}", "cn".dimmed(), self.cn)
     }
 }
 
@@ -646,7 +629,7 @@ pub struct CnEntry {
 
 impl fmt::Display for CnEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} {}", format!("{}", "cn".dimmed()), self.cn)
+        write!(f, "{} {}", "cn".dimmed(), self.cn)
     }
 }
 
