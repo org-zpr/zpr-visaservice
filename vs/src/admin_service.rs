@@ -30,7 +30,7 @@ use zpr::vsapi_types::{DockPep, KeyFormat, KeySet, Visa};
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
 use serde::Deserialize;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
@@ -284,13 +284,6 @@ async fn get_visas(
     }
 }
 
-fn system_time_to_unix_seconds(st: std::time::SystemTime) -> u64 {
-    match st.duration_since(std::time::UNIX_EPOCH) {
-        Ok(dur) => dur.as_secs() as u64,
-        Err(_) => 0,
-    }
-}
-
 async fn get_visa(
     Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
@@ -316,8 +309,8 @@ async fn get_visa(
 
                 let vd = VisaDescriptor {
                     id: visa.issuer_id,
-                    expires_secs: system_time_to_unix_seconds(visa.expires),
-                    created_secs: metadata.ctime,
+                    expires_secs: visa.expires,
+                    created_secs: SystemTime::UNIX_EPOCH + Duration::from_secs(metadata.ctime),
                     requesting_node: metadata.requesting_node.to_string(),
                     policy_id: metadata.policy_version.to_string(),
                     zpl: metadata.zpl.to_string(),
@@ -445,14 +438,7 @@ async fn get_actor(
 
                 let attrs = actor.attrs_iter().map(|a| to_api_attribute(a)).collect();
 
-                let auth_exp = match actor.get_authentication_expiration() {
-                    Some(st) => Some(
-                        st.duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    ),
-                    None => None,
-                };
+                let auth_exp = actor.get_authentication_expiration();
 
                 let node_details = match is_node {
                     true => Some(build_node_record_brief(&asm, actor).await?),
@@ -461,7 +447,7 @@ async fn get_actor(
 
                 let descriptor = ActorDescriptor {
                     cn: cn.clone(),
-                    ctime_secs: 0, // TODO: Not tracked yet
+                    ctime_secs: SystemTime::UNIX_EPOCH, // TODO: Not tracked yet
                     ident,
                     node: is_node,
                     zpr_addr: zpr_addr_str,
@@ -500,10 +486,7 @@ async fn build_node_record_brief(
     let denied_vreqs = counters
         .get_node_counter(zpr_addr, CounterType::VisaRequestsDenied)
         .unwrap_or(0);
-    let last_vreq = match counters.get_last_request_time(zpr_addr) {
-        Some(st) => Some(st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64),
-        None => None,
-    };
+    let last_vreq = counters.get_last_request_time(zpr_addr);
     let adapters = actor_mgr
         .get_adapter_cns_connected_to_node(zpr_addr)
         .await

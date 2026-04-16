@@ -64,14 +64,17 @@ impl fmt::Display for VisaMatchDirection {
     }
 }
 
+#[serde_as]
 #[derive(Serialize, Debug, Deserialize, Eq)]
 pub struct VisaDescriptor {
     /// Policy reported version number
     pub id: u64,
     #[serde(rename = "expires")]
-    pub expires_secs: u64, // seconds since the epoch
+    #[serde_as(as = "TimestampSeconds<i64>")]
+    pub expires_secs: SystemTime,
     #[serde(rename = "created")]
-    pub created_secs: u64, // seconds since the epoch
+    #[serde_as(as = "TimestampSeconds<i64>")]
+    pub created_secs: SystemTime,
     pub policy_id: String,
     pub zpl: String,
     pub direction: VisaMatchDirection,
@@ -106,10 +109,9 @@ impl PartialOrd for VisaDescriptor {
 impl fmt::Display for VisaDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let now = Utc::now();
-        let dt_exp: DateTime<Utc> =
-            DateTime::from_timestamp(self.expires_secs as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
-        let dt_created: DateTime<Utc> =
-            DateTime::from_timestamp(self.created_secs as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
+        let dt_exp: DateTime<Utc> = self.expires_secs.into();
+        let dt_created: DateTime<Utc> = self.created_secs.into();
+
         let remain = dt_exp.signed_duration_since(now);
 
         write!(f, "{} {}  ", "id:".dimmed(), self.id)?;
@@ -217,16 +219,19 @@ impl fmt::Display for Revokes {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize, Eq)]
 pub struct ActorDescriptor {
     pub cn: String,
     #[serde(rename = "created")]
-    pub ctime_secs: u64, // seconds since the epoch
+    #[serde_as(as = "TimestampSeconds<i64>")]
+    pub ctime_secs: SystemTime,
     pub ident: String,
     pub node: bool,
     pub zpr_addr: String,
     pub attrs: Vec<ApiAttribute>,
-    pub auth_exp: Option<u64>, // seconds since epoch
+    #[serde_as(as = "Option<TimestampSeconds<i64>>")]
+    pub auth_exp: Option<SystemTime>,
     pub node_details: Option<NodeRecordBrief>,
 }
 
@@ -250,12 +255,9 @@ impl PartialOrd for ActorDescriptor {
 
 impl fmt::Display for ActorDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ts: DateTime<Utc> =
-            DateTime::from_timestamp(self.ctime_secs as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
+        let ts: DateTime<Utc> = self.ctime_secs.into();
         let auth_exp = match self.auth_exp {
-            Some(ae) => {
-                Some(DateTime::from_timestamp(ae as i64, 0).unwrap_or(DateTime::UNIX_EPOCH))
-            }
+            Some(ae) => Some(DateTime::<Utc>::from(ae)),
             None => None,
         };
         write!(
@@ -335,10 +337,12 @@ impl fmt::Display for ServiceDescriptor {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize, Eq)]
 #[allow(dead_code)]
 pub struct HostRecordBrief {
-    pub ctime: i64, // unix SECONDS (not millis)
+    #[serde_as(as = "TimestampSeconds<i64>")]
+    pub ctime: SystemTime,
     pub cn: String,
     pub zpr_addr: String,
     pub ident: String,
@@ -365,8 +369,7 @@ impl PartialOrd for HostRecordBrief {
 
 impl fmt::Display for HostRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ts: DateTime<Utc> =
-            DateTime::from_timestamp(self.ctime, 0).unwrap_or(DateTime::UNIX_EPOCH);
+        let ts: DateTime<Utc> = self.ctime.into();
         writeln!(
             f,
             "{} ({} {}) @ {} {}",
@@ -383,12 +386,14 @@ impl fmt::Display for HostRecordBrief {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeRecordBrief {
     // Number of visas pending install on the node
     pub pending_install: u32,
     // Last time node was contacted by the visa service, 0 if there was no contact
-    pub last_contact: Option<i64>, // unix SECONDS
+    #[serde_as(as = "Option<TimestampSeconds<i64>>")]
+    pub last_contact: Option<SystemTime>,
     // Number of visa requests on the node
     pub visa_requests: u64,
     // Number of calls to authorize_connect by the node
@@ -400,7 +405,8 @@ pub struct NodeRecordBrief {
     // Denied visa requests
     pub denied_vreqs: u64,
     // Time of last visa request, 0 if there was no request
-    pub last_vreq: Option<i64>, // unix SECONDS
+    #[serde_as(as = "Option<TimestampSeconds<i64>>")]
+    pub last_vreq: Option<SystemTime>,
     // CNs of all adapters connected to the node
     pub adapters: Vec<String>,
     // CNs of all other nodes connected to the node
@@ -418,11 +424,11 @@ pub struct NodeRecordBrief {
 impl fmt::Display for NodeRecordBrief {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let last_contact = match self.last_contact {
-            Some(lc) => Some(DateTime::from_timestamp(lc, 0).unwrap_or(DateTime::UNIX_EPOCH)),
+            Some(lc) => Some(DateTime::<Utc>::from(lc)),
             None => None,
         };
         let last_vreq = match self.last_vreq {
-            Some(lr) => Some(DateTime::from_timestamp(lr, 0).unwrap_or(DateTime::UNIX_EPOCH)),
+            Some(lr) => Some(DateTime::<Utc>::from(lr)),
             None => None,
         };
         write!(
@@ -507,10 +513,12 @@ impl fmt::Display for NodeRecordBrief {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Deserialize, Eq)]
 #[allow(dead_code)]
 pub struct ServiceRecord {
-    pub ctime: i64, // unix SECONDS (not millis)
+    #[serde_as(as = "TimestampSeconds<i64>")]
+    pub ctime: SystemTime,
     pub cn: String,
     pub zpr_addr: String,
     pub ident: String,
