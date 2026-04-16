@@ -30,7 +30,7 @@ use zpr::vsapi_types::{DockPep, KeyFormat, KeySet, Visa};
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
 use serde::Deserialize;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
@@ -309,8 +309,8 @@ async fn get_visa(
 
                 let vd = VisaDescriptor {
                     id: visa.issuer_id,
-                    expires_secs: visa.expires,
-                    created_secs: SystemTime::UNIX_EPOCH + Duration::from_secs(metadata.ctime),
+                    expires: visa.expires,
+                    created: metadata.ctime,
                     requesting_node: metadata.requesting_node.to_string(),
                     policy_id: metadata.policy_version.to_string(),
                     zpl: metadata.zpl.to_string(),
@@ -447,7 +447,7 @@ async fn get_actor(
 
                 let descriptor = ActorDescriptor {
                     cn: cn.clone(),
-                    ctime_secs: SystemTime::UNIX_EPOCH, // TODO: Not tracked yet
+                    ctime: SystemTime::UNIX_EPOCH, // TODO: Not tracked yet
                     ident,
                     node: is_node,
                     zpr_addr: zpr_addr_str,

@@ -69,12 +69,10 @@ impl fmt::Display for VisaMatchDirection {
 pub struct VisaDescriptor {
     /// Policy reported version number
     pub id: u64,
-    #[serde(rename = "expires")]
     #[serde_as(as = "TimestampSeconds<i64>")]
-    pub expires_secs: SystemTime,
-    #[serde(rename = "created")]
+    pub expires: SystemTime,
     #[serde_as(as = "TimestampSeconds<i64>")]
-    pub created_secs: SystemTime,
+    pub created: SystemTime,
     pub policy_id: String,
     pub zpl: String,
     pub direction: VisaMatchDirection,
@@ -109,8 +107,8 @@ impl PartialOrd for VisaDescriptor {
 impl fmt::Display for VisaDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let now = Utc::now();
-        let dt_exp: DateTime<Utc> = self.expires_secs.into();
-        let dt_created: DateTime<Utc> = self.created_secs.into();
+        let dt_exp: DateTime<Utc> = self.expires.into();
+        let dt_created: DateTime<Utc> = self.created.into();
 
         let remain = dt_exp.signed_duration_since(now);
 
@@ -225,7 +223,7 @@ pub struct ActorDescriptor {
     pub cn: String,
     #[serde(rename = "created")]
     #[serde_as(as = "TimestampSeconds<i64>")]
-    pub ctime_secs: SystemTime,
+    pub ctime: SystemTime,
     pub ident: String,
     pub node: bool,
     pub zpr_addr: String,
@@ -255,7 +253,7 @@ impl PartialOrd for ActorDescriptor {
 
 impl fmt::Display for ActorDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let ts: DateTime<Utc> = self.ctime_secs.into();
+        let ts: DateTime<Utc> = self.ctime.into();
         let auth_exp = match self.auth_exp {
             Some(ae) => Some(DateTime::<Utc>::from(ae)),
             None => None,
@@ -404,7 +402,7 @@ pub struct NodeRecordBrief {
     pub approved_vreqs: u64,
     // Denied visa requests
     pub denied_vreqs: u64,
-    // Time of last visa request, 0 if there was no request
+    // Time of last visa request, None if there was no request
     #[serde_as(as = "Option<TimestampSeconds<i64>>")]
     pub last_vreq: Option<SystemTime>,
     // CNs of all adapters connected to the node
@@ -702,6 +700,139 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ApiAttribute = serde_json::from_str(&json).unwrap();
 
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn visa_descriptor_serializes_timestamps_as_integer_seconds() {
+        let vd = VisaDescriptor {
+            id: 42,
+            expires: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(9000),
+            created: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000),
+            policy_id: "pol".to_string(),
+            zpl: "zpl".to_string(),
+            direction: VisaMatchDirection::Forward,
+            requesting_node: "fd5a::1".to_string(),
+            source_addr: "fd5a::2".to_string(),
+            dest_addr: "fd5a::3".to_string(),
+            source_port: 80,
+            dest_port: 443,
+            proto: "TCP".to_string(),
+            signals: vec![],
+            session_key: ApiKeySet::default(),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&vd).unwrap()).unwrap();
+        assert_eq!(v["expires"].as_i64().unwrap(), 9000);
+        assert_eq!(v["created"].as_i64().unwrap(), 1000);
+    }
+
+    #[test]
+    fn visa_descriptor_deserializes_timestamps_from_integer_seconds() {
+        let json = r#"{
+            "id": 1, "expires": 9000, "created": 1000,
+            "policy_id": "p", "zpl": "z", "direction": "forward",
+            "requesting_node": "fd5a::1", "source_addr": "fd5a::2", "dest_addr": "fd5a::3",
+            "source_port": 80, "dest_port": 443, "proto": "TCP", "signals": [],
+            "session_key": {"format": "ZprKF01", "ingress_key": "AAEC", "egress_key": "AAEC"}
+        }"#;
+        let vd: VisaDescriptor = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            vd.expires,
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(9000)
+        );
+        assert_eq!(
+            vd.created,
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000)
+        );
+    }
+
+    #[test]
+    fn actor_descriptor_serializes_timestamps_as_integer_seconds() {
+        let ad = ActorDescriptor {
+            cn: "test.cn".to_string(),
+            ctime: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5000),
+            ident: "ident".to_string(),
+            node: false,
+            zpr_addr: "fd5a::1".to_string(),
+            attrs: vec![],
+            auth_exp: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(7000)),
+            node_details: None,
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&ad).unwrap()).unwrap();
+        assert_eq!(v["created"].as_i64().unwrap(), 5000);
+        assert_eq!(v["auth_exp"].as_i64().unwrap(), 7000);
+    }
+
+    #[test]
+    fn actor_descriptor_none_auth_exp_serializes_as_null() {
+        let ad = ActorDescriptor {
+            cn: "test.cn".to_string(),
+            ctime: SystemTime::UNIX_EPOCH,
+            ident: "ident".to_string(),
+            node: false,
+            zpr_addr: "fd5a::1".to_string(),
+            attrs: vec![],
+            auth_exp: None,
+            node_details: None,
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&ad).unwrap()).unwrap();
+        assert!(v["auth_exp"].is_null());
+    }
+
+    fn make_node_record_brief(
+        last_contact: Option<SystemTime>,
+        last_vreq: Option<SystemTime>,
+    ) -> NodeRecordBrief {
+        NodeRecordBrief {
+            pending_install: 0,
+            last_contact,
+            visa_requests: 0,
+            connect_requests: 0,
+            in_sync: false,
+            approved_vreqs: 0,
+            denied_vreqs: 0,
+            last_vreq,
+            adapters: vec![],
+            links: vec![],
+            visas: vec![],
+            visas_enqueued: vec![],
+            pending_revocation: 0,
+            vss_port: None,
+        }
+    }
+
+    #[test]
+    fn node_record_brief_serializes_timestamps_as_integer_seconds() {
+        let nb = make_node_record_brief(
+            Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2000)),
+            Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(3000)),
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&nb).unwrap()).unwrap();
+        assert_eq!(v["last_contact"].as_i64().unwrap(), 2000);
+        assert_eq!(v["last_vreq"].as_i64().unwrap(), 3000);
+    }
+
+    #[test]
+    fn node_record_brief_none_timestamps_serialize_as_null() {
+        let nb = make_node_record_brief(None, None);
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&nb).unwrap()).unwrap();
+        assert!(v["last_contact"].is_null());
+        assert!(v["last_vreq"].is_null());
+    }
+
+    #[test]
+    fn node_record_brief_roundtrips_through_json() {
+        let original = make_node_record_brief(
+            Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1234567890)),
+            None,
+        );
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: NodeRecordBrief = serde_json::from_str(&json).unwrap();
         assert_eq!(original, decoded);
     }
 }

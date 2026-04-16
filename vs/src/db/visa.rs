@@ -40,7 +40,7 @@ pub enum NodeVisaState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisaMetadata {
     pub requesting_node: IpAddr,
-    pub ctime: u64, // unix timestamp (seconds since epoch)
+    pub ctime: SystemTime,
     pub policy_version: u64,
     pub zpl: String,
     pub signal_msgs: Vec<String>, // note we do not keep the signal destination
@@ -59,10 +59,7 @@ impl VisaMetadata {
     pub fn new(requesting_node: IpAddr, pver: u64, zpl: String, direction: Direction) -> Self {
         VisaMetadata {
             requesting_node,
-            ctime: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO)
-                .as_secs() as u64,
+            ctime: SystemTime::now(),
             policy_version: pver,
             zpl,
             signal_msgs: Vec::new(),
@@ -699,7 +696,7 @@ mod test {
 
         let metadata = repo.get_visa_metadata_by_id(88).await.unwrap();
         assert_eq!(metadata.requesting_node, node_addr);
-        assert!(metadata.ctime > 0);
+        assert!(metadata.ctime > SystemTime::UNIX_EPOCH);
     }
 
     #[tokio::test]
@@ -721,7 +718,7 @@ mod test {
         let node_addr: IpAddr = "fd5a:5052::10".parse().unwrap();
         let original = VisaMetadata {
             requesting_node: node_addr,
-            ctime: 1_700_000_000,
+            ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             policy_version: 42,
             zpl: "permit src any dst any".to_string(),
             signal_msgs: vec!["sig-a".to_string(), "sig-b".to_string()],
@@ -751,7 +748,7 @@ mod test {
         ];
         let original = VisaMetadata {
             requesting_node: node_addr,
-            ctime: 1_700_000_001,
+            ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_001),
             policy_version: 1,
             zpl: String::new(),
             signal_msgs: signals.clone(),
@@ -773,7 +770,7 @@ mod test {
         for direction in [Direction::Forward, Direction::Reverse] {
             let original = VisaMetadata {
                 requesting_node: node_addr,
-                ctime: 1_700_000_002,
+                ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_002),
                 policy_version: 0,
                 zpl: String::new(),
                 signal_msgs: Vec::new(),
