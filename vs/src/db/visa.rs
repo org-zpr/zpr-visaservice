@@ -16,6 +16,7 @@ use tracing::{debug, error, warn};
 
 use ::zpr::vsapi::v1 as vsapi;
 use libeval::eval_result::Direction;
+use serde_with::{TimestampSeconds, serde_as};
 use zpr::vsapi_types::Visa;
 use zpr::write_to::WriteTo;
 
@@ -37,9 +38,11 @@ pub enum NodeVisaState {
 }
 
 /// Metadata around an issued visa.
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisaMetadata {
     pub requesting_node: IpAddr,
+    #[serde_as(as = "TimestampSeconds<i64>")]
     pub ctime: SystemTime,
     pub policy_version: u64,
     pub zpl: String,
