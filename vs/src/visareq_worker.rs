@@ -1,15 +1,17 @@
 //! Visa request worker work on matching packets to policy in order to create visas.
 //! The beating heart of the visa service.
 //!
-//! Each worker gets a single visa request and tried to run it throught the policy.
+//! Each worker gets a single visa request and tries to run it through the policy.
 //! There are several outcomes:
 //! - One or both actors may be missing (disconnected)
+//! - There may not be a route between the actors, so request fails.
 //! - One or both actors may need to be refreshed from attribute services.
 //! - One or both actors may have expired authentication.
 //! - A visa may already exist and policy has not changed, in which case we can use existing visa.
 //! - The visa may be denied by policy.
+//! - The visa may be allowed, but not over any available route, so that is a deny.
 //! - If at the end of all this a visa is permitted, then
-//! - If poicy has not been updated in the meawhile, we issue a visa, else we fail it and hope caller tries again.
+//! - If policy has not been updated in the meanwhile, we issue a visa, else we fail it and hope caller tries again.
 //!
 //! Once a visa is issued we need to pick the path and figure out which nodes need to be informed.
 //! There may be path constraints that make the visa invalid.
@@ -193,101 +195,12 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
 
 /// Run visa request.
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
-    let (mut source_actor, mut dest_actor) = get_actors(&asm, job).await?;
-
-    if source_actor.is_none() && dest_actor.is_none() {
-        return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
-    }
-
-    if source_actor.is_none() || dest_actor.is_none() {
-        // This might be an actor trying to talk to an authentication service.
-        //
-        // To check this we confirm that one actor is using an AAA network address
-        // from its node, and the other is an installed authentication service.
-        //
-
-        let missing_source = source_actor.is_none();
-
-        // "candidate" => the possible auth service, "anon_addr" => possible actor using AAA addr.
-        let (candidate_addr, anon_addr) = if missing_source {
-            (job.packet_desc.dest_addr(), job.packet_desc.source_addr())
-        } else {
-            (job.packet_desc.source_addr(), job.packet_desc.dest_addr())
+    let (source_actor, dest_actor) = get_actors(&asm, job).await?;
+    let (source_actor, dest_actor) =
+        match resolve_actors_or_deny(&asm, job, source_actor, dest_actor).await {
+            Ok(actors) => actors,
+            Err(decision) => return Ok(decision),
         };
-
-        // The anonymous actor must be using an AAA address (from its node).
-        let node_aaa_net = net_mgr::aaa_network_for_node(&job.requesting_node);
-        if !node_aaa_net.contains(anon_addr) {
-            if missing_source {
-                debug!(target: VREQ,
-                    "visa denied: unknown source {anon_addr} is not in the AAA network for node {:?}",
-                    job.requesting_node
-                );
-                return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
-            } else {
-                debug!(target: VREQ,
-                    "visa denied: unknown destination {anon_addr} is not in the AAA network for node {:?}",
-                    job.requesting_node
-                );
-                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
-            }
-        }
-
-        // The candidate actor must be an installed authentication service.
-        match asm
-            .actor_mgr
-            .has_auth_services(asm.clone(), candidate_addr)
-            .await
-        {
-            Ok(true) => (),
-            Ok(false) => {
-                warn!(target: VREQ, "visa denied: actor using AAA addr attempting to contact non-authentication service at {candidate_addr}");
-                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
-            }
-            Err(e) => {
-                debug!(target: VREQ, "visa denied: error checking authentication services for actor at {candidate_addr}: {}", e);
-                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
-            }
-        };
-
-        // We have confirmed that an actor is trying to access a valid authentication service using a valid AAA address.
-        // To proceed, we fabricate a phantom actor for this request.  This phantom acts as the anonymous actor for
-        // purposes of granting a visa.
-        let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;
-        let mut anon_actor = Actor::new();
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::ZPR_ADDR)
-                .expires(expiration)
-                .value(anon_addr.to_string()),
-        );
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::AUTHORITY)
-                .expires(expiration)
-                .value("vs_hack_anon_to_auth"),
-        );
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::ROLE)
-                .expires(expiration)
-                .value(ROLE_ADAPTER),
-        );
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::CN)
-                .expires(expiration)
-                .value(format!("hack.{}.zpr", anon_addr)),
-        );
-        let _ = anon_actor.add_identity_key(0, key::CN);
-
-        if missing_source {
-            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA request: {:?} -> {candidate_addr}", anon_actor);
-            source_actor = Some(anon_actor);
-        } else {
-            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA response: {candidate_addr} -> {:?}", anon_actor);
-            dest_actor = Some(anon_actor);
-        }
-    }
-
-    let source_actor = source_actor.unwrap();
-    let dest_actor = dest_actor.unwrap();
 
     let policy = asm.policy_mgr.get_current();
     let ctx = EvalContext::new(policy.clone());
@@ -355,6 +268,111 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             Ok(VisaDecision::Deny(DenyCode::NoMatch))
         }
     }
+}
+
+/// Resolves a pair of optional actors into concrete actors, handling the case where one is
+/// missing because it is an unauthenticated actor reaching an auth service via an AAA address.
+///
+/// Returns `Ok((source, dest))` when both actors are resolved, or `Err(decision)` for an
+/// early deny that should be returned directly to the caller.
+async fn resolve_actors_or_deny(
+    asm: &Arc<Assembly>,
+    job: &VisaRequestJob,
+    mut source_actor: Option<Actor>,
+    mut dest_actor: Option<Actor>,
+) -> Result<(Actor, Actor), VisaDecision> {
+    if source_actor.is_none() && dest_actor.is_none() {
+        return Err(VisaDecision::Deny(DenyCode::SourceNotFound));
+    }
+
+    if source_actor.is_none() || dest_actor.is_none() {
+        // This might be an actor trying to talk to an authentication service.
+        //
+        // To check this we confirm that one actor is using an AAA network address
+        // from its node, and the other is an installed authentication service.
+        //
+
+        let missing_source = source_actor.is_none();
+
+        // "candidate" => the possible auth service, "anon_addr" => possible actor using AAA addr.
+        let (candidate_addr, anon_addr) = if missing_source {
+            (job.packet_desc.dest_addr(), job.packet_desc.source_addr())
+        } else {
+            (job.packet_desc.source_addr(), job.packet_desc.dest_addr())
+        };
+
+        // The anonymous actor must be using an AAA address (from its node).
+        let node_aaa_net = net_mgr::aaa_network_for_node(&job.requesting_node);
+        if !node_aaa_net.contains(anon_addr) {
+            if missing_source {
+                debug!(target: VREQ,
+                    "visa denied: unknown source {anon_addr} is not in the AAA network for node {:?}",
+                    job.requesting_node
+                );
+                return Err(VisaDecision::Deny(DenyCode::SourceNotFound));
+            } else {
+                debug!(target: VREQ,
+                    "visa denied: unknown destination {anon_addr} is not in the AAA network for node {:?}",
+                    job.requesting_node
+                );
+                return Err(VisaDecision::Deny(DenyCode::DestNotFound));
+            }
+        }
+
+        // The candidate actor must be an installed authentication service.
+        match asm
+            .actor_mgr
+            .has_auth_services(asm.clone(), candidate_addr)
+            .await
+        {
+            Ok(true) => (),
+            Ok(false) => {
+                warn!(target: VREQ, "visa denied: actor using AAA addr attempting to contact non-authentication service at {candidate_addr}");
+                return Err(VisaDecision::Deny(DenyCode::DestNotFound));
+            }
+            Err(e) => {
+                debug!(target: VREQ, "visa denied: error checking authentication services for actor at {candidate_addr}: {}", e);
+                return Err(VisaDecision::Deny(DenyCode::DestNotFound));
+            }
+        };
+
+        // We have confirmed that an actor is trying to access a valid authentication service using a valid AAA address.
+        // To proceed, we fabricate a phantom actor for this request.  This phantom acts as the anonymous actor for
+        // purposes of granting a visa.
+        let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;
+        let mut anon_actor = Actor::new();
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::ZPR_ADDR)
+                .expires(expiration)
+                .value(anon_addr.to_string()),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::AUTHORITY)
+                .expires(expiration)
+                .value("vs_hack_anon_to_auth"),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::ROLE)
+                .expires(expiration)
+                .value(ROLE_ADAPTER),
+        );
+        let _ = anon_actor.add_attribute(
+            Attribute::builder(key::CN)
+                .expires(expiration)
+                .value(format!("hack.{}.zpr", anon_addr)),
+        );
+        let _ = anon_actor.add_identity_key(0, key::CN);
+
+        if missing_source {
+            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA request: {:?} -> {candidate_addr}", anon_actor);
+            source_actor = Some(anon_actor);
+        } else {
+            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA response: {candidate_addr} -> {:?}", anon_actor);
+            dest_actor = Some(anon_actor);
+        }
+    }
+
+    Ok((source_actor.unwrap(), dest_actor.unwrap()))
 }
 
 // Lookup source and destination actors in the DB based on ZPR address.
