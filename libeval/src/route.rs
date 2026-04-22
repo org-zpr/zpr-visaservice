@@ -1,31 +1,146 @@
 use serde::Serialize;
+use std::fmt;
+use std::net::IpAddr;
 
-use crate::actor::Actor;
 use crate::error::EvalError;
 use crate::eval_result::FinalEvalResult;
 
-use zpr::vsapi_types::PacketDesc;
+#[derive(Debug)]
+pub struct RouteResidualEvaluator {
+    predicate: RoutePredicate,
+    hint: Option<RouteHint>,
+}
 
 #[derive(Debug)]
-pub struct RouteResidualEvaluator {/* TBD */}
+pub struct AttrMatch {} // TODO
 
-#[derive(Serialize, Debug)]
-pub struct Route {/* TBD */}
+// Answers the question: "Is this route allowed?".
+#[derive(Debug)]
+pub enum RoutePredicate {
+    True,
+    DirectOnly,
+    RequireLinkedPath,
+    AnyLinkHas(AttrMatch),
+    NoLinkHas(AttrMatch),
+    AllLinksHave(AttrMatch),
+    And(Vec<RoutePredicate>),
+    Or(Vec<RoutePredicate>),
+}
+
+/// An optional route hint can be used by the Router to cull the set of possible routes.
+/// The hint is conservative and may match more routes than are strictly possible by policy.
+/// Not all policies will be able to provide a hint, and in that case all routes need
+/// to be evaluated.
+#[derive(Debug)]
+pub struct RouteHint {
+    /// No links at all (direct connection between source and destination).
+    pub direct_only: bool,
+
+    /// Must have links (i.e. cannot be direct).
+    pub require_linked_path: bool,
+
+    /// Route is candidate if any link on the path matches
+    pub any_link_has: Vec<AttrMatch>,
+
+    /// Route is candidate if no link on the path matches
+    pub no_link_has: Vec<AttrMatch>,
+
+    /// Route is candidate if all links on the path match
+    pub all_links_have: Vec<AttrMatch>,
+}
+
+/// Simple interface into the ZPR network topology that the route residual evaluator uses
+/// to evaluate routes.
+pub trait TopologyQueryApi {
+    fn link_has_attr(&self, link_id: &LinkId, attr: &AttrMatch) -> bool;
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct Route {
+    pub kind: RouteKind,
+    pub links: Vec<LinkId>,
+    pub cost: u32,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
+pub struct NodeId(pub String);
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
+pub struct LinkId(pub String);
+
+#[derive(Debug, Serialize, Clone)]
+pub enum RouteKind {
+    DirectSameNode { node_id: NodeId },
+    Multihop,
+}
+
+impl From<IpAddr> for NodeId {
+    fn from(addr: IpAddr) -> Self {
+        NodeId(addr.to_string())
+    }
+}
+
+impl From<&IpAddr> for NodeId {
+    fn from(addr: &IpAddr) -> Self {
+        NodeId(addr.to_string())
+    }
+}
+
+impl From<&str> for NodeId {
+    fn from(s: &str) -> Self {
+        NodeId(s.to_string())
+    }
+}
+
+impl From<&str> for LinkId {
+    fn from(s: &str) -> Self {
+        LinkId(s.to_string())
+    }
+}
+
+impl Route {
+    pub fn is_direct(&self) -> bool {
+        matches!(self.kind, RouteKind::DirectSameNode { .. })
+    }
+
+    pub fn hop_count(&self) -> usize {
+        self.links.len()
+    }
+}
 
 impl RouteResidualEvaluator {
+    /// An optional coarse hint that can be used to prune routes.
+    pub fn hint(&self) -> Option<&RouteHint> {
+        self.hint.as_ref()
+    }
+
+    // Evaluate a single candidate route against policy.
+    //
+    // note that source_actor, dest_actor, packet_desc should already be here since we have
+    // previously done a policy eval call.
     pub fn eval_route(
         &self,
-        _src_actor: &Actor,
-        _dst_actor: &Actor,
-        _request: &PacketDesc,
         _route: &Route,
+        _topology: &impl TopologyQueryApi,
     ) -> Result<FinalEvalResult, EvalError> {
         Err(EvalError::InternalError(
             "route evaluation not implemented".to_string(),
         ))
     }
 
-    // TODO: Maybe expose a "route-selector" which could be use in
-    // context of topology to prune available routes to only those
-    // that match required attributes.
+    // Evaluate multiple candidate routes against policy.
+    //
+    // This also applies the default logic to the matches:
+    // - if we match a NEVER that is a final DENY (there may be multiple hits).
+    // - if we don't match any NEVERs and we match multiple ALLOWs we return a final allow (with all the hits).
+    // - Else, we return a NoMatch
+    pub fn eval_routes(
+        &self,
+        _routes: &[Route],
+        _topology: &impl TopologyQueryApi,
+    ) -> Result<FinalEvalResult, EvalError> {
+        Err(EvalError::InternalError(
+            "route evaluation not implemented".to_string(),
+        ))
+    }
 }

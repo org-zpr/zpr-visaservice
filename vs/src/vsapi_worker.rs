@@ -974,7 +974,8 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             .await
         {
             Ok(decision) => match decision {
-                VisaDecision::Allow(visa) => {
+                VisaDecision::Allow(visa, _route) => {
+                    // TODO: Do something with the route
                     let res_builder = response.get().init_resp();
                     let mut visa_bldr = res_builder.init_allow();
                     visa.write_to(&mut visa_bldr);

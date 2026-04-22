@@ -60,6 +60,15 @@ pub enum ServiceError {
 
     #[error("admin key error: {0}")]
     AdminKeyError(String),
+
+    #[error("topology error: {0}")]
+    Topology(String),
+
+    #[error("topology: node exists: {0}")]
+    TopologyNodeExists(String),
+
+    #[error("topology: link exists: {0}")]
+    TopologyLinkExists(String),
 }
 
 #[derive(Debug, Error)]

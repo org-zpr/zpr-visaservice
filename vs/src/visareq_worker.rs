@@ -25,10 +25,14 @@ use std::time::{Duration, SystemTime};
 
 use futures::StreamExt;
 use futures::future::FutureExt;
+
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
 use libeval::eval::EvalContext;
-use libeval::eval_result::{FinalDeny, PartialEvalResult};
+use libeval::eval_result::{FinalDeny, FinalEvalResult, Hit, PartialEvalResult};
+use libeval::policy::Policy;
+use libeval::route::Route;
+
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
@@ -41,7 +45,7 @@ use crate::logging::targets::VREQ;
 use crate::{config, net_mgr};
 
 pub enum VisaDecision {
-    Allow(Visa),
+    Allow(Visa, Route),
     Deny(DenyCode),
 }
 
@@ -119,7 +123,7 @@ pub async fn request_visa_wait_response(
     match tokio::time::timeout_at(deadline, response_rx).await {
         // Increment the appropriate counters before returning.
         Ok(Ok(vr_result)) => match vr_result {
-            Ok(VisaDecision::Allow(_)) => {
+            Ok(VisaDecision::Allow(_, _)) => {
                 asm.counters.incr(CounterType::VisaRequestsApproved);
                 asm.counters
                     .incr_node(CounterType::VisaRequestsApproved, requesting_node);
@@ -202,6 +206,30 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             Err(decision) => return Ok(decision),
         };
 
+    // Both actors must have addresses. Extract them here or return a fail.
+    let Some(source_zpr_addr) = source_actor.get_zpr_addr() else {
+        debug!(target: VREQ,
+            "visa request from {:?} denied: source actor {:?} has no ZPR address",
+            job.requesting_node, source_actor
+        );
+        return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
+    };
+    let Some(dest_zpr_addr) = dest_actor.get_zpr_addr() else {
+        debug!(target: VREQ,
+            "visa request from {:?} denied: dest actor {:?} has no ZPR address",
+            job.requesting_node, dest_actor
+        );
+        return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
+    };
+
+    let Some(default_route) = asm.router.get_best_route(&source_zpr_addr, &dest_zpr_addr) else {
+        info!(target: VREQ,
+            "visa request from {:?} denied: no route between {:?} and {:?}",
+            job.requesting_node, source_zpr_addr, dest_zpr_addr
+        );
+        return Ok(VisaDecision::Deny(DenyCode::NoReason)); // TODO: Update to the NoRoute code when available in vsapi
+    };
+
     let policy = asm.policy_mgr.get_current();
     let ctx = EvalContext::new(policy.clone());
     let decision = match ctx.eval_request(&source_actor, &dest_actor, &job.packet_desc) {
@@ -214,7 +242,9 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             return Err(e.into());
         }
     };
-    drop(ctx);
+
+    // TODO: drop eval context?
+    // Do I need eval context in the residual evaluator? I do unless we copied relevant policy out of it.
 
     match decision {
         PartialEvalResult::Deny(FinalDeny::NoMatch(message)) => {
@@ -225,33 +255,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             Ok(VisaDecision::Deny(DenyCode::NoMatch))
         }
         PartialEvalResult::AllowWithoutRoute(hits) => {
-            debug_assert!(!hits.is_empty(), "allow decision with no hits"); // should never happen.
-            let policy_version = policy.get_version().unwrap_or(0);
-            // TODO: For now we pick the first hit.
-            let zpl = policy
-                .get_cpol_source(hits[0].match_idx)
-                .unwrap_or("")
-                .to_string();
-            match asm
-                .visa_mgr
-                .create_visa(
-                    &job.requesting_node,
-                    &job.packet_desc,
-                    &hits[0],
-                    zpl,
-                    policy_version,
-                )
-                .await
-            {
-                Ok(visa) => Ok(VisaDecision::Allow(visa)),
-                Err(e) => {
-                    debug!(target: VREQ,
-                        "visa_mgr error creating visa for request from {:?}: {}",
-                        job.requesting_node, e
-                    );
-                    Err(e)
-                }
-            }
+            visa_from_allow(&asm, job, &hits, &policy, default_route).await
         }
         PartialEvalResult::Deny(FinalDeny::Deny(_hits)) => {
             info!(target: VREQ,
@@ -260,14 +264,75 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             );
             Ok(VisaDecision::Deny(DenyCode::Denied))
         }
-        PartialEvalResult::NeedsRoute(_) => {
-            error!(target: VREQ,
-                "visa request from {:?} could not be evaluated due to route constraints (not implemented)",
-                job.requesting_node
-            );
-            Ok(VisaDecision::Deny(DenyCode::NoMatch))
+        PartialEvalResult::NeedsRoute(residual_evaluator) => {
+            let hint = residual_evaluator.hint();
+            let routes = asm.router.get_routes(source_zpr_addr, dest_zpr_addr, hint);
+
+            match residual_evaluator.eval_routes(&routes, &asm.router) {
+                // TODO: Note that when we get a match using routes, the route it returned in the hit.
+                Ok(FinalEvalResult::Allow(hits)) => {
+                    visa_from_allow(&asm, job, &hits, &policy, default_route).await
+                }
+                Ok(FinalEvalResult::Deny(_hits)) => {
+                    info!(target: VREQ,
+                        "visa request from {:?} denied by policy with routes",
+                        job.requesting_node
+                    );
+                    Ok(VisaDecision::Deny(DenyCode::Denied))
+                }
+                Ok(FinalEvalResult::NoMatch(message)) => {
+                    info!(target: VREQ,
+                        "visa request from {:?} denied (no match using route): {}",
+                        job.requesting_node, message
+                    );
+                    Ok(VisaDecision::Deny(DenyCode::NoMatch))
+                }
+                Err(e) => {
+                    debug!(target: VREQ,
+                        "error evaluating route for visa request from {:?}: {}",
+                        job.requesting_node, e
+                    );
+                    return Err(e.into());
+                }
+            }
         }
     }
+}
+
+/// Given that we have an ALLOW decision, pass the hist list in here and we will pick the first
+/// hit and create a visa based on it.
+async fn visa_from_allow(
+    asm: &Assembly,
+    job: &VisaRequestJob,
+    hits: &[Hit],
+    policy: &Policy,
+    default_route: Route,
+) -> Result<VisaDecision, ServiceError> {
+    debug_assert!(!hits.is_empty(), "allow decision with no hits"); // should never happen.
+    let policy_version = policy.get_version().unwrap_or(0);
+    // TODO: For now we pick the first hit.
+    let zpl = policy
+        .get_cpol_source(hits[0].match_idx)
+        .unwrap_or("")
+        .to_string();
+
+    let allowed_route: Route = match hits[0].route.as_ref() {
+        Some(route) => route.clone(),
+        None => default_route,
+    };
+
+    let visa = asm
+        .visa_mgr
+        .create_visa(
+            &job.requesting_node,
+            &job.packet_desc,
+            &hits[0],
+            zpl,
+            policy_version,
+        )
+        .await?;
+
+    Ok(VisaDecision::Allow(visa, allowed_route))
 }
 
 /// Resolves a pair of optional actors into concrete actors, handling the case where one is

@@ -75,7 +75,7 @@ pub struct Hit {
     /// If there is a signal attached to this permission it is returned here.
     pub signal: Option<Signal>,
 
-    /// If this was evaluated a route it is returned here.
+    /// If this was evaluated over a route it is returned here.
     pub route: Option<Route>,
 }
 
