@@ -1,5 +1,4 @@
 use serde::Serialize;
-use std::fmt;
 use std::net::IpAddr;
 
 use crate::error::EvalError;
@@ -11,11 +10,14 @@ pub struct RouteResidualEvaluator {
     hint: Option<RouteHint>,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Hash, Eq, PartialEq)]
 pub struct AttrMatch {} // TODO
 
 // Answers the question: "Is this route allowed?".
-#[derive(Debug)]
+// Note these are extracted from policy duing first pass.
+//
+// TODO: Investigate why we really need Serialize on this. Is it for ZPT?
+#[derive(Debug, Serialize)]
 pub enum RoutePredicate {
     True,
     DirectOnly,
@@ -116,8 +118,18 @@ impl RouteResidualEvaluator {
 
     // Evaluate a single candidate route against policy.
     //
-    // note that source_actor, dest_actor, packet_desc should already be here since we have
-    // previously done a policy eval call.
+    // We have previously done an eval call on the EvalContext. So we know that the actors
+    // match.  But we may still need to hold on to the relevant actor attributes to make
+    // the evaluation.  The assumption is that everything we need in the residual is populated
+    // in it when it is created.
+    //
+    // Example:
+    //    allow admins to access services over secure links.
+    //    allow employees to access services. # implied: over any link.
+    //    never allow admins to access services over insecure links.
+    //
+    // When this is called with a route to "services" over "insecure" link.
+    // We need to know if the actor is an admin or just an employee.
     pub fn eval_route(
         &self,
         _route: &Route,

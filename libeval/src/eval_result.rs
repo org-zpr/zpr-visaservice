@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use crate::route::{Route, RouteResidualEvaluator};
+use crate::route::{Route, RoutePredicate, RouteResidualEvaluator};
 
 /// The result of an initial evaluation of policy against a communicating pair of
 /// actors and a description of the packet.  This may need further route-based
@@ -75,6 +75,10 @@ pub struct Hit {
     /// If there is a signal attached to this permission it is returned here.
     pub signal: Option<Signal>,
 
+    /// If the hit includes a route constraint, it is returned here.
+    /// Only used/valid in partial results (from pass 1).
+    pub route_predicate: Option<RoutePredicate>,
+
     /// If this was evaluated over a route it is returned here.
     pub route: Option<Route>,
 }
@@ -98,6 +102,7 @@ impl Hit {
             match_idx: index,
             direction,
             signal: None,
+            route_predicate: None,
             route: None,
         }
     }
@@ -108,6 +113,7 @@ impl Hit {
             match_idx: index,
             direction,
             signal: Some(signal),
+            route_predicate: None,
             route: None,
         }
     }
