@@ -492,6 +492,7 @@ mod tests {
 
     use crate::assembly::tests::new_assembly_for_tests;
     use crate::test_helpers::make_node_actor_defexp;
+    use libeval::route::LinkId;
     use std::time::Duration;
 
     // This test just runs a request through the pipeline. There is no real policy here
@@ -499,7 +500,16 @@ mod tests {
     #[tokio::test]
     async fn request_visa_wait_response_denies_when_policy_has_no_match() {
         let (vreq_tx, vreq_rx) = mpsc::channel(8);
-        let asm = Arc::new(new_assembly_for_tests(Some(vreq_tx)).await);
+        let mut asm_inner = new_assembly_for_tests(Some(vreq_tx)).await;
+        let src_zpr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let dst_zpr: IpAddr = "fd5a:5052:3000::2".parse().unwrap();
+        asm_inner.router.add_node(&src_zpr).unwrap();
+        asm_inner.router.add_node(&dst_zpr).unwrap();
+        asm_inner
+            .router
+            .add_link(&src_zpr, &dst_zpr, &LinkId("test-link".into()), &[], 1)
+            .unwrap();
+        let asm = Arc::new(asm_inner);
 
         let source_actor =
             make_node_actor_defexp("fd5a:5052:3000::1", "source-node", "10.0.0.1:10001");

@@ -11,7 +11,7 @@ pub struct RouteResidualEvaluator {
     hint: Option<RouteHint>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct AttrMatch {} // TODO
 
 // Answers the question: "Is this route allowed?".
@@ -31,7 +31,7 @@ pub enum RoutePredicate {
 /// The hint is conservative and may match more routes than are strictly possible by policy.
 /// Not all policies will be able to provide a hint, and in that case all routes need
 /// to be evaluated.
-#[derive(Debug)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct RouteHint {
     /// No links at all (direct connection between source and destination).
     pub direct_only: bool,
@@ -62,7 +62,7 @@ pub struct Route {
     pub cost: u32,
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub String);
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
