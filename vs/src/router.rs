@@ -1,12 +1,20 @@
+//! Router keeps track of nodes and their connections. It does not know anything about adapters.
+//! So to route between two actors you first need to determine their docking nodes.  Then you
+//! can query this Router to see if there is a path.
+//!
+//! Must be kept in sync with the coming and going of nodes, and for each node the coming and
+//! going of links. (TODO)
+
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Mutex;
 
-use libeval::attribute::Attribute;
-use libeval::route::{AttrMatch, LinkId, NodeId, Route, RouteHint, RouteKind, TopologyQueryApi};
+use libeval::attribute::{AttrMatch, Attribute};
+use libeval::eval_route::{RouteHint, TopologyQueryApi};
+use libeval::route::{LinkId, NodeId, Route, RouteKind};
 
-use crate::error::ServiceError;
+use crate::error::TopologyError;
 
 /// This is a memoization key used for the [Router::get_routes] cache. It is the tuple of (addr_a, addr_b, hint)
 /// that identifies a particular query for routes between addr_a and addr_b with the given hint.
@@ -18,16 +26,22 @@ struct RouteCacheKey {
     hint: Option<RouteHint>,
 }
 
-pub struct Router {
+struct RouterInner {
     topology: Graph,
-    route_cache: Mutex<HashMap<RouteCacheKey, Vec<Route>>>,
+    route_cache: HashMap<RouteCacheKey, Vec<Route>>,
+}
+
+pub struct Router {
+    inner: Mutex<RouterInner>,
 }
 
 impl Router {
     pub fn new() -> Self {
         Self {
-            topology: Graph::default(),
-            route_cache: Mutex::new(HashMap::new()),
+            inner: Mutex::new(RouterInner {
+                topology: Graph::default(),
+                route_cache: HashMap::new(),
+            }),
         }
     }
 
@@ -38,46 +52,55 @@ impl Router {
     ///TODO: This does error if nodes exists... should we instead just merge it in?
     ///
     /// ## Errors
-    /// - If node already exists then this returns [ServiceError::TopologyNodeExists]
-    pub fn add_node(&mut self, node_addr: &IpAddr) -> Result<(), ServiceError> {
-        self.topology.add_node(node_addr)?;
-        self.route_cache.lock().unwrap().clear();
+    /// - If node already exists then this returns [TopologyError::NodeExists]
+    pub fn add_node(&self, node_addr: &IpAddr) -> Result<(), TopologyError> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.topology.add_node(node_addr)?;
+        inner.route_cache.clear();
         Ok(())
     }
 
     /// Removes a node and all its incident links from the topology. If the node does not exist this is a no-op.
-    pub fn remove_node(&mut self, node_addr: &IpAddr) {
+    pub fn remove_node(&self, node_addr: &IpAddr) {
+        let mut inner = self.inner.lock().unwrap();
         let nid: NodeId = node_addr.into();
-        self.topology.remove_node(&nid);
-        self.route_cache.lock().unwrap().clear();
+        inner.topology.remove_node(&nid);
+        inner.route_cache.clear();
     }
 
     /// Adds a link between the two nodes identified by the given IP addresses.
     /// The two nodes must be distinct and must already exist in the topology.
     ///
     /// ## Errors
-    /// - If a or b do not exist or are the same then this returns [ServiceError::Topology]
-    /// - If link id already exists then this returns [ServiceError::TopologyEdgeExists]
+    /// - If attempt to create link from a node to itself then this returns [TopologyError::LinkToSelf]
+    /// - If a or b do not exist returns [TopologyError::NodeNotFound]
+    /// - If link id already exists then this returns [TopologyError::LinkExists]
+    ///
+    #[allow(dead_code)]
     pub fn add_link(
-        &mut self,
+        &self,
         zpr_addr_a: &IpAddr,
         zpr_addr_b: &IpAddr,
         id: &LinkId,
         attributes: &[Attribute],
         cost: u32,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<(), TopologyError> {
+        let mut inner = self.inner.lock().unwrap();
         let a = zpr_addr_a.into();
         let b = zpr_addr_b.into();
-        self.topology
+        inner
+            .topology
             .add_link(a, b, id.clone(), attributes.to_vec(), cost)?;
-        self.route_cache.lock().unwrap().clear();
+        inner.route_cache.clear();
         Ok(())
     }
 
     /// Remove a link by its id. If the link does not exist this is a no-op.
-    pub fn remove_link(&mut self, id: &LinkId) {
-        self.topology.remove_link(id);
-        self.route_cache.lock().unwrap().clear();
+    #[allow(dead_code)]
+    pub fn remove_link(&self, id: &LinkId) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.topology.remove_link(id);
+        inner.route_cache.clear();
     }
 
     /// "Best" route is defined as the route with the lowest cost. If there is a tie, one is picked arbitrarily.
@@ -92,7 +115,8 @@ impl Router {
                 cost: 0,
             });
         }
-        let (links, cost) = self.topology.get_low_cost_path(&a, &b)?;
+        let inner = self.inner.lock().unwrap();
+        let (links, cost) = inner.topology.get_low_cost_path(&a, &b)?;
         Some(Route {
             kind: RouteKind::Multihop,
             links,
@@ -114,24 +138,22 @@ impl Router {
             b: addr_b.into(),
             hint: hint.cloned(),
         };
-        {
-            let cache = self.route_cache.lock().unwrap();
-            if let Some(routes) = cache.get(&key) {
-                return routes.clone();
-            }
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(routes) = inner.route_cache.get(&key) {
+            return routes.clone();
         }
-        let routes = self.compute_routes(addr_a, addr_b, hint);
-        self.route_cache.lock().unwrap().insert(key, routes.clone());
+        let routes = Self::compute_routes(&inner.topology, addr_a, addr_b, hint);
+        inner.route_cache.insert(key, routes.clone());
         routes
     }
 
-    /// For now the hint is ignored -- TODO implement ZPL for route policy and then build this out.
-    ///
     /// Unlike `get_best_route` this returns all the routes between addr_a and addr_b.
-    ///
     /// If the optional hint is provided it is used to reduce the set of returned routes. (not yet implemented)
+    ///
+    /// For now the hint is ignored.
+    /// TODO implement ZPL for route policy and then build this out.
     fn compute_routes(
-        &self,
+        topology: &Graph,
         addr_a: &IpAddr,
         addr_b: &IpAddr,
         _hint: Option<&RouteHint>,
@@ -145,7 +167,7 @@ impl Router {
                 cost: 0,
             }];
         }
-        self.topology
+        topology
             .get_all_paths(&a, &b)
             .into_iter()
             .map(|(links, cost)| Route {
@@ -169,6 +191,7 @@ struct Node {
     edges: HashSet<LinkId>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct Link {
     a: NodeId,
@@ -188,13 +211,13 @@ impl Graph {
     /// Add a node into the graph. Node is all alone unless a link is added that includes it.
     ///
     /// ## Errors
-    /// - If node already exists then this returns [ServiceError::TopologyNodeExists]
-    fn add_node(&mut self, node_id: impl Into<NodeId>) -> Result<NodeId, ServiceError> {
+    /// - If node already exists then this returns [TopologyError::NodeExists]
+    fn add_node(&mut self, node_id: impl Into<NodeId>) -> Result<NodeId, TopologyError> {
         let nid = node_id.into();
 
         // If node exists call that an error.
         if self.nodes.contains_key(&nid) {
-            return Err(ServiceError::TopologyNodeExists(nid.0));
+            return Err(TopologyError::NodeExists(nid.0));
         }
 
         self.nodes.insert(
@@ -210,8 +233,9 @@ impl Graph {
     /// Add a link between two nodes. The two nodes must be distinct.
     ///
     /// ## Errors
-    /// - If a or b do not exist or are the same then this returns [ServiceError::Topology]
-    /// - If link id already exists then this returns [ServiceError::TopologyLinkExists]
+    /// - If attempt to create link from a node to itself then this returns [TopologyError::LinkToSelf]
+    /// - If a or b do not exist returns [TopologyError::NodeNotFound]
+    /// - If link id already exists then this returns [TopologyError::LinkExists]
     fn add_link(
         &mut self,
         a: NodeId,
@@ -219,29 +243,29 @@ impl Graph {
         id: LinkId,
         attributes: Vec<Attribute>,
         cost: u32,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<(), TopologyError> {
         if a == b {
-            return Err(ServiceError::Topology(
+            return Err(TopologyError::LinkToSelf(
                 "add_link: self-links are not allowed".into(),
             ));
         }
 
         if !self.nodes.contains_key(&a) {
-            return Err(ServiceError::Topology(format!(
+            return Err(TopologyError::NodeNotFound(format!(
                 "add_link: node {:?} does not exist",
                 a
             )));
         }
 
         if !self.nodes.contains_key(&b) {
-            return Err(ServiceError::Topology(format!(
+            return Err(TopologyError::NodeNotFound(format!(
                 "add_link: node {:?} does not exist",
                 b
             )));
         }
 
         if self.edges.contains_key(&id) {
-            return Err(ServiceError::TopologyLinkExists(id.0));
+            return Err(TopologyError::LinkExists(id.0));
         }
 
         self.edges.insert(
@@ -464,7 +488,7 @@ mod tests {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let c = ip("10.0.0.3");
-        let mut r = Router::new();
+        let r = Router::new();
         r.add_node(&a).unwrap();
         r.add_node(&b).unwrap();
         r.add_node(&c).unwrap();
@@ -484,7 +508,7 @@ mod tests {
     #[test]
     fn test_direct_same_node() {
         let a = ip("10.0.0.1");
-        let mut r = Router::new();
+        let r = Router::new();
         r.add_node(&a).unwrap();
         let route = r.get_best_route(&a, &a).unwrap();
         assert!(route.is_direct());
@@ -496,7 +520,7 @@ mod tests {
     fn test_single_link() {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
-        let mut r = Router::new();
+        let r = Router::new();
         r.add_node(&a).unwrap();
         r.add_node(&b).unwrap();
         r.add_link(&a, &b, &LinkId("ab".into()), &[], 5).unwrap();
@@ -508,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_multihop() {
-        let (mut r, a, b, c) = make_router_abc();
+        let (r, a, b, c) = make_router_abc();
         r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
         r.add_link(&b, &c, &LinkId("bc".into()), &[], 1).unwrap();
         let route = r.get_best_route(&a, &c).unwrap();
@@ -519,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_prefers_lower_cost() {
-        let (mut r, a, b, c) = make_router_abc();
+        let (r, a, b, c) = make_router_abc();
         r.add_link(&a, &b, &LinkId("ab-direct".into()), &[], 10)
             .unwrap();
         r.add_link(&a, &c, &LinkId("ac".into()), &[], 3).unwrap();
@@ -533,7 +557,7 @@ mod tests {
     fn test_unreachable() {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
-        let mut r = Router::new();
+        let r = Router::new();
         r.add_node(&a).unwrap();
         r.add_node(&b).unwrap();
         assert!(r.get_best_route(&a, &b).is_none());
@@ -542,7 +566,7 @@ mod tests {
     #[test]
     fn test_compute_routes_returns_all_paths() {
         // A-B, B-C, A-C: routes from A to C should include both A-B-C and A-C.
-        let (mut r, a, b, c) = make_router_abc();
+        let (r, a, b, c) = make_router_abc();
         r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
         r.add_link(&b, &c, &LinkId("bc".into()), &[], 1).unwrap();
         r.add_link(&a, &c, &LinkId("ac".into()), &[], 5).unwrap();
@@ -564,7 +588,7 @@ mod tests {
     fn test_route_cache_invalidated_after_remove_link() {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
-        let mut r = Router::new();
+        let r = Router::new();
         r.add_node(&a).unwrap();
         r.add_node(&b).unwrap();
         r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();

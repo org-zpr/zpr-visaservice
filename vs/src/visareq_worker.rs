@@ -35,7 +35,7 @@ use libeval::route::Route;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
 use crate::assembly::Assembly;
@@ -500,7 +500,7 @@ mod tests {
     #[tokio::test]
     async fn request_visa_wait_response_denies_when_policy_has_no_match() {
         let (vreq_tx, vreq_rx) = mpsc::channel(8);
-        let mut asm_inner = new_assembly_for_tests(Some(vreq_tx)).await;
+        let asm_inner = new_assembly_for_tests(Some(vreq_tx)).await;
         let src_zpr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
         let dst_zpr: IpAddr = "fd5a:5052:3000::2".parse().unwrap();
         asm_inner.router.add_node(&src_zpr).unwrap();

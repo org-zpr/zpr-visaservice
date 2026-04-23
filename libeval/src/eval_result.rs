@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use crate::route::{Route, RoutePredicate, RouteResidualEvaluator};
+use crate::eval_route::RouteResidualEvaluator;
+use crate::route::{Route, RoutePredicate};
 
 /// The result of an initial evaluation of policy against a communicating pair of
 /// actors and a description of the packet.  This may need further route-based

@@ -22,11 +22,46 @@ use zpr::write_to::WriteTo;
 use crate::assembly::Assembly;
 use crate::config;
 use crate::counters::CounterType;
-use crate::error::ServiceError;
+use crate::error::{ServiceError, TopologyError};
 use crate::event_mgr::VsEvent;
 use crate::logging::targets::API;
 use crate::net_mgr;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
+
+// During node authentication we keep track in here of what state we have
+// changed so that we can do an undo in case of an error in the sequence.
+#[derive(Default)]
+struct AuthenticateUndo {
+    taken_zpr_addr: Option<IpAddr>,
+    actor_mgr_add_node: Option<IpAddr>,
+    added_node_to_router: Option<IpAddr>,
+}
+
+impl AuthenticateUndo {
+    fn took_zpr_addr(&mut self, addr: &IpAddr) {
+        self.taken_zpr_addr = Some(addr.clone());
+    }
+
+    fn added_node_to_actor_mgr(&mut self, addr: &IpAddr) {
+        self.actor_mgr_add_node = Some(addr.clone());
+    }
+
+    fn added_node_to_router(&mut self, addr: &IpAddr) {
+        self.added_node_to_router = Some(addr.clone());
+    }
+
+    fn undo(self, asm: &Assembly) {
+        if let Some(addr) = self.added_node_to_router {
+            let _ = asm.router.remove_node(&addr);
+        }
+        if let Some(addr) = self.actor_mgr_add_node {
+            let _ = asm.actor_mgr.remove_node(&addr);
+        }
+        if let Some(addr) = self.taken_zpr_addr {
+            let _ = asm.net_mgr.release_zpr_addr(addr);
+        }
+    }
+}
 
 pub async fn launch_capnp(
     asm: Arc<Assembly>,
@@ -537,27 +572,36 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             }
         };
 
+        // At this point we may have taken an IP addr and assigned it to the actor.
+        let mut undo = AuthenticateUndo::default();
+
         // Sanity check - every node has a CN and a ZPR address.
         // If this fails it means our authentication code is broken.
-        let node_cn = match node_actor.get_cn() {
-            Some(cn) => cn.to_owned(),
-            None => {
-                error!(target: API, "auth subsystem failed to set a CN on an authenticated node");
-                return self.ok_with_authenticate_error(
-                    results,
-                    vsapi::ErrorCode::Internal,
-                    "assertion failed (CN)",
-                );
-            }
-        };
         let node_zpr_addr = match node_actor.get_zpr_addr() {
             Some(addr) => addr.clone(),
             None => {
                 error!(target: API, "auth subsystem failed to set a ZPR address on an authenticated node");
+                undo.undo(&self.asm);
                 return self.ok_with_authenticate_error(
                     results,
                     vsapi::ErrorCode::Internal,
                     "assertion failed (ADDR)",
+                );
+            }
+        };
+        if self.asm.net_mgr.is_managed_address(&node_zpr_addr) {
+            undo.took_zpr_addr(&node_zpr_addr);
+        }
+
+        let node_cn = match node_actor.get_cn() {
+            Some(cn) => cn.to_owned(),
+            None => {
+                error!(target: API, "auth subsystem failed to set a CN on an authenticated node");
+                undo.undo(&self.asm);
+                return self.ok_with_authenticate_error(
+                    results,
+                    vsapi::ErrorCode::Internal,
+                    "assertion failed (CN)",
                 );
             }
         };
@@ -588,14 +632,17 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         if !self.reconnect {
             if let Err(e) = self.asm.visa_mgr.clear_node_state(&node_zpr_addr).await {
                 error!(target: API, "failed to clear node state for {:?}: {}", &node_cn, e);
+                undo.undo(&self.asm);
                 return self.ok_with_authenticate_error(
                     results,
                     vsapi::ErrorCode::Internal,
                     "failed to clear node state",
                 );
             }
+            self.asm.router.remove_node(&node_zpr_addr);
         }
 
+        // The add_node call will clean up after ifself if it fails.
         if let Err(e) = self
             .asm
             .actor_mgr
@@ -603,6 +650,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             .await
         {
             error!(target: API, "failed to add authenticated node {:?} to actor db: {}", &node_cn, e);
+            undo.undo(&self.asm);
             return self.ok_with_authenticate_error(
                 results,
                 vsapi::ErrorCode::Internal,
@@ -610,9 +658,43 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             );
         }
 
+        undo.added_node_to_actor_mgr(&node_zpr_addr);
+
+        // Add the node to the router.
+        match self.asm.router.add_node(&node_zpr_addr) {
+            Ok(()) => (),
+            Err(TopologyError::NodeExists(_)) => {
+                // Attempt to remove and re-add.
+                warn!(target: API, "node {:?} already exists in router, attempting to remove and re-add", &node_cn);
+                self.asm.router.remove_node(&node_zpr_addr);
+                if let Err(e) = self.asm.router.add_node(&node_zpr_addr) {
+                    // Failed to add the node to the router. We won't be able to route visas through this node.
+                    // Best to just abort this connect.
+                    error!(target: API, "router: failed to add node {} to router after removing existing: {}", node_zpr_addr, e);
+                    undo.undo(&self.asm);
+                    return self.ok_with_authenticate_error(
+                        results,
+                        vsapi::ErrorCode::Internal,
+                        "router update failed",
+                    );
+                }
+            }
+            Err(e) => {
+                unreachable!("unexpected error adding node to router: {}", e);
+            }
+        }
+
+        undo.added_node_to_router(&node_zpr_addr);
+
         let evt = VsEvent::ActorJoins(node_zpr_addr);
         if let Err(e) = self.asm.event_mgr.record_event(evt).await {
-            warn!(target: API, "failed to record actor joins event for node {:?}: {}", &node_cn, e);
+            error!(target: API, "failed to record actor joins event for node {:?}: {}", &node_cn, e);
+            undo.undo(&self.asm);
+            return self.ok_with_authenticate_error(
+                results,
+                vsapi::ErrorCode::Internal,
+                "event enqueue failed",
+            );
         }
         self.asm.counters.incr(CounterType::NodeConnectionsSuccess);
 
