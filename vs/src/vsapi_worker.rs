@@ -38,14 +38,17 @@ struct AuthenticateUndo {
 }
 
 impl AuthenticateUndo {
+    /// We checked out one of our ZPR addresses.
     fn took_zpr_addr(&mut self, addr: &IpAddr) {
         self.taken_zpr_addr = Some(addr.clone());
     }
 
+    /// We added a node to state.
     fn added_node_to_actor_mgr(&mut self, addr: &IpAddr) {
         self.actor_mgr_add_node = Some(addr.clone());
     }
 
+    /// We added a node to the router.
     fn added_node_to_router(&mut self, addr: &IpAddr) {
         self.added_node_to_router = Some(addr.clone());
     }
@@ -55,6 +58,7 @@ impl AuthenticateUndo {
             let _ = asm.router.remove_node(&addr);
         }
         if let Some(addr) = self.actor_mgr_add_node {
+            // Will also remove the vs-docking mapping.
             let _ = asm.actor_mgr.remove_node(&addr);
         }
         if let Some(addr) = self.taken_zpr_addr {
@@ -657,8 +661,43 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                 "state update failed",
             );
         }
-
         undo.added_node_to_actor_mgr(&node_zpr_addr);
+
+        // TODO: This is a hack: the visa service "actor" needs to know what node it's adapter is docked to.
+        //       Ideally we would query our adapter directly.
+        {
+            if let Ok(maybe_visa_service_actor) =
+                self.asm.actor_mgr.get_actor_by_cn(config::VS_CN).await
+            {
+                if let Some(visa_service_actor) = maybe_visa_service_actor {
+                    if self
+                        .asm
+                        .actor_mgr
+                        .get_docking_node_for_actor(&visa_service_actor)
+                        .is_none()
+                    {
+                        // VS does not yet have a docking address.  ASSUME this node is our dock.
+                        // This does not update the 'connect_via' attribute on the vs actor. (TODO - rethink that)
+
+                        if let Err(e) = self
+                            .asm
+                            .actor_mgr
+                            .hack_set_vs_docking_node(&node_zpr_addr)
+                            .await
+                        {
+                            error!(target: API, "failed to set VS docking node to {:?}: {}", &node_cn, e);
+                            undo.undo(&self.asm);
+                            return self.ok_with_authenticate_error(
+                                results,
+                                vsapi::ErrorCode::Internal,
+                                "vs docking node update failed",
+                            );
+                        }
+                        // No need to update the `undo` here since undoing the node-add will also remove the vs docking mapping.
+                    }
+                }
+            }
+        }
 
         // Add the node to the router.
         match self.asm.router.add_node(&node_zpr_addr) {

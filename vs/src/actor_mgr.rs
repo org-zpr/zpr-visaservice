@@ -1,6 +1,7 @@
 //! Actor manager. Manages nodes too.
 //!
 
+use dashmap::DashMap;
 use libeval::actor::Actor;
 use libeval::attribute::key;
 use std::collections::{HashMap, HashSet};
@@ -13,6 +14,7 @@ use zpr::policy_types::{Scope, ServiceType};
 use zpr::vsapi_types::ServiceDescriptor;
 
 use crate::assembly::Assembly;
+use crate::config;
 use crate::counters::Counters;
 use crate::db;
 use crate::db::ServiceEntry;
@@ -23,6 +25,7 @@ pub struct ActorMgr {
     actor_db: db::ActorRepo,
     node_db: db::NodeRepo,
     counters: Arc<Counters>,
+    connection_table: DashMap<IpAddr, IpAddr>, // adapter_zpr_addr -> docking_node_zpr_addr
 }
 
 pub struct ServiceDetail {
@@ -49,6 +52,7 @@ impl ActorMgr {
             actor_db: actor_repo,
             node_db: node_repo,
             counters,
+            connection_table: DashMap::new(),
         }
     }
 
@@ -81,6 +85,20 @@ impl ActorMgr {
 
             if let Err(e) = self.node_db.clear_node_vss(node_addr).await {
                 warn!(target: ACTOR, "refresh_state: failed to clear VSS info for node at {}: {}", node_addr, e);
+            }
+
+            match self.node_db.get_connected_adapters(node_addr).await {
+                Ok(adapters) => {
+                    for adapter_addr in adapters {
+                        self.connection_table.insert(adapter_addr, *node_addr);
+                    }
+                }
+                Err(StoreError::NotFound(_)) => {
+                    // No connected adapters, that's fine.
+                }
+                Err(e) => {
+                    warn!(target: ACTOR, "refresh_state: failed to get connected adapters for node at {}: {}", node_addr, e);
+                }
             }
         }
 
@@ -127,8 +145,14 @@ impl ActorMgr {
 
     /// Use [ActorMgr::remove_actor_by_zpr_addr] to remove actor records which apply to both nodes and adapters.
     /// Use this function here in addition to remove node state.
+    ///
+    /// Also updates our internal connection table.
     pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         self.node_db.remove_node(node_addr).await?;
+
+        // Remove any connections that point to this node.
+        self.connection_table.retain(|_, v| v != node_addr);
+
         self.counters.remove_node_info(node_addr);
         Ok(())
     }
@@ -158,7 +182,7 @@ impl ActorMgr {
     }
 
     /// Add an adapter that is connected to a node.
-    #[allow(dead_code)]
+    /// Also updates our in-memory connection table.
     pub async fn add_adapter_via_node(
         &self,
         actor: &Actor,
@@ -169,23 +193,50 @@ impl ActorMgr {
                 "attempt to add node actor as adapter".into(),
             ));
         }
+
+        let Some(adapter_addr) = actor.get_zpr_addr() else {
+            return Err(ServiceError::Internal(format!(
+                "attempt to add adapter actor without ZPR address: CN={:?}",
+                actor.get_cn()
+            )));
+        };
+
         self.actor_db.add_actor(actor).await?;
         self.node_db
-            .add_connected_adater(connected_to_node, &actor.get_zpr_addr().unwrap())
+            .add_connected_adater(connected_to_node, adapter_addr)
             .await?;
+
+        self.connection_table
+            .insert(*adapter_addr, *connected_to_node);
+
         Ok(())
     }
 
-    /// This is probably temporary: we use this to add the phantom visa service adapter.
+    /// Hack: we use this to add the phantom visa service adapter.
     /// We don't know what node it is attached to yet.
-    #[allow(dead_code)]
-    pub async fn add_adapter_no_node(&self, actor: &Actor) -> Result<(), ServiceError> {
+    pub async fn hack_add_adapter_no_node(&self, actor: &Actor) -> Result<(), ServiceError> {
         if actor.is_node() {
             return Err(ServiceError::Internal(
                 "attempt to add node actor as adapter".into(),
             ));
         }
         self.actor_db.add_actor(actor).await?;
+        Ok(())
+    }
+
+    // Hack: this sets the docking node for the visa service adapter.
+    // TODO: Need a better way to do this. Perhaps talking to the local adapter directly? Perhaps our docking
+    // node can send a message over the vsapi (like a connection_request?).
+    pub async fn hack_set_vs_docking_node(
+        &self,
+        node_zpr_addr: &IpAddr,
+    ) -> Result<(), ServiceError> {
+        let vs_zpr_addr = IpAddr::V6(config::VS_ZPR_ADDR);
+        self.node_db
+            .add_connected_adater(node_zpr_addr, &vs_zpr_addr)
+            .await?;
+
+        self.connection_table.insert(vs_zpr_addr, *node_zpr_addr);
         Ok(())
     }
 
@@ -211,7 +262,9 @@ impl ActorMgr {
 
     /// Remove actor state from the database. If removing a node, also call [ActorMgr::remove_node].
     pub async fn remove_actor_by_zpr_addr(&self, zpra: &IpAddr) -> Result<(), ServiceError> {
-        Ok(self.actor_db.rm_actor_by_zpr_addr(zpra).await?)
+        self.actor_db.rm_actor_by_zpr_addr(zpra).await?;
+        self.connection_table.remove(zpra);
+        Ok(())
     }
 
     /// Returns ZPR addresses of adapters (NOT nodes) connected to the given node.
@@ -225,6 +278,24 @@ impl ActorMgr {
             .await?
             .into_iter()
             .collect())
+    }
+
+    /// Get the node address that the actor is "docked" to.  This only works for
+    /// "adapter" role actors (a "node" actor is considered to be docked to itself).
+    ///
+    /// Returns NONE if we cannot determine a docking node ZPR address.
+    pub fn get_docking_node_for_actor(&self, actor: &Actor) -> Option<IpAddr> {
+        if actor.is_node() {
+            None
+        } else {
+            if let Some(actor_addr) = actor.get_zpr_addr() {
+                self.connection_table
+                    .get(actor_addr)
+                    .map(|entry| *entry.value())
+            } else {
+                None
+            }
+        }
     }
 
     pub async fn get_adapter_cns_connected_to_node(
@@ -656,7 +727,7 @@ mod test {
             &["svc:auth", "svc:regular", "svc:unknown"],
             "adapter-auth",
         );
-        mgr.add_adapter_no_node(&actor).await.unwrap();
+        mgr.hack_add_adapter_no_node(&actor).await.unwrap();
 
         let auth_service = Service {
             id: "svc:auth".to_string(),
@@ -706,7 +777,7 @@ mod test {
             &["svc:auth"],
             "adapter-regular",
         );
-        mgr.add_adapter_no_node(&actor).await.unwrap();
+        mgr.hack_add_adapter_no_node(&actor).await.unwrap();
 
         let regular_service = Service {
             id: "svc:auth".to_string(),

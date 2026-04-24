@@ -222,10 +222,42 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
     };
 
-    let Some(default_route) = asm.router.get_best_route(&source_zpr_addr, &dest_zpr_addr) else {
+    // A visa request has a requesting node. So that is a route starting point. We then need
+    // to find the node attached to the destination actor.  The actors may themselves be nodes.
+
+    let node_addr_a = if source_actor.is_node() {
+        source_zpr_addr.clone()
+    } else {
+        match asm.actor_mgr.get_docking_node_for_actor(&source_actor) {
+            Some(node_addr) => node_addr,
+            None => {
+                warn!(target: VREQ,
+                    "visa request from {:?} denied: source actor {:?} is not docked to any node",
+                    job.requesting_node, source_actor
+                );
+                return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
+            }
+        }
+    };
+    let node_addr_b = if dest_actor.is_node() {
+        dest_zpr_addr.clone()
+    } else {
+        match asm.actor_mgr.get_docking_node_for_actor(&dest_actor) {
+            Some(node_addr) => node_addr,
+            None => {
+                warn!(target: VREQ,
+                    "visa request from {:?} denied: dest actor {:?} is not docked to any node",
+                    job.requesting_node, dest_actor
+                );
+                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
+            }
+        }
+    };
+
+    let Some(default_route) = asm.router.get_best_route(&node_addr_a, &node_addr_b) else {
         info!(target: VREQ,
             "visa request from {:?} denied: no route between {:?} and {:?}",
-            job.requesting_node, source_zpr_addr, dest_zpr_addr
+            job.requesting_node, node_addr_a, node_addr_b
         );
         return Ok(VisaDecision::Deny(DenyCode::NoReason)); // TODO: Update to the NoRoute code when available in vsapi
     };

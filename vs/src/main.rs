@@ -392,7 +392,7 @@ async fn self_authorize(asm: Arc<Assembly>, vs_addr: &IpAddr) -> Result<(), Serv
         .authenticate_visa_service(asm.clone(), claims)
         .await?;
 
-    asm.actor_mgr.add_adapter_no_node(&actor).await?;
+    asm.actor_mgr.hack_add_adapter_no_node(&actor).await?;
 
     let evt = VsEvent::ActorJoins(vs_addr.clone());
     if let Err(e) = asm.event_mgr.record_event(evt).await {
