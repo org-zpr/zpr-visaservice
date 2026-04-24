@@ -284,13 +284,14 @@ impl ActorMgr {
             .collect())
     }
 
-    /// Get the node address that the actor is "docked" to.  This only works for
-    /// "adapter" role actors (a "node" actor is considered to be docked to itself).
+    /// Get the node address that the actor is "docked" to.
+    /// A "node" actor is considered to be docked to itself (returns the actors own address
+    /// in this case).
     ///
     /// Returns NONE if we cannot determine a docking node ZPR address.
     pub fn get_docking_node_for_actor(&self, actor: &Actor) -> Option<IpAddr> {
         if actor.is_node() {
-            None
+            actor.get_zpr_addr().copied()
         } else {
             if let Some(actor_addr) = actor.get_zpr_addr() {
                 self.connection_table
@@ -540,7 +541,8 @@ mod test {
     use crate::counters::Counters;
     use crate::db::{ActorRepo, FakeDb, NodeRepo};
     use crate::test_helpers::{
-        make_actor_with_services_defexp, make_adapter_actor_defexp, make_node_actor_defexp,
+        make_actor_defexp, make_actor_with_services_defexp, make_adapter_actor_defexp,
+        make_node_actor_defexp,
     };
 
     use bytes::Bytes;
@@ -961,5 +963,206 @@ mod test {
             Ok(cns) => assert!(cns.is_empty()),
             Err(_) => {} // Also acceptable — unknown node is not in DB.
         }
+    }
+
+    // --- connection table / get_docking_node_for_actor tests ---
+
+    #[tokio::test]
+    async fn test_get_docking_node_for_node_actor_returns_self() {
+        let mgr = make_mgr();
+        let node_addr: IpAddr = "fd5a:5052::30".parse().unwrap();
+        let node_actor =
+            make_node_actor_defexp("fd5a:5052::30", "node-self", "[fd5a:5052::130]:1234");
+
+        mgr.add_node(&node_actor, false).await.unwrap();
+
+        let docking = mgr.get_docking_node_for_actor(&node_actor);
+        assert_eq!(docking, Some(node_addr));
+    }
+
+    #[tokio::test]
+    async fn test_get_docking_node_for_adapter_with_connection_returns_node() {
+        let mgr = make_mgr();
+        let node_addr: IpAddr = "fd5a:5052::31".parse().unwrap();
+        let node_actor =
+            make_node_actor_defexp("fd5a:5052::31", "node-dock", "[fd5a:5052::131]:1234");
+        let adapter_actor = make_adapter_actor_defexp("fd5a:5052::32", "adapter-dock");
+
+        mgr.add_node(&node_actor, false).await.unwrap();
+        mgr.add_adapter_via_node(&adapter_actor, &node_addr)
+            .await
+            .unwrap();
+
+        let docking = mgr.get_docking_node_for_actor(&adapter_actor);
+        assert_eq!(docking, Some(node_addr));
+    }
+
+    #[tokio::test]
+    async fn test_get_docking_node_for_adapter_not_in_connection_table_returns_none() {
+        let mgr = make_mgr();
+        // Adapter added to actor DB but NOT via a node (so no connection_table entry).
+        let adapter_actor = make_adapter_actor_defexp("fd5a:5052::33", "adapter-orphan");
+        mgr.hack_add_adapter_no_node(&adapter_actor).await.unwrap();
+
+        let docking = mgr.get_docking_node_for_actor(&adapter_actor);
+        assert_eq!(docking, None);
+    }
+
+    #[test]
+    fn test_get_docking_node_for_actor_without_zpr_addr_returns_none() {
+        let mgr = make_mgr();
+        // Actor with no ZPR_ADDR attribute at all.
+        let actor = make_actor_defexp(&[
+            (
+                libeval::attribute::key::ROLE,
+                libeval::attribute::ROLE_ADAPTER,
+            ),
+            (libeval::attribute::key::CN, "no-addr-actor"),
+        ]);
+
+        let docking = mgr.get_docking_node_for_actor(&actor);
+        assert_eq!(docking, None);
+    }
+
+    #[tokio::test]
+    async fn test_remove_actor_clears_connection_table_entry() {
+        let mgr = make_mgr();
+        let node_addr: IpAddr = "fd5a:5052::34".parse().unwrap();
+        let adapter_addr: IpAddr = "fd5a:5052::35".parse().unwrap();
+        let node_actor =
+            make_node_actor_defexp("fd5a:5052::34", "node-rm-ct", "[fd5a:5052::134]:1234");
+        let adapter_actor = make_adapter_actor_defexp("fd5a:5052::35", "adapter-rm-ct");
+
+        mgr.add_node(&node_actor, false).await.unwrap();
+        mgr.add_adapter_via_node(&adapter_actor, &node_addr)
+            .await
+            .unwrap();
+
+        // Confirm the entry is present before removal.
+        assert_eq!(
+            mgr.get_docking_node_for_actor(&adapter_actor),
+            Some(node_addr)
+        );
+
+        mgr.remove_actor_by_zpr_addr(&adapter_addr).await.unwrap();
+
+        // Entry must be gone from the connection table after removal.
+        assert_eq!(mgr.get_docking_node_for_actor(&adapter_actor), None);
+    }
+
+    #[tokio::test]
+    async fn test_remove_node_clears_adapters_from_connection_table() {
+        let mgr = make_mgr();
+        let node_addr: IpAddr = "fd5a:5052::36".parse().unwrap();
+        let node_actor =
+            make_node_actor_defexp("fd5a:5052::36", "node-rm-node", "[fd5a:5052::136]:1234");
+        let adapter1 = make_adapter_actor_defexp("fd5a:5052::37", "adapter-rm-1");
+        let adapter2 = make_adapter_actor_defexp("fd5a:5052::38", "adapter-rm-2");
+
+        mgr.add_node(&node_actor, false).await.unwrap();
+        mgr.add_adapter_via_node(&adapter1, &node_addr)
+            .await
+            .unwrap();
+        mgr.add_adapter_via_node(&adapter2, &node_addr)
+            .await
+            .unwrap();
+
+        assert_eq!(mgr.get_docking_node_for_actor(&adapter1), Some(node_addr));
+        assert_eq!(mgr.get_docking_node_for_actor(&adapter2), Some(node_addr));
+
+        mgr.remove_node(&node_addr).await.unwrap();
+
+        // Both adapter entries must be purged from the connection table.
+        assert_eq!(mgr.get_docking_node_for_actor(&adapter1), None);
+        assert_eq!(mgr.get_docking_node_for_actor(&adapter2), None);
+    }
+
+    #[tokio::test]
+    async fn test_remove_node_does_not_affect_other_nodes_connections() {
+        let mgr = make_mgr();
+        let node_a_addr: IpAddr = "fd5a:5052::39".parse().unwrap();
+        let node_b_addr: IpAddr = "fd5a:5052::40".parse().unwrap();
+        let node_a = make_node_actor_defexp("fd5a:5052::39", "node-a-rm", "[fd5a:5052::139]:1234");
+        let node_b = make_node_actor_defexp("fd5a:5052::40", "node-b-rm", "[fd5a:5052::140]:1234");
+        let adapter_a = make_adapter_actor_defexp("fd5a:5052::41", "adapter-on-a");
+        let adapter_b = make_adapter_actor_defexp("fd5a:5052::42", "adapter-on-b");
+
+        mgr.add_node(&node_a, false).await.unwrap();
+        mgr.add_node(&node_b, false).await.unwrap();
+        mgr.add_adapter_via_node(&adapter_a, &node_a_addr)
+            .await
+            .unwrap();
+        mgr.add_adapter_via_node(&adapter_b, &node_b_addr)
+            .await
+            .unwrap();
+
+        mgr.remove_node(&node_a_addr).await.unwrap();
+
+        // adapter_a's entry is gone, but adapter_b's entry (on node_b) must remain.
+        assert_eq!(mgr.get_docking_node_for_actor(&adapter_a), None);
+        assert_eq!(
+            mgr.get_docking_node_for_actor(&adapter_b),
+            Some(node_b_addr)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hack_set_vs_docking_node_updates_connection_table() {
+        let mgr = make_mgr();
+        let node_addr: IpAddr = "fd5a:5052::43".parse().unwrap();
+        let node_actor =
+            make_node_actor_defexp("fd5a:5052::43", "node-vs-hack", "[fd5a:5052::143]:1234");
+        let vs_addr = IpAddr::V6(crate::config::VS_ZPR_ADDR);
+
+        mgr.add_node(&node_actor, false).await.unwrap();
+        mgr.hack_set_vs_docking_node(&node_addr).await.unwrap();
+
+        // The VS adapter should now resolve to node_addr in the connection table.
+        let vs_actor = make_actor_defexp(&[
+            (
+                libeval::attribute::key::ROLE,
+                libeval::attribute::ROLE_ADAPTER,
+            ),
+            (libeval::attribute::key::CN, "visa-service"),
+            (libeval::attribute::key::ZPR_ADDR, &vs_addr.to_string()),
+        ]);
+        let docking = mgr.get_docking_node_for_actor(&vs_actor);
+        assert_eq!(docking, Some(node_addr));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_state_populates_connection_table() {
+        // Set up state via one manager instance, then verify a fresh manager's
+        // refresh_state repopulates the connection table from the DB.
+        let db = Arc::new(crate::db::FakeDb::new());
+        let actor_repo = crate::db::ActorRepo::new(db.clone());
+        let node_repo = crate::db::NodeRepo::new(db.clone());
+        let mgr1 = ActorMgr::new(actor_repo, node_repo, Arc::new(Counters::default()));
+
+        let node_addr: IpAddr = "fd5a:5052::44".parse().unwrap();
+        let node_actor =
+            make_node_actor_defexp("fd5a:5052::44", "node-refresh", "[fd5a:5052::144]:1234");
+        let adapter_actor = make_adapter_actor_defexp("fd5a:5052::45", "adapter-refresh");
+
+        mgr1.add_node(&node_actor, false).await.unwrap();
+        mgr1.add_adapter_via_node(&adapter_actor, &node_addr)
+            .await
+            .unwrap();
+
+        // Create a fresh manager over the same DB (no in-memory connection_table).
+        let actor_repo2 = crate::db::ActorRepo::new(db.clone());
+        let node_repo2 = crate::db::NodeRepo::new(db.clone());
+        let mgr2 = ActorMgr::new(actor_repo2, node_repo2, Arc::new(Counters::default()));
+
+        // Before refresh the connection table is empty.
+        assert_eq!(mgr2.get_docking_node_for_actor(&adapter_actor), None);
+
+        mgr2.refresh_state().await.unwrap();
+
+        // After refresh the adapter should resolve to its node.
+        assert_eq!(
+            mgr2.get_docking_node_for_actor(&adapter_actor),
+            Some(node_addr)
+        );
     }
 }

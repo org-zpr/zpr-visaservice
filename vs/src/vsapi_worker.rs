@@ -53,13 +53,13 @@ impl AuthenticateUndo {
         self.added_node_to_router = Some(addr.clone());
     }
 
-    fn undo(self, asm: &Assembly) {
+    async fn undo(self, asm: &Assembly) {
         if let Some(addr) = self.added_node_to_router {
-            let _ = asm.router.remove_node(&addr);
+            asm.router.remove_node(&addr);
         }
         if let Some(addr) = self.actor_mgr_add_node {
-            // Will also remove the vs-docking mapping.
-            let _ = asm.actor_mgr.remove_node(&addr);
+            let _ = asm.actor_mgr.remove_node(&addr).await;
+            let _ = asm.actor_mgr.remove_actor_by_zpr_addr(&addr).await;
         }
         if let Some(addr) = self.taken_zpr_addr {
             let _ = asm.net_mgr.release_zpr_addr(addr);
@@ -585,7 +585,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             Some(addr) => addr.clone(),
             None => {
                 error!(target: API, "auth subsystem failed to set a ZPR address on an authenticated node");
-                undo.undo(&self.asm);
+                undo.undo(&self.asm).await;
                 return self.ok_with_authenticate_error(
                     results,
                     vsapi::ErrorCode::Internal,
@@ -601,7 +601,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             Some(cn) => cn.to_owned(),
             None => {
                 error!(target: API, "auth subsystem failed to set a CN on an authenticated node");
-                undo.undo(&self.asm);
+                undo.undo(&self.asm).await;
                 return self.ok_with_authenticate_error(
                     results,
                     vsapi::ErrorCode::Internal,
@@ -636,7 +636,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         if !self.reconnect {
             if let Err(e) = self.asm.visa_mgr.clear_node_state(&node_zpr_addr).await {
                 error!(target: API, "failed to clear node state for {:?}: {}", &node_cn, e);
-                undo.undo(&self.asm);
+                undo.undo(&self.asm).await;
                 return self.ok_with_authenticate_error(
                     results,
                     vsapi::ErrorCode::Internal,
@@ -654,7 +654,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             .await
         {
             error!(target: API, "failed to add authenticated node {:?} to actor db: {}", &node_cn, e);
-            undo.undo(&self.asm);
+            undo.undo(&self.asm).await;
             return self.ok_with_authenticate_error(
                 results,
                 vsapi::ErrorCode::Internal,
@@ -686,7 +686,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                             .await
                         {
                             error!(target: API, "failed to set VS docking node to {:?}: {}", &node_cn, e);
-                            undo.undo(&self.asm);
+                            undo.undo(&self.asm).await;
                             return self.ok_with_authenticate_error(
                                 results,
                                 vsapi::ErrorCode::Internal,
@@ -710,7 +710,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                     // Failed to add the node to the router. We won't be able to route visas through this node.
                     // Best to just abort this connect.
                     error!(target: API, "router: failed to add node {} to router after removing existing: {}", node_zpr_addr, e);
-                    undo.undo(&self.asm);
+                    undo.undo(&self.asm).await;
                     return self.ok_with_authenticate_error(
                         results,
                         vsapi::ErrorCode::Internal,
@@ -728,7 +728,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         let evt = VsEvent::ActorJoins(node_zpr_addr);
         if let Err(e) = self.asm.event_mgr.record_event(evt).await {
             error!(target: API, "failed to record actor joins event for node {:?}: {}", &node_cn, e);
-            undo.undo(&self.asm);
+            undo.undo(&self.asm).await;
             return self.ok_with_authenticate_error(
                 results,
                 vsapi::ErrorCode::Internal,
@@ -1265,5 +1265,108 @@ mod tests {
         assert_eq!(result[0].name, "param0");
         assert_eq!(result[1].name, "param1");
         assert_eq!(result[2].name, "param2");
+    }
+
+    mod authenticate_undo {
+        use super::*;
+        use crate::assembly::tests::new_assembly_for_tests;
+        use crate::test_helpers::make_node_actor_defexp;
+        use libeval::actor::Role;
+        use std::sync::Arc;
+
+        #[tokio::test]
+        async fn test_noop() {
+            let asm = Arc::new(new_assembly_for_tests(None).await);
+            let undo = AuthenticateUndo::default();
+            undo.undo(&asm).await; // must not panic
+        }
+
+        #[tokio::test]
+        async fn test_releases_zpr_addr() {
+            let asm = Arc::new(new_assembly_for_tests(None).await);
+            let addr = asm.net_mgr.get_next_zpr_addr(&Role::Node).unwrap();
+
+            let mut undo = AuthenticateUndo::default();
+            undo.took_zpr_addr(&addr);
+            undo.undo(&asm).await;
+
+            // Address was released back to the pool, so take_zpr_addr should succeed.
+            assert!(
+                asm.net_mgr.take_zpr_addr(&addr).is_ok(),
+                "address should have been released by undo"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_removes_node_from_router() {
+            let asm = Arc::new(new_assembly_for_tests(None).await);
+            let addr: IpAddr = "fd5a:5052:90de:1::1".parse().unwrap();
+
+            asm.router.add_node(&addr).unwrap();
+
+            let mut undo = AuthenticateUndo::default();
+            undo.added_node_to_router(&addr);
+            undo.undo(&asm).await;
+
+            // Node was removed, so add_node must succeed again.
+            assert!(
+                asm.router.add_node(&addr).is_ok(),
+                "node should have been removed from router by undo"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_removes_node_from_actor_mgr() {
+            let asm = Arc::new(new_assembly_for_tests(None).await);
+            let addr: IpAddr = "fd5a:5052:90de:1::2".parse().unwrap();
+            let actor =
+                make_node_actor_defexp("fd5a:5052:90de:1::2", "test-node", "[fd5a:5052::100]:1234");
+
+            asm.actor_mgr.add_node(&actor, false).await.unwrap();
+
+            let mut undo = AuthenticateUndo::default();
+            undo.added_node_to_actor_mgr(&addr);
+            undo.undo(&asm).await;
+
+            let result = asm.actor_mgr.get_actor_by_zpr_addr(&addr).await.unwrap();
+            assert!(
+                result.is_none(),
+                "node should have been removed from actor_mgr by undo"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_all_three_undone() {
+            let asm = Arc::new(new_assembly_for_tests(None).await);
+            let addr = asm.net_mgr.get_next_zpr_addr(&Role::Node).unwrap();
+            let actor =
+                make_node_actor_defexp(&addr.to_string(), "test-node-2", "[fd5a:5052::101]:1234");
+
+            asm.actor_mgr.add_node(&actor, false).await.unwrap();
+            asm.router.add_node(&addr).unwrap();
+
+            let mut undo = AuthenticateUndo::default();
+            undo.took_zpr_addr(&addr);
+            undo.added_node_to_actor_mgr(&addr);
+            undo.added_node_to_router(&addr);
+            undo.undo(&asm).await;
+
+            assert!(
+                asm.router.add_node(&addr).is_ok(),
+                "node should have been removed from router"
+            );
+            asm.router.remove_node(&addr);
+
+            let actor_result = asm.actor_mgr.get_actor_by_zpr_addr(&addr).await.unwrap();
+            assert!(
+                actor_result.is_none(),
+                "node should have been removed from actor_mgr"
+            );
+
+            assert!(
+                asm.net_mgr.take_zpr_addr(&addr).is_ok(),
+                "zpr address should have been released"
+            );
+        }
     }
 }

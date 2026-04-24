@@ -225,32 +225,24 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
     // A visa request has a requesting node. So that is a route starting point. We then need
     // to find the node attached to the destination actor.  The actors may themselves be nodes.
 
-    let node_addr_a = if source_actor.is_node() {
-        source_zpr_addr.clone()
-    } else {
-        match asm.actor_mgr.get_docking_node_for_actor(&source_actor) {
-            Some(node_addr) => node_addr,
-            None => {
-                warn!(target: VREQ,
-                    "visa request from {:?} denied: source actor {:?} is not docked to any node",
-                    job.requesting_node, source_actor
-                );
-                return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
-            }
+    let node_addr_a = match asm.actor_mgr.get_docking_node_for_actor(&source_actor) {
+        Some(node_addr) => node_addr,
+        None => {
+            warn!(target: VREQ,
+                "visa request from {:?} denied: source actor {:?} is not docked to any node",
+                job.requesting_node, source_actor
+            );
+            return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
         }
     };
-    let node_addr_b = if dest_actor.is_node() {
-        dest_zpr_addr.clone()
-    } else {
-        match asm.actor_mgr.get_docking_node_for_actor(&dest_actor) {
-            Some(node_addr) => node_addr,
-            None => {
-                warn!(target: VREQ,
-                    "visa request from {:?} denied: dest actor {:?} is not docked to any node",
-                    job.requesting_node, dest_actor
-                );
-                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
-            }
+    let node_addr_b = match asm.actor_mgr.get_docking_node_for_actor(&dest_actor) {
+        Some(node_addr) => node_addr,
+        None => {
+            warn!(target: VREQ,
+                "visa request from {:?} denied: dest actor {:?} is not docked to any node",
+                job.requesting_node, dest_actor
+            );
+            return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
         }
     };
 

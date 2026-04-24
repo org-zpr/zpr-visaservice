@@ -56,7 +56,6 @@ impl Router {
     pub fn add_node(&self, node_addr: &IpAddr) -> Result<(), TopologyError> {
         let mut inner = self.inner.lock().unwrap();
         inner.topology.add_node(node_addr)?;
-        inner.route_cache.clear();
         Ok(())
     }
 
@@ -226,7 +225,6 @@ impl Graph {
                 edges: HashSet::new(),
             },
         );
-        self.recompute();
         Ok(nid)
     }
 
