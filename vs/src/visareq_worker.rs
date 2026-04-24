@@ -222,27 +222,33 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
     };
 
-    // A visa request has a requesting node. So that is a route starting point. We then need
-    // to find the node attached to the destination actor.  The actors may themselves be nodes.
-
+    // Find the docking nodes for each actor.
     let node_addr_a = match asm.actor_mgr.get_docking_node_for_actor(&source_actor) {
         Some(node_addr) => node_addr,
         None => {
-            warn!(target: VREQ,
-                "visa request from {:?} denied: source actor {:?} is not docked to any node",
-                job.requesting_node, source_actor
-            );
-            return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
+            if actor_is_phantom(&source_actor) {
+                job.requesting_node.clone()
+            } else {
+                warn!(target: VREQ,
+                    "visa request from {:?} denied: source actor {:?} is not docked to any node",
+                    job.requesting_node, source_actor
+                );
+                return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
+            }
         }
     };
     let node_addr_b = match asm.actor_mgr.get_docking_node_for_actor(&dest_actor) {
         Some(node_addr) => node_addr,
         None => {
-            warn!(target: VREQ,
-                "visa request from {:?} denied: dest actor {:?} is not docked to any node",
-                job.requesting_node, dest_actor
-            );
-            return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
+            if actor_is_phantom(&dest_actor) {
+                job.requesting_node.clone()
+            } else {
+                warn!(target: VREQ,
+                    "visa request from {:?} denied: dest actor {:?} is not docked to any node",
+                    job.requesting_node, dest_actor
+                );
+                return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
+            }
         }
     };
 
@@ -320,6 +326,15 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
                 }
             }
         }
+    }
+}
+
+/// Return TRUE if the actor is tagged as as phantom actor (ie, created for authentication only).
+fn actor_is_phantom(actor: &Actor) -> bool {
+    if let Some(phantom_attr) = actor.get_attribute(key::ZPR_PHANTOM) {
+        phantom_attr.get_value_as_string() == "true"
+    } else {
+        false
     }
 }
 
@@ -431,6 +446,11 @@ async fn resolve_actors_or_deny(
         let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;
         let mut anon_actor = Actor::new();
         let _ = anon_actor.add_attribute(
+            Attribute::builder(key::ZPR_PHANTOM)
+                .expires(expiration)
+                .value("true"),
+        );
+        let _ = anon_actor.add_attribute(
             Attribute::builder(key::ZPR_ADDR)
                 .expires(expiration)
                 .value(anon_addr.to_string()),
@@ -514,10 +534,13 @@ async fn get_actors(
 mod tests {
     use super::*;
 
+    use crate::assembly::Assembly;
     use crate::assembly::tests::new_assembly_for_tests;
-    use crate::test_helpers::{make_actor_with_services_defexp, make_node_actor_defexp};
+    use crate::test_helpers::{
+        make_actor_defexp, make_actor_with_services_defexp, make_node_actor_defexp,
+    };
     use bytes::Bytes;
-    use libeval::attribute::ROLE_ADAPTER;
+    use libeval::attribute::{ROLE_ADAPTER, key};
     use libeval::eval_result::Direction;
     use libeval::policy::Policy;
     use libeval::route::{LinkId, RouteKind};
@@ -781,5 +804,126 @@ mod tests {
         let expected_aaa: IpAddr = aaa_dst.parse().unwrap();
         assert_eq!(resolved_src.get_zpr_addr(), Some(&expected_src));
         assert_eq!(phantom_dst.get_zpr_addr(), Some(&expected_aaa));
+    }
+
+    // --- actor_is_phantom tests ---
+
+    // An actor tagged with ZPR_PHANTOM="true" is recognized as a phantom.
+    #[test]
+    fn actor_is_phantom_returns_true_for_tagged_actor() {
+        let actor = make_actor_defexp(&[(key::ZPR_PHANTOM, "true")]);
+        assert!(actor_is_phantom(&actor));
+    }
+
+    // A normal node actor with no ZPR_PHANTOM attribute is not a phantom.
+    #[test]
+    fn actor_is_phantom_returns_false_for_untagged_actor() {
+        let actor = make_node_actor_defexp("fd5a:5052:3000::1", "some-node", "10.0.0.1:1001");
+        assert!(!actor_is_phantom(&actor));
+    }
+
+    // --- Phantom actor full pipeline tests ---
+
+    // Shared setup for phantom pipeline tests:
+    //   node A (fd5a:5052:3000::1) = requesting node and phantom docking node
+    //   node B (fd5a:5052:3000::2) = auth service docking node
+    //   auth adapter (fd5a:5052:3000::30) docked to node B, service "svc:auth"
+    //   AAA subnet for node A: fd5a:5052:0:aaa:0:100::/88
+    async fn build_phantom_test_asm(with_link: bool) -> Arc<Assembly> {
+        let asm = new_assembly_for_tests(None).await;
+
+        let node_a_addr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let node_b_addr: IpAddr = "fd5a:5052:3000::2".parse().unwrap();
+
+        let node_a = make_node_actor_defexp("fd5a:5052:3000::1", "node-a", "10.0.0.1:1001");
+        let node_b = make_node_actor_defexp("fd5a:5052:3000::2", "node-b", "10.0.0.2:1002");
+        asm.actor_mgr.add_node(&node_a, false).await.unwrap();
+        asm.actor_mgr.add_node(&node_b, false).await.unwrap();
+        asm.router.add_node(&node_a_addr).unwrap();
+        asm.router.add_node(&node_b_addr).unwrap();
+
+        if with_link {
+            asm.router
+                .add_link(
+                    &node_a_addr,
+                    &node_b_addr,
+                    &LinkId("link-ab".into()),
+                    &[],
+                    1,
+                )
+                .unwrap();
+        }
+
+        let auth_adapter = make_actor_with_services_defexp(
+            ROLE_ADAPTER,
+            "fd5a:5052:3000::30",
+            &["svc:auth"],
+            "auth-svc",
+        );
+        asm.actor_mgr
+            .add_adapter_via_node(&auth_adapter, &node_b_addr)
+            .await
+            .unwrap();
+
+        asm.policy_mgr
+            .update_policy(make_policy_with_auth_service("svc:auth"))
+            .unwrap();
+
+        Arc::new(asm)
+    }
+
+    // A phantom source actor passes the docking-node check and reaches policy evaluation.
+    // Without the patch this returns Deny(SourceNotFound); with it, Deny(NoMatch).
+    #[tokio::test]
+    async fn process_visa_request_phantom_source_reaches_policy_eval() {
+        let asm = build_phantom_test_asm(true).await;
+        let requesting_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        // node_id for ::1 = 0x000001; segments[5] = 0x0001<<8 = 0x0100 → subnet fd5a:5052:0:aaa:0:100::/88
+        let pkt = PacketDesc::new_tcp(
+            "fd5a:5052:0:aaa:0:100::1",
+            "fd5a:5052:3000::30",
+            12345,
+            4000,
+        )
+        .unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+        let result = process_visa_request(asm, &job).await.unwrap();
+        assert!(matches!(result, VisaDecision::Deny(DenyCode::NoMatch)));
+    }
+
+    // A phantom source with no route between the phantom docking node and the auth service
+    // docking node is denied NoReason (not SourceNotFound), proving the docking check passed.
+    #[tokio::test]
+    async fn process_visa_request_phantom_source_no_route_denied() {
+        let asm = build_phantom_test_asm(false).await;
+        let requesting_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let pkt = PacketDesc::new_tcp(
+            "fd5a:5052:0:aaa:0:100::1",
+            "fd5a:5052:3000::30",
+            12345,
+            4000,
+        )
+        .unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+        let result = process_visa_request(asm, &job).await.unwrap();
+        assert!(matches!(result, VisaDecision::Deny(DenyCode::NoReason)));
+    }
+
+    // A phantom destination actor passes the docking-node check and reaches policy evaluation.
+    // Without the patch this returns Deny(DestNotFound); with it, Deny(NoMatch).
+    #[tokio::test]
+    async fn process_visa_request_phantom_dest_reaches_policy_eval() {
+        let asm = build_phantom_test_asm(true).await;
+        let requesting_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let pkt = PacketDesc::new_tcp(
+            "fd5a:5052:3000::30",
+            "fd5a:5052:0:aaa:0:100::1",
+            4000,
+            12345,
+        )
+        .unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+        let result = process_visa_request(asm, &job).await.unwrap();
+        assert!(matches!(result, VisaDecision::Deny(DenyCode::NoMatch)));
     }
 }
