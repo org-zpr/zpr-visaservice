@@ -596,6 +596,57 @@ mod tests {
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 0);
     }
 
+    #[test]
+    fn test_route_cache_invalidated_after_add_link() {
+        // Cache is warmed with an empty result, then add_link must bust it so the new route appears.
+        let a = ip("10.0.0.1");
+        let b = ip("10.0.0.2");
+        let r = Router::new();
+        r.add_node(&a).unwrap();
+        r.add_node(&b).unwrap();
+        let hint = no_hint();
+        assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 0);
+        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
+    }
+
+    #[test]
+    fn test_route_cache_invalidated_after_remove_node() {
+        // Cache is warmed with a route through an intermediate node; removing that node must bust the cache.
+        let a = ip("10.0.0.1");
+        let b = ip("10.0.0.2");
+        let c = ip("10.0.0.3");
+        let r = Router::new();
+        r.add_node(&a).unwrap();
+        r.add_node(&b).unwrap();
+        r.add_node(&c).unwrap();
+        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        r.add_link(&b, &c, &LinkId("bc".into()), &[], 1).unwrap();
+        let hint = no_hint();
+        assert_eq!(r.get_routes(&a, &c, Some(&hint)).len(), 1);
+        r.remove_node(&b);
+        assert_eq!(r.get_routes(&a, &c, Some(&hint)).len(), 0);
+    }
+
+    #[test]
+    fn test_route_cache_not_disturbed_by_add_node() {
+        // Adding an isolated node must not invalidate existing cached routes between other nodes.
+        let a = ip("10.0.0.1");
+        let b = ip("10.0.0.2");
+        let d = ip("10.0.0.4");
+        let r = Router::new();
+        r.add_node(&a).unwrap();
+        r.add_node(&b).unwrap();
+        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        let hint = no_hint();
+        assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
+        r.add_node(&d).unwrap();
+        // Route a->b still valid and served from cache.
+        assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
+        // New isolated node d has no routes to a.
+        assert_eq!(r.get_routes(&a, &d, Some(&hint)).len(), 0);
+    }
+
     // --- Graph unit tests ---
 
     fn nid(s: &str) -> NodeId {

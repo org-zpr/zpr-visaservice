@@ -515,9 +515,47 @@ mod tests {
     use super::*;
 
     use crate::assembly::tests::new_assembly_for_tests;
-    use crate::test_helpers::make_node_actor_defexp;
-    use libeval::route::LinkId;
+    use crate::test_helpers::{make_actor_with_services_defexp, make_node_actor_defexp};
+    use bytes::Bytes;
+    use libeval::attribute::ROLE_ADAPTER;
+    use libeval::eval_result::Direction;
+    use libeval::policy::Policy;
+    use libeval::route::{LinkId, RouteKind};
     use std::time::Duration;
+    use zpr::policy_types::{JoinPolicy, PFlags, Scope, Service, ServiceType};
+    use zpr::write_to::WriteTo;
+
+    /// Builds a Policy that declares one Authentication service with the given id.
+    fn make_policy_with_auth_service(service_id: &str) -> Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy_bldr = msg.init_root::<zpr::policy::v1::policy::Builder>();
+            policy_bldr.set_created("2024-01-01T00:00:00Z");
+            policy_bldr.set_version(2);
+            policy_bldr.set_metadata("");
+
+            let mut jp_list = policy_bldr.reborrow().init_join_policies(1);
+            let mut jp_bldr = jp_list.reborrow().get(0);
+            let jp = JoinPolicy {
+                conditions: Vec::new(),
+                flags: PFlags::default(),
+                provides: Some(vec![Service {
+                    id: service_id.to_string(),
+                    endpoints: vec![Scope {
+                        protocol: 0,
+                        flag: None,
+                        port: Some(4000),
+                        port_range: None,
+                    }],
+                    kind: ServiceType::Authentication,
+                }]),
+            };
+            jp.write_to(&mut jp_bldr);
+        }
+        let mut bytes = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        Policy::new_from_policy_bytes(Bytes::copy_from_slice(&bytes)).unwrap()
+    }
 
     // This test just runs a request through the pipeline. There is no real policy here
     // so it will fail.  But it should be a visa-deny not some other error.
@@ -555,5 +593,193 @@ mod tests {
         assert!(matches!(result, VisaDecision::Deny(DenyCode::NoMatch)));
 
         arena.abort();
+    }
+
+    // Verifies that visa_from_allow issues a visa and returns Allow when given a valid hit and route.
+    #[tokio::test]
+    async fn visa_from_allow_issues_visa_on_allow() {
+        let asm = new_assembly_for_tests(None).await;
+        let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        let pkt_data =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt_data);
+
+        let hits = vec![Hit::new_no_signal(0, Direction::Forward)];
+        let policy = Policy::new_empty();
+        let route = Route {
+            kind: RouteKind::Multihop,
+            links: vec![],
+            cost: 0,
+        };
+
+        let result = visa_from_allow(&asm, &job, &hits, &policy, route).await;
+        assert!(matches!(result, Ok(VisaDecision::Allow(_, _))));
+    }
+
+    // When both actors are None the request cannot proceed: deny the source immediately.
+    #[tokio::test]
+    async fn resolve_actors_or_deny_both_missing_denies_source() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        let pkt = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+
+        let result = resolve_actors_or_deny(&asm, &job, None, None).await;
+        assert!(matches!(
+            result,
+            Err(VisaDecision::Deny(DenyCode::SourceNotFound))
+        ));
+    }
+
+    // When both actors are known they pass through unchanged.
+    #[tokio::test]
+    async fn resolve_actors_or_deny_both_present_passes_through() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        let pkt = PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+
+        let src = make_node_actor_defexp("fd5a:5052:3000::1", "src", "10.0.0.1:1001");
+        let dst = make_node_actor_defexp("fd5a:5052:3000::2", "dst", "10.0.0.2:1002");
+        let src_addr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let dst_addr: IpAddr = "fd5a:5052:3000::2".parse().unwrap();
+
+        let (ra, rb) = resolve_actors_or_deny(&asm, &job, Some(src), Some(dst))
+            .await
+            .ok()
+            .expect("expected Ok");
+        assert_eq!(ra.get_zpr_addr(), Some(&src_addr));
+        assert_eq!(rb.get_zpr_addr(), Some(&dst_addr));
+    }
+
+    // Missing source whose address is a plain ZPR address (not in the node's AAA subnet) is denied.
+    #[tokio::test]
+    async fn resolve_actors_or_deny_missing_source_not_in_aaa_network_denies_source() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        // source addr is a normal ZPR address, outside any node AAA subnet
+        let pkt =
+            PacketDesc::new_tcp("fd5a:5052:3000::99", "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+
+        let dst = make_node_actor_defexp("fd5a:5052:3000::2", "dst", "10.0.0.2:1002");
+        let result = resolve_actors_or_deny(&asm, &job, None, Some(dst)).await;
+        assert!(matches!(
+            result,
+            Err(VisaDecision::Deny(DenyCode::SourceNotFound))
+        ));
+    }
+
+    // Missing source in the AAA subnet but the destination has no auth service registered:
+    // deny because it would be a non-authenticated actor talking to a non-auth endpoint.
+    #[tokio::test]
+    async fn resolve_actors_or_deny_missing_source_in_aaa_net_dest_not_auth_service_denies() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        // AAA subnet for node ::ff is fd5a:5052:0:aaa:0:ff00::/88; pick an address inside it.
+        let aaa_src = "fd5a:5052:0:aaa:0:ff00::1";
+        let pkt = PacketDesc::new_tcp(aaa_src, "fd5a:5052:3000::2", 12345, 80).unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+
+        // No actor with auth services in the DB at the dest addr.
+        let dst = make_node_actor_defexp("fd5a:5052:3000::2", "dst", "10.0.0.2:1002");
+        let result = resolve_actors_or_deny(&asm, &job, None, Some(dst)).await;
+        assert!(matches!(
+            result,
+            Err(VisaDecision::Deny(DenyCode::DestNotFound))
+        ));
+    }
+
+    // Missing source in the AAA subnet, destination is a registered auth service:
+    // fabricate a phantom actor for the anonymous source and allow the resolution.
+    #[tokio::test]
+    async fn resolve_actors_or_deny_missing_source_in_aaa_net_with_auth_service_fabricates_phantom()
+    {
+        let asm_inner = new_assembly_for_tests(None).await;
+
+        let dest_zpr = "fd5a:5052:3000::2";
+        let auth_actor =
+            make_actor_with_services_defexp(ROLE_ADAPTER, dest_zpr, &["svc:auth"], "auth-svc");
+        asm_inner
+            .actor_mgr
+            .hack_add_adapter_no_node(&auth_actor)
+            .await
+            .unwrap();
+        asm_inner
+            .policy_mgr
+            .update_policy(make_policy_with_auth_service("svc:auth"))
+            .unwrap();
+
+        let asm = Arc::new(asm_inner);
+        let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        let aaa_src = "fd5a:5052:0:aaa:0:ff00::1";
+        let pkt = PacketDesc::new_tcp(aaa_src, dest_zpr, 12345, 80).unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+
+        let dst = make_node_actor_defexp(dest_zpr, "dst", "10.0.0.2:1002");
+        let (phantom_src, resolved_dst) = resolve_actors_or_deny(&asm, &job, None, Some(dst))
+            .await
+            .ok()
+            .expect("expected Ok");
+
+        let expected_aaa: IpAddr = aaa_src.parse().unwrap();
+        let expected_dst: IpAddr = dest_zpr.parse().unwrap();
+        assert_eq!(phantom_src.get_zpr_addr(), Some(&expected_aaa));
+        assert_eq!(resolved_dst.get_zpr_addr(), Some(&expected_dst));
+    }
+
+    // Missing destination whose address is a plain ZPR address (not in the node's AAA subnet) is denied.
+    #[tokio::test]
+    async fn resolve_actors_or_deny_missing_dest_not_in_aaa_network_denies_dest() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        // dest addr is a normal ZPR address, outside any node AAA subnet
+        let pkt =
+            PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::99", 12345, 80).unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+
+        let src = make_node_actor_defexp("fd5a:5052:3000::1", "src", "10.0.0.1:1001");
+        let result = resolve_actors_or_deny(&asm, &job, Some(src), None).await;
+        assert!(matches!(
+            result,
+            Err(VisaDecision::Deny(DenyCode::DestNotFound))
+        ));
+    }
+
+    // Missing destination in the AAA subnet, source is a registered auth service:
+    // fabricate a phantom actor for the anonymous destination and allow the resolution.
+    #[tokio::test]
+    async fn resolve_actors_or_deny_missing_dest_in_aaa_net_with_auth_service_fabricates_phantom() {
+        let asm_inner = new_assembly_for_tests(None).await;
+
+        let src_zpr = "fd5a:5052:3000::1";
+        let auth_actor =
+            make_actor_with_services_defexp(ROLE_ADAPTER, src_zpr, &["svc:auth"], "auth-svc");
+        asm_inner
+            .actor_mgr
+            .hack_add_adapter_no_node(&auth_actor)
+            .await
+            .unwrap();
+        asm_inner
+            .policy_mgr
+            .update_policy(make_policy_with_auth_service("svc:auth"))
+            .unwrap();
+
+        let asm = Arc::new(asm_inner);
+        let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
+        let aaa_dst = "fd5a:5052:0:aaa:0:ff00::1";
+        let pkt = PacketDesc::new_tcp(src_zpr, aaa_dst, 12345, 80).unwrap();
+        let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
+
+        let src = make_node_actor_defexp(src_zpr, "src", "10.0.0.1:1001");
+        let (resolved_src, phantom_dst) = resolve_actors_or_deny(&asm, &job, Some(src), None)
+            .await
+            .ok()
+            .expect("expected Ok");
+
+        let expected_src: IpAddr = src_zpr.parse().unwrap();
+        let expected_aaa: IpAddr = aaa_dst.parse().unwrap();
+        assert_eq!(resolved_src.get_zpr_addr(), Some(&expected_src));
+        assert_eq!(phantom_dst.get_zpr_addr(), Some(&expected_aaa));
     }
 }

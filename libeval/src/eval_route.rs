@@ -21,8 +21,8 @@ pub trait TopologyQueryApi {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct RouteResidualEvaluator {
-    src_actor: Actor,        // cloned from phase 1
-    dst_actor: Actor,        // cloned from phase 1
+    src_actor: Actor, // cloned from phase 1 (TBD - actually we could just copy over the attrributes that matched policy...)
+    dst_actor: Actor, // cloned from phase 1
     packet_desc: PacketDesc, // cloned from phase 1
     candidate_allow_hits: Vec<Hit>,
     candidate_deny_hits: Vec<Hit>,
