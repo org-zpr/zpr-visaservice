@@ -214,6 +214,8 @@ impl ActorMgr {
 
     /// Hack: we use this to add the phantom visa service adapter.
     /// We don't know what node it is attached to yet.
+    ///
+    /// See https://github.com/org-zpr/zpr-visaservice/issues/195
     pub async fn hack_add_adapter_no_node(&self, actor: &Actor) -> Result<(), ServiceError> {
         if actor.is_node() {
             return Err(ServiceError::Internal(
@@ -224,9 +226,11 @@ impl ActorMgr {
         Ok(())
     }
 
-    // Hack: this sets the docking node for the visa service adapter.
-    // TODO: Need a better way to do this. Perhaps talking to the local adapter directly? Perhaps our docking
-    // node can send a message over the vsapi (like a connection_request?).
+    /// Hack: this sets the docking node for the visa service adapter.
+    /// TODO: Need a better way to do this. Perhaps talking to the local adapter directly? Perhaps our docking
+    /// node can send a message over the vsapi (like a connection_request?).
+    ///
+    /// See https://github.com/org-zpr/zpr-visaservice/issues/195
     pub async fn hack_set_vs_docking_node(
         &self,
         node_zpr_addr: &IpAddr,
