@@ -26,36 +26,31 @@ use crate::error::TopologyError;
 ///
 /// ### Targeted invalidation
 ///
-/// Instead of flushing the entire cache on every topology change, `RouterInner` maintains two
-/// reverse indices:
+/// `RouterInner` maintains one reverse index:
 ///
 /// - **`link_to_cache_keys`** — maps each `LinkId` → set of cache keys whose routes traverse
 ///   that link.  `remove_link` uses this to evict only the entries that actually use the
-///   removed link.
+///   removed link.  `remove_node` uses it transitively via the node's incident links.
 ///
-/// - **`node_to_cache_keys`** — maps each `NodeId` → set of cache keys whose routes pass
-///   through that node (as src, dst, or intermediate hop).  `add_link(a, b)` uses this to
-///   evict only entries touching node a or b — a new link a-b cannot improve any path that
-///   doesn't already go through a or b, so this is exact, not merely conservative.
-///   `remove_node` also uses it to find all entries that route through the removed node.
-///
-/// Both indices are populated in `get_routes` at cache-insert time and cleaned up atomically
+/// The index is populated in `get_routes` at cache-insert time and cleaned up atomically
 /// by `RouterInner::invalidate_keys` whenever entries are evicted.
+///
+/// ### add_link always flushes the full cache
+///
+/// Targeted invalidation on link *removal* is exact: any affected route must traverse the
+/// removed link, so `link_to_cache_keys` identifies the precise affected set.
+///
+/// Link *addition* is different.  A new link a-b can create routes for pairs (x, y) whose
+/// previously cached routes never touched a or b at all (e.g. x→a and b→y existed but
+/// a-b did not, so the only cached route was direct x→y).  Determining which pairs could
+/// gain new routes would require a full graph traversal — no cheaper exact answer exists.
+/// `add_link` therefore flushes the entire route cache.
 ///
 /// ### Ordering constraint
 ///
 /// `invalidate_keys` walks `topology.edges` to resolve a `LinkId` → `(node_a, node_b)` for
-/// node-index cleanup.  It must therefore be called **before** the topology mutation that
-/// removes the link/node, otherwise those entries are gone and the node-index leaks stale
-/// `HashSet` entries.
-///
-/// ### Empty-result entries
-///
-/// When `compute_routes` returns an empty `Vec` (nodes exist but are currently unreachable),
-/// the empty result is still cached so we don't keep re-running DFS.  Because there are no
-/// link IDs to walk, the insertion code registers the key directly under
-/// `node_to_cache_keys[src]` and `node_to_cache_keys[dst]`.  This ensures that a subsequent
-/// `add_link` touching either endpoint will correctly evict the stale "unreachable" entry.
+/// link-index cleanup.  It must therefore be called **before** the topology mutation that
+/// removes the link/node, otherwise those entries are gone and the index leaks stale entries.
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct RouteCacheKey {
     a: NodeId,
@@ -68,55 +63,28 @@ struct RouterInner {
     route_cache: HashMap<RouteCacheKey, Vec<Route>>,
     /// Reverse index: cache keys whose routes traverse a given link. See [RouteCacheKey].
     link_to_cache_keys: HashMap<LinkId, HashSet<RouteCacheKey>>,
-    /// Reverse index: cache keys whose routes pass through a given node. See [RouteCacheKey].
-    node_to_cache_keys: HashMap<NodeId, HashSet<RouteCacheKey>>,
 }
 
 impl RouterInner {
-    /// Removes a set of cache keys and cleans up both reverse indices for each removed entry.
+    /// Removes a set of cache keys and cleans up `link_to_cache_keys` for each removed entry.
     ///
-    /// MUST be called before any topology mutation that removes links or nodes because it
-    /// resolves link endpoints via `topology.edges` to clean up `node_to_cache_keys`.
-    /// Duplicate keys in the iterator are safe — a missing `route_cache` entry is a no-op.
+    /// Must be called before any topology mutation that removes links, because it resolves
+    /// `LinkId` → endpoints via `topology.edges`.  Duplicate keys are safe — a missing
+    /// `route_cache` entry is a no-op.
     fn invalidate_keys(&mut self, keys: impl IntoIterator<Item = RouteCacheKey>) {
         for key in keys {
             let Some(routes) = self.route_cache.remove(&key) else {
                 continue;
             };
-            // Collect every link that appeared in any route for this key so we can remove
-            // the key from the per-link and per-node reverse-index buckets.
             let affected_links: HashSet<LinkId> = routes
                 .iter()
                 .flat_map(|r| r.links.iter().cloned())
                 .collect();
-
             for link_id in &affected_links {
                 if let Some(s) = self.link_to_cache_keys.get_mut(link_id) {
                     s.remove(&key);
                     if s.is_empty() {
                         self.link_to_cache_keys.remove(link_id);
-                    }
-                }
-                // Walk to the link's endpoint nodes to clean node_to_cache_keys.
-                // This is why we must be called before the topology mutation removes the link.
-                if let Some(link) = self.topology.edges.get(link_id) {
-                    for node_id in [&link.a, &link.b] {
-                        if let Some(s) = self.node_to_cache_keys.get_mut(node_id) {
-                            s.remove(&key);
-                            if s.is_empty() {
-                                self.node_to_cache_keys.remove(node_id);
-                            }
-                        }
-                    }
-                }
-            }
-            // Also clean up the endpoint registrations made for empty-result entries
-            // (those have no links, so the loop above doesn't cover them).
-            for node_id in [&key.a, &key.b] {
-                if let Some(s) = self.node_to_cache_keys.get_mut(node_id) {
-                    s.remove(&key);
-                    if s.is_empty() {
-                        self.node_to_cache_keys.remove(node_id);
                     }
                 }
             }
@@ -135,7 +103,6 @@ impl Router {
                 topology: Graph::default(),
                 route_cache: HashMap::new(),
                 link_to_cache_keys: HashMap::new(),
-                node_to_cache_keys: HashMap::new(),
             }),
         }
     }
@@ -159,19 +126,31 @@ impl Router {
         let mut inner = self.inner.lock().unwrap();
         let nid: NodeId = node_addr.into();
 
-        // Phase 1: evict entries that route *through* this node (intermediate-hop coverage).
-        // Collect first to avoid a simultaneous borrow of inner.node_to_cache_keys.
-        let keys: Vec<RouteCacheKey> = inner
-            .node_to_cache_keys
+        // Phase 1: evict entries whose routes traverse any of the node's incident links.
+        // Collect the union of link_to_cache_keys for each incident link first to avoid
+        // simultaneous borrows.
+        let incident_link_ids: Vec<LinkId> = inner
+            .topology
+            .nodes
             .get(&nid)
-            .map(|s| s.iter().cloned().collect())
+            .map(|n| n.edges.iter().cloned().collect())
             .unwrap_or_default();
+        let keys: Vec<RouteCacheKey> = incident_link_ids
+            .iter()
+            .flat_map(|lid| {
+                inner
+                    .link_to_cache_keys
+                    .get(lid)
+                    .into_iter()
+                    .flat_map(|s| s.iter().cloned())
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
         inner.invalidate_keys(keys);
-        inner.node_to_cache_keys.remove(&nid);
 
-        // Phase 2: scan for any remaining entries where the node is an explicit endpoint.
-        // These arise when compute_routes returned an empty Vec (no links to traverse, so
-        // phase 1's node-index walk wouldn't have found them).
+        // Phase 2: scan for entries where the node is an explicit endpoint.  These arise
+        // when compute_routes returned an empty Vec (no links → phase 1 finds nothing).
         let endpoint_keys: Vec<RouteCacheKey> = inner
             .route_cache
             .keys()
@@ -205,25 +184,11 @@ impl Router {
         let a: NodeId = zpr_addr_a.into();
         let b: NodeId = zpr_addr_b.into();
 
-        // A new link a-b can only create shorter or entirely new paths that pass through
-        // node a or node b.  Any cached entry whose routes don't touch a or b is unaffected,
-        // so we evict only the union of both nodes' reverse-index buckets.  This is exact,
-        // not merely conservative.  Collect first to release the shared borrow before
-        // calling invalidate_keys (which takes &mut inner).
-        let keys: HashSet<RouteCacheKey> = {
-            let from_a = inner
-                .node_to_cache_keys
-                .get(&a)
-                .cloned()
-                .unwrap_or_default();
-            let from_b = inner
-                .node_to_cache_keys
-                .get(&b)
-                .cloned()
-                .unwrap_or_default();
-            from_a.into_iter().chain(from_b).collect()
-        };
-        inner.invalidate_keys(keys);
+        // A new link can create routes for pairs whose cached routes never touched a or b
+        // (e.g. dormant x→a and b→y segments now form x→a→b→y).  Identifying all affected
+        // pairs would require a full graph traversal, so we flush the entire cache instead.
+        inner.route_cache.clear();
+        inner.link_to_cache_keys.clear();
 
         inner
             .topology
@@ -295,8 +260,7 @@ impl Router {
         }
         let routes = Self::compute_routes(&inner.topology, addr_a, addr_b, hint);
 
-        // Populate reverse indices so future topology mutations can do targeted eviction.
-        // key is cloned per-entry because route_cache.insert below takes ownership.
+        // Populate link_to_cache_keys so remove_link can do targeted eviction.
         for route in &routes {
             for link_id in &route.links {
                 inner
@@ -304,42 +268,7 @@ impl Router {
                     .entry(link_id.clone())
                     .or_default()
                     .insert(key.clone());
-                // Clone endpoints before dropping the topology borrow; otherwise
-                // Rust rejects the simultaneous immutable borrow of topology.edges
-                // and mutable borrow of node_to_cache_keys on the same `inner`.
-                let endpoints: Option<(NodeId, NodeId)> = inner
-                    .topology
-                    .edges
-                    .get(link_id)
-                    .map(|l| (l.a.clone(), l.b.clone()));
-                if let Some((na, nb)) = endpoints {
-                    inner
-                        .node_to_cache_keys
-                        .entry(na)
-                        .or_default()
-                        .insert(key.clone());
-                    inner
-                        .node_to_cache_keys
-                        .entry(nb)
-                        .or_default()
-                        .insert(key.clone());
-                }
             }
-        }
-        // An empty result (unreachable pair) has no links to walk, so register the key
-        // directly under both endpoint nodes.  This lets add_link bust the stale entry if
-        // it later creates a path between them.
-        if routes.is_empty() {
-            inner
-                .node_to_cache_keys
-                .entry(key.a.clone())
-                .or_default()
-                .insert(key.clone());
-            inner
-                .node_to_cache_keys
-                .entry(key.b.clone())
-                .or_default()
-                .insert(key.clone());
         }
 
         inner.route_cache.insert(key, routes.clone());
@@ -885,6 +814,33 @@ mod tests {
         // Adding a link between a and b must bust the stale empty entry.
         r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
+    }
+
+    #[test]
+    fn test_add_link_bridge_invalidates_unrelated_cached_pair() {
+        // Regression: add_link(a,b) must evict a cached (x,y) entry even when the previously
+        // cached routes for (x,y) never traversed a or b, if adding a-b creates a new path
+        // x→a→b→y via pre-existing x-a and b-y links.
+        let x = ip("10.0.0.10");
+        let y = ip("10.0.0.20");
+        let a = ip("10.0.0.1");
+        let b = ip("10.0.0.2");
+        let r = Router::new();
+        r.add_node(&x).unwrap();
+        r.add_node(&y).unwrap();
+        r.add_node(&a).unwrap();
+        r.add_node(&b).unwrap();
+        // Direct x-y link and dormant legs x-a and b-y; no a-b yet.
+        r.add_link(&x, &y, &LinkId("xy".into()), &[], 10).unwrap();
+        r.add_link(&x, &a, &LinkId("xa".into()), &[], 1).unwrap();
+        r.add_link(&b, &y, &LinkId("by".into()), &[], 1).unwrap();
+        let hint = no_hint();
+        // Warm the cache: only the direct x-y route exists.
+        assert_eq!(r.get_routes(&x, &y, Some(&hint)).len(), 1);
+        // Adding the bridge a-b creates a second path x→a→b→y.
+        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        // Cache must be invalidated; both routes should now be returned.
+        assert_eq!(r.get_routes(&x, &y, Some(&hint)).len(), 2);
     }
 
     // --- Graph unit tests ---
