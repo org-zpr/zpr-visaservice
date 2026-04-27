@@ -26,6 +26,12 @@ pub struct ActorMgr {
     node_db: db::NodeRepo,
     counters: Arc<Counters>,
     connection_table: DashMap<IpAddr, IpAddr>, // adapter_zpr_addr -> docking_node_zpr_addr
+
+    /// Maps AAA address → (docking_node, expiry). Registered on the request side when an
+    /// unauthenticated adapter contacts an auth service. Looked up on the response side to
+    /// find the correct docking node (which differs from job.requesting_node in multi-node
+    /// setups). Evicted when the adapter authenticates or on lazy expiry at lookup time.
+    aaa_table: DashMap<IpAddr, (IpAddr, SystemTime)>,
 }
 
 pub struct ServiceDetail {
@@ -53,6 +59,7 @@ impl ActorMgr {
             node_db: node_repo,
             counters,
             connection_table: DashMap::new(),
+            aaa_table: DashMap::new(),
         }
     }
 
@@ -212,7 +219,7 @@ impl ActorMgr {
         Ok(())
     }
 
-    /// Hack: we use this to add the phantom visa service adapter.
+    /// Hack: we use this to add the unauthenticated visa service adapter.
     /// We don't know what node it is attached to yet.
     ///
     /// See https://github.com/org-zpr/zpr-visaservice/issues/195
@@ -301,6 +308,42 @@ impl ActorMgr {
                 None
             }
         }
+    }
+
+    /// Register the docking node for an AAA actor. Called on the request side when an
+    /// unauthenticated adapter (using an AAA address) contacts an auth service. Multiple
+    /// requests for the same address overwrite the entry harmlessly — the docking node for
+    /// a given AAA subnet cannot change.
+    ///
+    /// Not persisted. If we restart we loose in-flight AAA request tracking, but that
+    /// should be ok since the actors can just retry authentication.
+    pub fn register_aaa(&self, aaa_addr: IpAddr, docking_node: IpAddr, expiry: SystemTime) {
+        self.aaa_table.insert(aaa_addr, (docking_node, expiry));
+    }
+
+    /// Look up the docking node for an AAA actor. Returns None if the entry is missing or
+    /// expired (lazy eviction on lookup).
+    ///
+    /// TODO: Longer term we will need to clean up this AAA table. Ok for now until we
+    /// figure out how AAA addresses will be used. There is talk of using this as some sort
+    /// of "adapter identity" addresses.
+    /// See issue: https://github.com/org-zpr/zpr-visaservice/issues/200
+    pub fn get_docking_node_for_aaa(&self, aaa_addr: &IpAddr) -> Option<IpAddr> {
+        let result = match self.aaa_table.get(aaa_addr) {
+            Some(entry) => {
+                let (docking_node, expiry) = entry.value();
+                if *expiry > SystemTime::now() {
+                    Some(*docking_node)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        if result.is_none() {
+            self.aaa_table.remove(aaa_addr);
+        }
+        result
     }
 
     pub async fn get_adapter_cns_connected_to_node(

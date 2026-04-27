@@ -12,9 +12,6 @@ pub mod key {
     /// used to be called EPID
     pub const ZPR_ADDR: &str = "zpr.addr";
 
-    /// Set to "true" for phantom actors used for performing authentication.
-    pub const ZPR_PHANTOM: &str = "zpr.phantom";
-
     /// Dock ZPR address
     pub const CONNECT_VIA: &str = "zpr.connect_via";
 

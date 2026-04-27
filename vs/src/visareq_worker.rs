@@ -222,34 +222,34 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
     };
 
-    // Find the docking nodes for each actor.
+    // Find the docking nodes for each actor. For AAA actors (unauthenticated adapters
+    // fabricated during anonymous auth), the docking node is looked up from the AAA table
+    // registered on the request side, rather than from the connection table.
     let node_addr_a = match asm.actor_mgr.get_docking_node_for_actor(&source_actor) {
         Some(node_addr) => node_addr,
-        None => {
-            if actor_is_phantom(&source_actor) {
-                job.requesting_node.clone()
-            } else {
+        None => match asm.actor_mgr.get_docking_node_for_aaa(source_zpr_addr) {
+            Some(node_addr) => node_addr,
+            None => {
                 warn!(target: VREQ,
                     "visa request from {:?} denied: source actor {:?} is not docked to any node",
                     job.requesting_node, source_actor
                 );
                 return Ok(VisaDecision::Deny(DenyCode::SourceNotFound));
             }
-        }
+        },
     };
     let node_addr_b = match asm.actor_mgr.get_docking_node_for_actor(&dest_actor) {
         Some(node_addr) => node_addr,
-        None => {
-            if actor_is_phantom(&dest_actor) {
-                job.requesting_node.clone()
-            } else {
+        None => match asm.actor_mgr.get_docking_node_for_aaa(dest_zpr_addr) {
+            Some(node_addr) => node_addr,
+            None => {
                 warn!(target: VREQ,
                     "visa request from {:?} denied: dest actor {:?} is not docked to any node",
                     job.requesting_node, dest_actor
                 );
                 return Ok(VisaDecision::Deny(DenyCode::DestNotFound));
             }
-        }
+        },
     };
 
     let Some(default_route) = asm.router.get_best_route(&node_addr_a, &node_addr_b) else {
@@ -329,13 +329,31 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
     }
 }
 
-/// Return TRUE if the actor is tagged as as phantom actor (ie, created for authentication only).
-fn actor_is_phantom(actor: &Actor) -> bool {
-    if let Some(phantom_attr) = actor.get_attribute(key::ZPR_PHANTOM) {
-        phantom_attr.get_value_as_string() == "true"
-    } else {
-        false
-    }
+/// Fabricate an AAA actor for an anonymous endpoint at the given address.
+fn fabricate_aaa_actor(anon_addr: &IpAddr, expiration: SystemTime) -> Actor {
+    let mut anon_actor = Actor::new();
+    let _ = anon_actor.add_attribute(
+        Attribute::builder(key::ZPR_ADDR)
+            .expires(expiration)
+            .value(anon_addr.to_string()),
+    );
+    let _ = anon_actor.add_attribute(
+        Attribute::builder(key::AUTHORITY)
+            .expires(expiration)
+            .value("vs_hack_anon_to_auth"),
+    );
+    let _ = anon_actor.add_attribute(
+        Attribute::builder(key::ROLE)
+            .expires(expiration)
+            .value(ROLE_ADAPTER),
+    );
+    let _ = anon_actor.add_attribute(
+        Attribute::builder(key::CN)
+            .expires(expiration)
+            .value(format!("hack.{}.zpr", anon_addr)),
+    );
+    let _ = anon_actor.add_identity_key(0, key::CN);
+    anon_actor
 }
 
 /// Given that we have an ALLOW decision, pass the hist list in here and we will pick the first
@@ -405,78 +423,61 @@ async fn resolve_actors_or_deny(
             (job.packet_desc.source_addr(), job.packet_desc.dest_addr())
         };
 
-        // The anonymous actor must be using an AAA address (from its node).
-        let node_aaa_net = net_mgr::aaa_network_for_node(&job.requesting_node);
-        if !node_aaa_net.contains(anon_addr) {
-            if missing_source {
+        let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;
+
+        if missing_source {
+            // Request side: assume this is an unauthenticated adapter → auth service.
+            // Validate that the source is in the requesting node's AAA subnet and that the
+            // destination is a registered auth service, then record the docking node.
+            let node_aaa_net = net_mgr::aaa_network_for_node(&job.requesting_node);
+            if !node_aaa_net.contains(anon_addr) {
                 debug!(target: VREQ,
                     "visa denied: unknown source {anon_addr} is not in the AAA network for node {:?}",
                     job.requesting_node
                 );
                 return Err(VisaDecision::Deny(DenyCode::SourceNotFound));
-            } else {
-                debug!(target: VREQ,
-                    "visa denied: unknown destination {anon_addr} is not in the AAA network for node {:?}",
-                    job.requesting_node
-                );
-                return Err(VisaDecision::Deny(DenyCode::DestNotFound));
             }
-        }
 
-        // The candidate actor must be an installed authentication service.
-        match asm
-            .actor_mgr
-            .has_auth_services(asm.clone(), candidate_addr)
-            .await
-        {
-            Ok(true) => (),
-            Ok(false) => {
-                warn!(target: VREQ, "visa denied: actor using AAA addr attempting to contact non-authentication service at {candidate_addr}");
-                return Err(VisaDecision::Deny(DenyCode::DestNotFound));
-            }
-            Err(e) => {
-                debug!(target: VREQ, "visa denied: error checking authentication services for actor at {candidate_addr}: {}", e);
-                return Err(VisaDecision::Deny(DenyCode::DestNotFound));
-            }
-        };
+            match asm
+                .actor_mgr
+                .has_auth_services(asm.clone(), candidate_addr)
+                .await
+            {
+                Ok(true) => (),
+                Ok(false) => {
+                    warn!(target: VREQ, "visa denied: actor using AAA addr attempting to contact non-authentication service at {candidate_addr}");
+                    return Err(VisaDecision::Deny(DenyCode::DestNotFound));
+                }
+                Err(e) => {
+                    debug!(target: VREQ, "visa denied: error checking authentication services for actor at {candidate_addr}: {}", e);
+                    return Err(VisaDecision::Deny(DenyCode::DestNotFound));
+                }
+            };
 
-        // We have confirmed that an actor is trying to access a valid authentication service using a valid AAA address.
-        // To proceed, we fabricate a phantom actor for this request.  This phantom acts as the anonymous actor for
-        // purposes of granting a visa.
-        let expiration = SystemTime::now() + config::DEFAULT_ANON_AUTH_EXPIRATION;
-        let mut anon_actor = Actor::new();
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::ZPR_PHANTOM)
-                .expires(expiration)
-                .value("true"),
-        );
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::ZPR_ADDR)
-                .expires(expiration)
-                .value(anon_addr.to_string()),
-        );
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::AUTHORITY)
-                .expires(expiration)
-                .value("vs_hack_anon_to_auth"),
-        );
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::ROLE)
-                .expires(expiration)
-                .value(ROLE_ADAPTER),
-        );
-        let _ = anon_actor.add_attribute(
-            Attribute::builder(key::CN)
-                .expires(expiration)
-                .value(format!("hack.{}.zpr", anon_addr)),
-        );
-        let _ = anon_actor.add_identity_key(0, key::CN);
+            // Record the docking node so the response side can resolve it correctly,
+            // even when the response arrives via a different requesting node.
+            asm.actor_mgr
+                .register_aaa(*anon_addr, job.requesting_node, expiration);
 
-        if missing_source {
-            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA request: {:?} -> {candidate_addr}", anon_actor);
+            let anon_actor = fabricate_aaa_actor(anon_addr, expiration);
+            debug!(target: VREQ, "fabricated AAA actor for anonymous request: {:?} -> {candidate_addr}", anon_actor);
             source_actor = Some(anon_actor);
         } else {
-            debug!(target: VREQ, "fabricated phantom actor for anonymous AAA response: {candidate_addr} -> {:?}", anon_actor);
+            // Response side: auth service → unauthenticated adapter.
+            // The AAA address must already be in the table (registered on the request side).
+            // This replaces the subnet check: the table records which node owns this address.
+            match asm.actor_mgr.get_docking_node_for_aaa(anon_addr) {
+                Some(_) => {}
+                None => {
+                    warn!(target: VREQ,
+                        "visa denied: AAA address {anon_addr} not found in AAA table (expired or never registered)"
+                    );
+                    return Err(VisaDecision::Deny(DenyCode::DestNotFound));
+                }
+            }
+
+            let anon_actor = fabricate_aaa_actor(anon_addr, expiration);
+            debug!(target: VREQ, "fabricated AAA actor for anonymous response: {candidate_addr} -> {:?}", anon_actor);
             dest_actor = Some(anon_actor);
         }
     }
@@ -536,15 +537,13 @@ mod tests {
 
     use crate::assembly::Assembly;
     use crate::assembly::tests::new_assembly_for_tests;
-    use crate::test_helpers::{
-        make_actor_defexp, make_actor_with_services_defexp, make_node_actor_defexp,
-    };
+    use crate::test_helpers::{make_actor_with_services_defexp, make_node_actor_defexp};
     use bytes::Bytes;
-    use libeval::attribute::{ROLE_ADAPTER, key};
+    use libeval::attribute::ROLE_ADAPTER;
     use libeval::eval_result::Direction;
     use libeval::policy::Policy;
     use libeval::route::{LinkId, RouteKind};
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
     use zpr::policy_types::{JoinPolicy, PFlags, Scope, Service, ServiceType};
     use zpr::write_to::WriteTo;
 
@@ -714,10 +713,10 @@ mod tests {
     }
 
     // Missing source in the AAA subnet, destination is a registered auth service:
-    // fabricate a phantom actor for the anonymous source and allow the resolution.
+    // fabricate an AAA actor for the anonymous source and register it in the AAA table.
     #[tokio::test]
-    async fn resolve_actors_or_deny_missing_source_in_aaa_net_with_auth_service_fabricates_phantom()
-    {
+    async fn resolve_actors_or_deny_missing_source_in_aaa_net_with_auth_service_fabricates_aaa_actor()
+     {
         let asm_inner = new_assembly_for_tests(None).await;
 
         let dest_zpr = "fd5a:5052:3000::2";
@@ -740,15 +739,22 @@ mod tests {
         let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
 
         let dst = make_node_actor_defexp(dest_zpr, "dst", "10.0.0.2:1002");
-        let (phantom_src, resolved_dst) = resolve_actors_or_deny(&asm, &job, None, Some(dst))
+        let (aaa_src_actor, resolved_dst) = resolve_actors_or_deny(&asm, &job, None, Some(dst))
             .await
             .ok()
             .expect("expected Ok");
 
         let expected_aaa: IpAddr = aaa_src.parse().unwrap();
         let expected_dst: IpAddr = dest_zpr.parse().unwrap();
-        assert_eq!(phantom_src.get_zpr_addr(), Some(&expected_aaa));
+        assert_eq!(aaa_src_actor.get_zpr_addr(), Some(&expected_aaa));
         assert_eq!(resolved_dst.get_zpr_addr(), Some(&expected_dst));
+
+        // Confirm the AAA table was populated by the request-side registration.
+        assert_eq!(
+            asm.actor_mgr.get_docking_node_for_aaa(&expected_aaa),
+            Some(requesting_node),
+            "aaa_table must record the requesting node as docking node"
+        );
     }
 
     // Missing destination whose address is a plain ZPR address (not in the node's AAA subnet) is denied.
@@ -769,10 +775,10 @@ mod tests {
         ));
     }
 
-    // Missing destination in the AAA subnet, source is a registered auth service:
-    // fabricate a phantom actor for the anonymous destination and allow the resolution.
+    // Missing destination with the AAA address pre-registered in the table (simulating a prior
+    // forward request): fabricate an AAA actor for the anonymous destination.
     #[tokio::test]
-    async fn resolve_actors_or_deny_missing_dest_in_aaa_net_with_auth_service_fabricates_phantom() {
+    async fn resolve_actors_or_deny_missing_dest_in_aaa_table_fabricates_aaa_actor() {
         let asm_inner = new_assembly_for_tests(None).await;
 
         let src_zpr = "fd5a:5052:3000::1";
@@ -791,45 +797,37 @@ mod tests {
         let asm = Arc::new(asm_inner);
         let requesting_node: IpAddr = "fd5a:5052:3000::ff".parse().unwrap();
         let aaa_dst = "fd5a:5052:0:aaa:0:ff00::1";
+        let aaa_dst_addr: IpAddr = aaa_dst.parse().unwrap();
+
+        // Pre-register as the request side would have done.
+        asm.actor_mgr.register_aaa(
+            aaa_dst_addr,
+            requesting_node,
+            SystemTime::now() + Duration::from_secs(300),
+        );
+
         let pkt = PacketDesc::new_tcp(src_zpr, aaa_dst, 12345, 80).unwrap();
         let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
 
         let src = make_node_actor_defexp(src_zpr, "src", "10.0.0.1:1001");
-        let (resolved_src, phantom_dst) = resolve_actors_or_deny(&asm, &job, Some(src), None)
+        let (resolved_src, aaa_dst_actor) = resolve_actors_or_deny(&asm, &job, Some(src), None)
             .await
             .ok()
             .expect("expected Ok");
 
         let expected_src: IpAddr = src_zpr.parse().unwrap();
-        let expected_aaa: IpAddr = aaa_dst.parse().unwrap();
         assert_eq!(resolved_src.get_zpr_addr(), Some(&expected_src));
-        assert_eq!(phantom_dst.get_zpr_addr(), Some(&expected_aaa));
+        assert_eq!(aaa_dst_actor.get_zpr_addr(), Some(&aaa_dst_addr));
     }
 
-    // --- actor_is_phantom tests ---
+    // --- AAA actor full pipeline tests ---
 
-    // An actor tagged with ZPR_PHANTOM="true" is recognized as a phantom.
-    #[test]
-    fn actor_is_phantom_returns_true_for_tagged_actor() {
-        let actor = make_actor_defexp(&[(key::ZPR_PHANTOM, "true")]);
-        assert!(actor_is_phantom(&actor));
-    }
-
-    // A normal node actor with no ZPR_PHANTOM attribute is not a phantom.
-    #[test]
-    fn actor_is_phantom_returns_false_for_untagged_actor() {
-        let actor = make_node_actor_defexp("fd5a:5052:3000::1", "some-node", "10.0.0.1:1001");
-        assert!(!actor_is_phantom(&actor));
-    }
-
-    // --- Phantom actor full pipeline tests ---
-
-    // Shared setup for phantom pipeline tests:
-    //   node A (fd5a:5052:3000::1) = requesting node and phantom docking node
+    // Shared setup for AAA pipeline tests:
+    //   node A (fd5a:5052:3000::1) = requesting node and AAA actor docking node
     //   node B (fd5a:5052:3000::2) = auth service docking node
     //   auth adapter (fd5a:5052:3000::30) docked to node B, service "svc:auth"
     //   AAA subnet for node A: fd5a:5052:0:aaa:0:100::/88
-    async fn build_phantom_test_asm(with_link: bool) -> Arc<Assembly> {
+    async fn build_aaa_test_asm(with_link: bool) -> Arc<Assembly> {
         let asm = new_assembly_for_tests(None).await;
 
         let node_a_addr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
@@ -872,11 +870,11 @@ mod tests {
         Arc::new(asm)
     }
 
-    // A phantom source actor passes the docking-node check and reaches policy evaluation.
-    // Without the patch this returns Deny(SourceNotFound); with it, Deny(NoMatch).
+    // An AAA source actor passes the docking-node check and reaches policy evaluation.
+    // Deny(NoMatch) confirms the actor was resolved and routing succeeded.
     #[tokio::test]
-    async fn process_visa_request_phantom_source_reaches_policy_eval() {
-        let asm = build_phantom_test_asm(true).await;
+    async fn process_visa_request_aaa_source_reaches_policy_eval() {
+        let asm = build_aaa_test_asm(true).await;
         let requesting_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
         // node_id for ::1 = 0x000001; segments[5] = 0x0001<<8 = 0x0100 → subnet fd5a:5052:0:aaa:0:100::/88
         let pkt = PacketDesc::new_tcp(
@@ -891,11 +889,11 @@ mod tests {
         assert!(matches!(result, VisaDecision::Deny(DenyCode::NoMatch)));
     }
 
-    // A phantom source with no route between the phantom docking node and the auth service
-    // docking node is denied NoReason (not SourceNotFound), proving the docking check passed.
+    // An AAA source with no route between the docking node and the auth service docking node
+    // is denied NoReason (not SourceNotFound), confirming the docking check passed.
     #[tokio::test]
-    async fn process_visa_request_phantom_source_no_route_denied() {
-        let asm = build_phantom_test_asm(false).await;
+    async fn process_visa_request_aaa_source_no_route_denied() {
+        let asm = build_aaa_test_asm(false).await;
         let requesting_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
         let pkt = PacketDesc::new_tcp(
             "fd5a:5052:0:aaa:0:100::1",
@@ -909,12 +907,22 @@ mod tests {
         assert!(matches!(result, VisaDecision::Deny(DenyCode::NoReason)));
     }
 
-    // A phantom destination actor passes the docking-node check and reaches policy evaluation.
-    // Without the patch this returns Deny(DestNotFound); with it, Deny(NoMatch).
+    // An AAA destination actor with the AAA table pre-populated reaches policy evaluation.
+    // Deny(NoMatch) confirms the actor was resolved and routing succeeded.
     #[tokio::test]
-    async fn process_visa_request_phantom_dest_reaches_policy_eval() {
-        let asm = build_phantom_test_asm(true).await;
-        let requesting_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+    async fn process_visa_request_aaa_dest_reaches_policy_eval() {
+        let asm = build_aaa_test_asm(true).await;
+        let node_a_addr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let aaa_addr: IpAddr = "fd5a:5052:0:aaa:0:100::1".parse().unwrap();
+
+        // Pre-register as the request side would have done.
+        asm.actor_mgr.register_aaa(
+            aaa_addr,
+            node_a_addr,
+            SystemTime::now() + Duration::from_secs(300),
+        );
+
+        let requesting_node = node_a_addr;
         let pkt = PacketDesc::new_tcp(
             "fd5a:5052:3000::30",
             "fd5a:5052:0:aaa:0:100::1",
@@ -925,5 +933,55 @@ mod tests {
         let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
         let result = process_visa_request(asm, &job).await.unwrap();
         assert!(matches!(result, VisaDecision::Deny(DenyCode::NoMatch)));
+    }
+
+    // Multi-node test: node A is the AAA docking node, node B hosts the auth service.
+    // A forward request (requesting_node=A) registers the AAA address.
+    // A return visa (requesting_node=B) must resolve the AAA dest to node A via the table.
+    #[tokio::test]
+    async fn process_visa_request_aaa_dest_multi_node_resolves_to_correct_docking_node() {
+        let asm = build_aaa_test_asm(true).await;
+
+        let node_a_addr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let node_b_addr: IpAddr = "fd5a:5052:3000::2".parse().unwrap();
+        let aaa_addr: IpAddr = "fd5a:5052:0:aaa:0:100::1".parse().unwrap();
+
+        // Step 1: forward request from node A registers the AAA address in the table.
+        let fwd_pkt = PacketDesc::new_tcp(
+            "fd5a:5052:0:aaa:0:100::1",
+            "fd5a:5052:3000::30",
+            12345,
+            4000,
+        )
+        .unwrap();
+        let (fwd_job, _rx) = VisaRequestJob::new(node_a_addr, fwd_pkt);
+        let _ = process_visa_request(asm.clone(), &fwd_job).await.unwrap();
+
+        // Confirm the AAA table now maps the address to node A.
+        assert_eq!(
+            asm.actor_mgr.get_docking_node_for_aaa(&aaa_addr),
+            Some(node_a_addr),
+            "aaa_table must map aaa_addr to node A after forward request"
+        );
+
+        // Step 2: return visa arrives via node B (the auth service's node).
+        // Without the fix, requesting_node=B would cause the subnet check to fail.
+        // With the fix, the table lookup finds node A as the correct docking node.
+        let ret_pkt = PacketDesc::new_tcp(
+            "fd5a:5052:3000::30",
+            "fd5a:5052:0:aaa:0:100::1",
+            4000,
+            12345,
+        )
+        .unwrap();
+        let (ret_job, _rx) = VisaRequestJob::new(node_b_addr, ret_pkt);
+        let result = process_visa_request(asm, &ret_job).await.unwrap();
+
+        // Deny(NoMatch) means routing resolved correctly; the request reached policy eval.
+        // Deny(DestNotFound) would mean the table lookup failed (the old bug).
+        assert!(
+            matches!(result, VisaDecision::Deny(DenyCode::NoMatch)),
+            "expected NoMatch (policy eval reached)"
+        );
     }
 }
