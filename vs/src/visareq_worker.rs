@@ -463,26 +463,11 @@ async fn resolve_actors_or_deny(
             debug!(target: VREQ, "fabricated AAA actor for anonymous request: {:?} -> {candidate_addr}", anon_actor);
             source_actor = Some(anon_actor);
         } else {
-            // Response side: auth service → unauthenticated adapter.
-            // Verify the source is an auth service before allowing traffic to the AAA address.
-            match asm
-                .actor_mgr
-                .has_auth_services(asm.clone(), candidate_addr)
-                .await
-            {
-                Ok(true) => (),
-                Ok(false) => {
-                    warn!(target: VREQ, "visa denied: non-authentication service at {candidate_addr} attempting to contact AAA address {anon_addr}");
-                    return Err(VisaDecision::Deny(DenyCode::DestNotFound));
-                }
-                Err(e) => {
-                    debug!(target: VREQ, "visa denied: error checking authentication services for actor at {candidate_addr}: {}", e);
-                    return Err(VisaDecision::Deny(DenyCode::DestNotFound));
-                }
-            };
-
+            // Response side: assume "auth service" → unauthenticated adapter.
+            // On this side we don't bother checking to see if source is an auth-service.
+            // The policy eval will flag that.
+            //
             // The AAA address must already be in the table (registered on the request side).
-            // This replaces the subnet check: the table records which node owns this address.
             match asm.actor_mgr.get_docking_node_for_aaa(anon_addr) {
                 Some(_) => {}
                 None => {
