@@ -390,9 +390,8 @@ impl ConnectionControl {
             }
         };
 
-        // Use our own ident key and AUTHORITY as identity keys if present.
+        // Use our own ident key as identity key if present.
         let _ = authd_actor.add_identity_key(0, ATTR_KEY_VS_IDENT);
-        let _ = authd_actor.add_identity_key(usize::MAX, key::AUTHORITY);
 
         let actor_role = if authd_actor.is_node() {
             Role::Node
@@ -576,6 +575,14 @@ fn scrub_adapter_claims(claims: Vec<Claim>) -> Result<Vec<Attribute>, ServiceErr
 mod tests {
     use super::*;
 
+    use bytes::Bytes;
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::{PKey, Private};
+    use openssl::rsa::Rsa;
+    use openssl::sign::Signer;
+    use std::sync::Arc;
+    use zpr::policy::v1;
+
     fn make_cc(ident: &str) -> ConnectionControl {
         ConnectionControl::new(ident.to_string())
     }
@@ -666,5 +673,227 @@ mod tests {
         let scrubbed = scrub_adapter_claims(claims).expect("scrub should succeed");
 
         assert_eq!(keys(&scrubbed), vec![key::CN, "custom.zpr.value"]);
+    }
+
+    // --- authenticate_node helpers ---
+
+    fn gen_rsa_test_keypair() -> (PKey<Private>, Vec<u8>) {
+        let rsa = Rsa::generate(2048).unwrap();
+        let privkey = PKey::from_rsa(rsa).unwrap();
+        let pubkey_der = privkey.public_key_to_der().unwrap();
+        (privkey, pubkey_der)
+    }
+
+    fn sign_node_challenge(
+        privkey: &PKey<Private>,
+        timestamp: u64,
+        cn: &str,
+        challenge: &[u8],
+    ) -> Vec<u8> {
+        let mut signer = Signer::new(MessageDigest::sha256(), privkey).unwrap();
+        signer.update(&timestamp.to_be_bytes()).unwrap();
+        signer.update(cn.as_bytes()).unwrap();
+        signer.update(challenge).unwrap();
+        signer.sign_to_vec().unwrap()
+    }
+
+    fn make_policy_with_bootstrap_key(cn: &str, pubkey_der: &[u8]) -> libeval::policy::Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy_bldr = msg.init_root::<v1::policy::Builder>();
+            policy_bldr.set_created("2024-01-01T00:00:00Z");
+            policy_bldr.set_version(1);
+            policy_bldr.set_metadata("");
+            let mut keys = policy_bldr.reborrow().init_keys(1);
+            keys.reborrow().get(0).set_id(cn);
+            keys.reborrow()
+                .get(0)
+                .set_key_type(v1::KeyMaterialT::RsaPub);
+            keys.reborrow()
+                .get(0)
+                .init_key_allows(1)
+                .set(0, v1::KeyAllowance::Bootstrap);
+            keys.reborrow().get(0).set_key_data(pubkey_der);
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        libeval::policy::Policy::new_from_policy_bytes(Bytes::copy_from_slice(&bytes)).unwrap()
+    }
+
+    // --- authenticate_node tests ---
+
+    #[tokio::test]
+    async fn authenticate_node_unknown_cn() {
+        let asm = Arc::new(crate::assembly::tests::new_assembly_for_tests(None).await);
+        let cc = make_cc("test-vs");
+        let result = cc
+            .authenticate_node(
+                asm,
+                b"challenge",
+                12345678,
+                "unknown.zpr",
+                &[],
+                "127.0.0.1:1234".parse().unwrap(),
+                "fd5a:5052::1".parse().unwrap(),
+            )
+            .await;
+        assert!(matches!(result, Err(ServiceError::AuthenticationFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn authenticate_node_invalid_signature() {
+        let asm = Arc::new(crate::assembly::tests::new_assembly_for_tests(None).await);
+        let cn = "test-node.zpr";
+        let (_, pubkey_der) = gen_rsa_test_keypair();
+        asm.policy_mgr
+            .update_policy(make_policy_with_bootstrap_key(cn, &pubkey_der))
+            .unwrap();
+        let cc = make_cc("test-vs");
+        let result = cc
+            .authenticate_node(
+                asm,
+                b"challenge",
+                12345678,
+                cn,
+                b"not-a-valid-rsa-sig",
+                "127.0.0.1:1234".parse().unwrap(),
+                "fd5a:5052::1".parse().unwrap(),
+            )
+            .await;
+        assert!(matches!(result, Err(ServiceError::AuthenticationFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn authenticate_node_signature_wrong_content() {
+        let asm = Arc::new(crate::assembly::tests::new_assembly_for_tests(None).await);
+        let cn = "test-node.zpr";
+        let (privkey, pubkey_der) = gen_rsa_test_keypair();
+        asm.policy_mgr
+            .update_policy(make_policy_with_bootstrap_key(cn, &pubkey_der))
+            .unwrap();
+        let cc = make_cc("test-vs");
+        let challenge = b"my-challenge";
+        let timestamp = 12345678u64;
+        let bad_sig = sign_node_challenge(&privkey, timestamp + 1, cn, challenge);
+        let result = cc
+            .authenticate_node(
+                asm,
+                challenge,
+                timestamp,
+                cn,
+                &bad_sig,
+                "127.0.0.1:1234".parse().unwrap(),
+                "fd5a:5052::1".parse().unwrap(),
+            )
+            .await;
+        assert!(matches!(result, Err(ServiceError::AuthenticationFailed(_))));
+    }
+
+    fn make_policy_with_node_join_policy(cn: &str, pubkey_der: &[u8]) -> libeval::policy::Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy_bldr = msg.init_root::<v1::policy::Builder>();
+            policy_bldr.set_created("2024-01-01T00:00:00Z");
+            policy_bldr.set_version(1);
+            policy_bldr.set_metadata("");
+            {
+                let mut keys = policy_bldr.reborrow().init_keys(1);
+                keys.reborrow().get(0).set_id(cn);
+                keys.reborrow()
+                    .get(0)
+                    .set_key_type(v1::KeyMaterialT::RsaPub);
+                keys.reborrow()
+                    .get(0)
+                    .init_key_allows(1)
+                    .set(0, v1::KeyAllowance::Bootstrap);
+                keys.reborrow().get(0).set_key_data(pubkey_der);
+            }
+            {
+                // Empty match list → matches any connection; JoinFlag::Node marks this as a node.
+                let mut jps = policy_bldr.reborrow().init_join_policies(1);
+                jps.reborrow()
+                    .get(0)
+                    .init_flags(1)
+                    .set(0, v1::JoinFlag::Node);
+            }
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        libeval::policy::Policy::new_from_policy_bytes(Bytes::copy_from_slice(&bytes)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn authenticate_node_policy_denied() {
+        let asm = Arc::new(crate::assembly::tests::new_assembly_for_tests(None).await);
+        let cn = "test-node.zpr";
+        let (privkey, pubkey_der) = gen_rsa_test_keypair();
+        asm.policy_mgr
+            .update_policy(make_policy_with_bootstrap_key(cn, &pubkey_der))
+            .unwrap();
+        let cc = make_cc("test-vs");
+        let challenge = b"my-challenge";
+        let timestamp = 12345678u64;
+        let sig = sign_node_challenge(&privkey, timestamp, cn, challenge);
+        let result = cc
+            .authenticate_node(
+                asm,
+                challenge,
+                timestamp,
+                cn,
+                &sig,
+                "127.0.0.1:1234".parse().unwrap(),
+                "fd5a:5052::1".parse().unwrap(),
+            )
+            .await;
+        assert!(matches!(result, Err(ServiceError::Eval(_))));
+    }
+
+    #[tokio::test]
+    async fn authenticate_node_success() {
+        let asm = Arc::new(crate::assembly::tests::new_assembly_for_tests(None).await);
+        let cn = "test-node.zpr";
+        let (privkey, pubkey_der) = gen_rsa_test_keypair();
+        asm.policy_mgr
+            .update_policy(make_policy_with_node_join_policy(cn, &pubkey_der))
+            .unwrap();
+        let cc = make_cc("test-vs");
+        let challenge = b"my-challenge";
+        let timestamp = 12345678u64;
+        let sig = sign_node_challenge(&privkey, timestamp, cn, challenge);
+
+        let actor = cc
+            .authenticate_node(
+                asm,
+                challenge,
+                timestamp,
+                cn,
+                &sig,
+                "127.0.0.1:1234".parse().unwrap(),
+                "fd5a:5052::1".parse().unwrap(),
+            )
+            .await
+            .expect("authentication should succeed");
+
+        assert!(actor.is_node());
+
+        // zpr.vs.bootstrap.ident must be present and be a valid node JWT
+        let jwt_str = actor
+            .get_attribute(ATTR_KEY_VS_IDENT)
+            .expect("bootstrap ident attribute must be present")
+            .get_value()[0]
+            .clone();
+        let claims = decode_jwt(&jwt_str, "test-vs").expect("ident attribute must be a valid JWT");
+        assert_eq!(claims.sub, format!("node/{}", cn));
+        assert_eq!(claims.iss, "vs.zpr/test-vs");
+
+        // get_identity() returns [jwt, cn, authority] in that order
+        let identity = actor
+            .get_identity()
+            .expect("actor must have identity values");
+        assert_eq!(identity[0], jwt_str);
+
+        // Due to libeval not actually paying attention to what attributes are part of "identity",
+        // it will add the CN claim.
+        assert_eq!(identity[1], cn);
     }
 }
