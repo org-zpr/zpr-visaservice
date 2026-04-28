@@ -15,6 +15,9 @@
 //! Finally, if everything goes well an address is assigned and the actor is
 //! returned.
 
+use chrono::Utc;
+use jsonwebtoken as jwt;
+use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -40,13 +43,71 @@ const CLASS_ENDPOINT: &str = "endpoint";
 const CLASS_USER: &str = "user";
 const CLASS_SERVICE: &str = "service";
 
+const ATTR_KEY_VS_IDENT: &str = "zpr.vs.bootstrap.ident";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct JwtClaims {
+    iss: String, // Issuer eg, 'vs.zpr/<IDENT>'
+    sub: String, // Subject (user id), eg 'node/<CN>'
+    exp: u64,    // Expiration time (as UNIX timestamp)
+    iat: u64,    // Issued at time (as UNIX timestamp)
+    jti: String, // JWT ID - unique identifier for the token, can be used for revocation
+}
+
 pub struct ConnectionControl {
-    // Placeholder for connection control data and methods
+    vs_ident: String,
+    jwt_key: jwt::EncodingKey,
+    authority: String,
 }
 
 impl ConnectionControl {
-    pub fn new() -> Self {
-        ConnectionControl {}
+    pub fn new(vs_ident: String) -> Self {
+        // massage ident into valid chars -> [a-zA-Z0-9.-_]
+        let vs_ident: String = vs_ident
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+
+        let jwt_key = jwt::EncodingKey::from_secret(vs_ident.as_bytes());
+
+        ConnectionControl {
+            authority: format!("vs.zpr/{}", &vs_ident),
+            vs_ident,
+            jwt_key,
+        }
+    }
+
+    /// VS uses this to create an "identity" token for bootstrap authenticated actors.
+    ///
+    /// `sub` should be 'node/<CN>' or 'adapter/<CN>'
+    fn gen_jwt(&self, sub: String) -> Result<String, ServiceError> {
+        let expiration = Utc::now()
+            .checked_add_signed(chrono::Duration::seconds(
+                config::DEFAULT_AUTH_EXPIRATION.as_secs() as i64,
+            ))
+            .expect("valid timestamp")
+            .timestamp() as u64;
+        let claims = JwtClaims {
+            iss: self.authority.clone(),
+            sub,
+            exp: expiration,
+            iat: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("time went backwards")
+                .as_secs(),
+            jti: uuid::Uuid::new_v4().to_string(),
+        };
+        let token = jwt::encode(&jwt::Header::default(), &claims, &self.jwt_key).map_err(|e| {
+            error!(target: CC, "failed to generate JWT: {}", e);
+            ServiceError::Internal("JWT generation failed".into())
+        })?;
+        Ok(token)
     }
 
     /// Perform node specific authentication and run the connect request through policy.
@@ -94,10 +155,18 @@ impl ConnectionControl {
         let mut authd_claims: Vec<Attribute> = Vec::new();
 
         authd_claims.push(Attribute::builder(key::SUBSTRATE_ADDR).value(remote.to_string()));
+
+        // We passed our RSA auth, so we set ourselves as authority and add our own ident.
+        let node_jwt = self.gen_jwt(format!("node/{}", cn))?;
+        authd_claims.push(
+            Attribute::builder(ATTR_KEY_VS_IDENT)
+                .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
+                .value(node_jwt),
+        );
         authd_claims.push(
             Attribute::builder(key::AUTHORITY)
                 .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
-                .value(format!("fake_jwt_token:node:{cn}")),
+                .value(format!("vs.zpr/{}", self.vs_ident)),
         );
 
         // Technically we don't know if the node claim is authenticated until it passes policy check.
@@ -187,10 +256,7 @@ impl ConnectionControl {
     ) -> Result<Actor, ServiceError> {
         let mut authd_claims = Vec::new();
 
-        authd_claims.push(
-            Attribute::builder(key::AUTHORITY)
-                .value(format!("fake_jwt_token:adapter:{}", config::VS_CN)),
-        );
+        authd_claims.push(Attribute::builder(key::AUTHORITY).value(&self.authority));
 
         for claim in claims {
             authd_claims.push(Attribute::builder(claim.key).value(claim.value));
@@ -254,11 +320,16 @@ impl ConnectionControl {
         // In prototype we make a JWT here and use that as an identity attribute.
         // TODO: implement jwt creation.
 
-        // FAKE identity token.
         authd_claims.push(
             Attribute::builder(key::AUTHORITY)
                 .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
-                .value(format!("fake_jwt_token:adapter:{}", ssb.cn)),
+                .value(&self.authority),
+        );
+        let adapter_jwt = self.gen_jwt(format!("adapter/{}", ssb.cn))?;
+        authd_claims.push(
+            Attribute::builder(ATTR_KEY_VS_IDENT)
+                .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
+                .value(adapter_jwt),
         );
 
         unauthd_claims.push(Attribute::builder(key::ROLE).value(ROLE_ADAPTER));
@@ -319,7 +390,8 @@ impl ConnectionControl {
             }
         };
 
-        // Use AUTHORITY as one of the identity keys if present.
+        // Use our own ident key and AUTHORITY as identity keys if present.
+        let _ = authd_actor.add_identity_key(0, ATTR_KEY_VS_IDENT);
         let _ = authd_actor.add_identity_key(usize::MAX, key::AUTHORITY);
 
         let actor_role = if authd_actor.is_node() {
@@ -452,7 +524,7 @@ fn check_adapter_required_claims(req: &ConnectRequest) -> Result<(), ServiceErro
 }
 
 // Gatekeep claims. Claims are considered to be adapter _requests_ which may
-// or may not be honored by policy.  But we set attributes from them and need
+// or may not be honored by policy.  But we set attributes from them and
 // and some are for internal use only.
 //
 // Generally no claims that start with "zpr." are allowed except:
@@ -503,6 +575,46 @@ fn scrub_adapter_claims(claims: Vec<Claim>) -> Result<Vec<Attribute>, ServiceErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_cc(ident: &str) -> ConnectionControl {
+        ConnectionControl::new(ident.to_string())
+    }
+
+    fn decode_jwt(token: &str, secret: &str) -> Result<JwtClaims, jwt::errors::Error> {
+        let key = jwt::DecodingKey::from_secret(secret.as_bytes());
+        let validation = jwt::Validation::new(jwt::Algorithm::HS256);
+        jwt::decode::<JwtClaims>(token, &key, &validation).map(|d| d.claims)
+    }
+
+    #[test]
+    fn new_preserves_valid_ident_chars() {
+        let cc = make_cc("valid-ident_1.2");
+        assert_eq!(cc.vs_ident, "valid-ident_1.2");
+    }
+
+    #[test]
+    fn new_sanitizes_special_chars() {
+        let cc = make_cc("test@host:port/path");
+        assert_eq!(cc.vs_ident, "test_host_port_path");
+    }
+
+    #[test]
+    fn gen_jwt_node_has_correct_claims() {
+        let cc = make_cc("test-vs");
+        let token = cc.gen_jwt("node/my-node".to_string()).unwrap();
+        let claims = decode_jwt(&token, "test-vs").expect("token must decode");
+
+        assert_eq!(claims.sub, "node/my-node");
+        assert_eq!(claims.iss, "vs.zpr/test-vs");
+    }
+
+    #[test]
+    fn gen_jwt_jti_is_unique_per_call() {
+        let cc = make_cc("test-vs");
+        let t1 = decode_jwt(&cc.gen_jwt("node/cn".to_string()).unwrap(), "test-vs").unwrap();
+        let t2 = decode_jwt(&cc.gen_jwt("node/cn".to_string()).unwrap(), "test-vs").unwrap();
+        assert_ne!(t1.jti, t2.jti);
+    }
 
     fn claim(key: &str, value: &str) -> Claim {
         Claim::new(key.to_string(), value.to_string())
