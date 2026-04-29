@@ -869,50 +869,9 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         Ok(())
     }
 
-    // When an adapter connects to a node, a node ends up making a call here to authorize
-    // the connection.  If successful the VS returns a ZPR address for the adapter, and an
-    // expiration time.
-    //
-    // The ConnectRequest arg is populated as follows:
-    //       blobs: list of 1 (for now) 'AuthBlob'
-    //       claims: may include 'zpr.addr' if a specific address is requested, must include 'zpr.adapter.cn' to match blob cn.
-    //       substrateAddr: adapter substrate address
-    //       dockinterface: 0
-    //
-    // There are just two ways that an adapter can authenticated and that is reflected in
-    // the AuthBlob presented.
-    //
-    // (1) Adapter uses an RSA key that is shared with policy -- looked up by the adapter CN.
-    //
-    //     Note that the node has already verified that the CN in the blob matches the CN
-    //     presented over the link by the adapter.
-    //
-    //     The AuthBlob is a ZPRSelfSignedBlob
-    //       {
-    //         alg: ChallengeAlg::RsaSha256Pkcs1v15
-    //         challenge: <bytes> - The nodes challend to the adapter. Just opaque bytes to to the visa service.
-    //         cn: adapter CN value
-    //         timestamp: unix timestamp, seconds
-    //         signature: RSA SHA256 PKCS1v15 signature using adapter private key over (ts + cn + challenge)
-    //                    time is big-endian u64.
-    //       }
-    //
-    //     To verify the blob, the visa service looks up the public key in policy by CN,
-    //     and then verifies the signature.
-    //
-    //
-    // (2) It can present a token from an authentication server.
-    //
-    //     The AuthBlob is a AuthCodeBlob
-    //       {
-    //         asaAddr: IpAddr of the auth service
-    //         code: <string>
-    //         pkce: <string>
-    //         clientId: <string>
-    //       }
-    //
-    //     All this is used in the oauth flow between visa service and the auth server to verify
-    //     the adapter identity.
+    // When an adapter (or node, which for connection stuff _acts_ like an adapter) connects to a node,
+    // a node ends up making a call here to authorize the connection.  If successful the VS returns
+    // a ZPR address for the adapter, and an expiration time.
     //
     async fn authorize_connect(
         self: Rc<Self>,
