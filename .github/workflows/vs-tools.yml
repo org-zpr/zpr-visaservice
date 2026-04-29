@@ -8,12 +8,16 @@ on:
       - 'admin-api-types/**'
       - 'libeval/**'
       - '.github/workflows/vs-tools.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   pull_request:
     paths:
       - 'vs-admin/**'
       - 'admin-api-types/**'
       - 'libeval/**'
       - '.github/workflows/vs-tools.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
