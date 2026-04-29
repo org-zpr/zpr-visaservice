@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Error as IoError;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
@@ -10,7 +11,7 @@ use crate::attribute::Attribute;
 use crate::joinpolicy::JPolicy;
 
 use zpr::policy::v1 as policy_capnp;
-use zpr::policy_types::{PolicyTypeError, Service, ServiceType};
+use zpr::policy_types::{AttrExp, NetAddr, Peering, PolicyTypeError, Service, ServiceType};
 
 #[derive(Debug, Error)]
 pub enum PolicyError {
@@ -52,6 +53,22 @@ pub struct Policy {
     services: HashMap<String, Service>,
     cpol_sources: Vec<String>,
     serialized: Bytes,
+    peer_table: Option<HashMap<IpAddr, Vec<Peer>>>, // zpr_addr -> peers
+    link_attrs: Option<HashMap<String, Vec<AttrExp>>>, // link_id -> attributes
+}
+
+/// A "Peer" is a one way view of a link. This is the remote substrate address from the persective
+/// of one of the ends. See [Policy::get_peers_for_node].
+#[derive(Debug, Clone)]
+pub struct Peer {
+    /// Each link has an identifier set in compiler. Used for debugging, and in policy here this is
+    /// used to get the link attributes.
+    ///
+    /// See [Policy::get_link_attrs].
+    pub peer_id: String,
+
+    /// Note that a [NetAddr] may require a DNS lookup to resolve.
+    pub remote_substrate: NetAddr,
 }
 
 impl Policy {
@@ -77,6 +94,48 @@ impl Policy {
         let join_policies = load_join_policies(&policy)?;
         let services = load_services(&policy)?;
         let cpol_sources = load_cpol_sources(&policy)?;
+        let peerings = load_peerings(&policy)?;
+
+        let peer_table = if let Some(ref peerings) = peerings {
+            // We have links defined in policy. Organize into useful lookup table for visa service.
+            let mut table: HashMap<IpAddr, Vec<Peer>> = HashMap::new();
+            for p in peerings {
+                // Each "Peering" is an edge with two endpoints. We create entries in our peer table
+                // for each endpoint.
+                //
+                let peer_a_to_b = Peer {
+                    peer_id: p.link_id.clone(),
+                    remote_substrate: p.substrate_a.clone(),
+                };
+                table
+                    .entry(p.node_a)
+                    .or_insert_with(Vec::new)
+                    .push(peer_a_to_b);
+
+                let peer_b_to_a = Peer {
+                    peer_id: p.link_id.clone(),
+                    remote_substrate: p.substrate_b.clone(),
+                };
+                table
+                    .entry(p.node_b)
+                    .or_insert_with(Vec::new)
+                    .push(peer_b_to_a);
+            }
+            Some(table)
+        } else {
+            None
+        };
+        let link_attrs = if let Some(ref peerings) = peerings {
+            let mut table: HashMap<String, Vec<AttrExp>> = HashMap::new();
+            for p in peerings {
+                if !p.attributes.is_empty() {
+                    table.insert(p.link_id.clone(), p.attributes.clone());
+                }
+            }
+            Some(table)
+        } else {
+            None
+        };
 
         Ok(Policy {
             policy_rdr: Some(Arc::new(policy_reader)),
@@ -85,6 +144,8 @@ impl Policy {
             services,
             cpol_sources,
             serialized,
+            peer_table,
+            link_attrs,
             ..Default::default()
         })
     }
@@ -185,6 +246,16 @@ impl Policy {
     pub fn get_cpol_source(&self, idx: usize) -> Option<&str> {
         self.cpol_sources.get(idx).map(|s| s.as_str())
     }
+
+    /// Pass the node ZPR address to get the list of peers (if any).
+    pub fn get_peers_for_node(&self, node_zpr_addr: &IpAddr) -> Option<&Vec<Peer>> {
+        self.peer_table.as_ref()?.get(node_zpr_addr)
+    }
+
+    /// A link may have attributes on it, this returns them.
+    pub fn get_link_attrs(&self, link_id: &str) -> Option<&Vec<AttrExp>> {
+        self.link_attrs.as_ref()?.get(link_id)
+    }
 }
 
 fn load_bootstrap_keys(
@@ -262,6 +333,21 @@ fn load_services(
         }
     }
     Ok(services)
+}
+
+fn load_peerings(
+    policy: &policy_capnp::policy::Reader,
+) -> Result<Option<Vec<Peering>>, PolicyError> {
+    if policy.has_topology() {
+        let mut peerings = Vec::new();
+        for peer_rdr in policy.get_topology()?.iter() {
+            let peering = Peering::try_from(peer_rdr)?;
+            peerings.push(peering);
+        }
+        Ok(Some(peerings))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
