@@ -118,6 +118,19 @@ impl ConnectionControl {
     ///
     /// This does not update our actor database, or do anything with the nodes services.
     ///
+    /// TODO: This needs more thought. This code path which is via the VSAPI 'authenticate' endpoint
+    /// is only available to nodes, and this code assumes the node has bootstrap auth.  It is theoretically
+    /// possible for a node to use external auth -- as long as it isn't the first node.
+    ///
+    /// This is a little odd mostly because this VSAPI authentication is the way that the
+    /// first node establishes its identity (since before that there is no access to a vias service).
+    ///
+    /// However, it feels like once we have done that, future nodes should not have to actually
+    /// authenticate with the VSAPI since they should have already authenticated just like an adapter
+    /// does.
+    ///
+    /// See https://github.com/org-zpr/zpr-visaservice/issues/205
+    ///
     pub async fn authenticate_node(
         &self,
         asm: Arc<Assembly>,
@@ -128,24 +141,11 @@ impl ConnectionControl {
         remote: SocketAddr,
         node_req_addr: IpAddr,
     ) -> Result<Actor, ServiceError> {
-        // TODO: This needs more thought. This code path which is via the VSAPI 'authenticate' endpoint
-        // is only available to nodes, and this code assumes the node has bootstrap auth.  It is theoretically
-        // possible for a node to use external auth -- as long as it isn't the first node.
-
         // Massage this node authentication request into something that looks like a generic
         // adapter request.
 
         let mut authd_claims: Vec<Attribute> = Vec::new();
-
         authd_claims.push(Attribute::builder(key::SUBSTRATE_ADDR).value(remote.to_string()));
-
-        // We passed our RSA auth, so we set ourselves as authority and add our own ident.
-        let node_jwt = self.gen_jwt(format!("node/{}", cn))?;
-        authd_claims.push(
-            Attribute::builder(ATTR_KEY_VS_IDENT)
-                .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
-                .value(node_jwt),
-        );
 
         let mut unauthd_claims: Vec<Attribute> = Vec::new();
         unauthd_claims.push(Attribute::builder(key::ROLE).value(ROLE_NODE));
@@ -168,16 +168,17 @@ impl ConnectionControl {
             info!(target: CC, "connection not approved for cn {}: not a node", cn);
             return Err(ServiceError::AuthenticationFailed("not authorized".into()));
         }
+
         Ok(node_actor)
     }
 
-    /// Confirm adapter authentication and then get policy authorization, resulting in an Actor if
+    /// Confirm adapter/node authentication and then get policy authorization, resulting in an Actor if
     /// everything checks out.
     ///
+    /// This is used during a connection attempt to ZPR (as opposed to the VSAPI connection which right
+    /// now is serviced by [ConnectionControl::authenticate_node]).
     ///
-    /// TODO: This needs to work for both adapters and nodes.
-    /// TODO: Does a node really need to go through challenge again to get acess to VSAPI??
-    pub async fn authenticate_adapter(
+    pub async fn authenticate_adapter_or_node(
         &self,
         asm: Arc<Assembly>,
         req: ConnectRequest,
@@ -186,7 +187,9 @@ impl ConnectionControl {
         if req.blobs.is_empty() || req.blobs.len() > 1 {
             return Err(ServiceError::Param("expected exactly one auth blob".into()));
         }
-        check_adapter_required_claims(&req)?;
+
+        check_required_claims(&req.claims, &[key::CN])?;
+
         let scrubbed_claims = scrub_adapter_claims(req.claims)?;
 
         let mut authd_claims = Vec::new();
@@ -194,7 +197,7 @@ impl ConnectionControl {
         authd_claims
             .push(Attribute::builder(key::SUBSTRATE_ADDR).value(req.substrate_addr.to_string()));
 
-        let adapter_actor = match &req.blobs[0] {
+        let actor = match &req.blobs[0] {
             AuthBlob::SS(ssb) => match ssb.alg {
                 ChallengeAlg::RsaSha256Pkcs1v15 => {
                     self.authenticate_zpr_entity_rsa(
@@ -214,12 +217,7 @@ impl ConnectionControl {
             }
         };
 
-        // Sanity check:
-        if adapter_actor.is_node() {
-            warn!(target: CC, "authenticate_adapter returns a node actor: cn {}", adapter_actor.get_cn().unwrap());
-            return Err(ServiceError::AuthenticationFailed("not an adapter".into()));
-        }
-        Ok(adapter_actor)
+        Ok(actor)
     }
 
     pub async fn authenticate_visa_service(
@@ -295,6 +293,7 @@ impl ConnectionControl {
             ));
         }
 
+        // We are the authority since we are checking RSA locally.
         authd_claims.push(
             Attribute::builder(key::AUTHORITY)
                 .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
@@ -487,23 +486,33 @@ impl ConnectionControl {
     }
 }
 
-/// Check that required claims are present, or return an error.
-///
-/// Only required claim is CN.
-fn check_adapter_required_claims(req: &ConnectRequest) -> Result<(), ServiceError> {
-    let mut cn_found = false;
-    for c in &req.claims {
-        if c.key == key::CN {
-            if c.value.is_empty() {
-                return Err(ServiceError::Param("cn claim cannot be empty".into()));
+/// Required claims must be present and non-empty.
+fn check_required_claims(claims: &[Claim], required: &[&str]) -> Result<(), ServiceError> {
+    let mut required_set = std::collections::HashSet::new();
+    for rc in required {
+        required_set.insert(*rc);
+    }
+
+    for claim in claims {
+        if required_set.contains(claim.key.as_str()) {
+            if claim.value.is_empty() {
+                return Err(ServiceError::Param(format!(
+                    "{} claim cannot be empty",
+                    claim.key
+                )));
             }
-            cn_found = true;
-            break;
+            required_set.remove(claim.key.as_str());
         }
     }
-    if !cn_found {
-        return Err(ServiceError::Param("cn claim is required".into()));
+
+    if !required_set.is_empty() {
+        let missing: Vec<&str> = required_set.into_iter().collect();
+        return Err(ServiceError::Param(format!(
+            "missing required claims: {:?}",
+            missing
+        )));
     }
+
     Ok(())
 }
 

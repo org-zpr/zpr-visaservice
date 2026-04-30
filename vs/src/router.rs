@@ -252,6 +252,19 @@ impl Router {
         inner.topo_generation += 1;
     }
 
+    /// Given a node address, return the connected peers.
+    pub fn get_peers(&self, zpr_addr: &IpAddr) -> Vec<IpAddr> {
+        let inner = self.inner.lock().unwrap();
+        let node_id: NodeId = zpr_addr.into();
+        inner
+            .topology
+            .neighbors(&node_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|nid| nid.into())
+            .collect()
+    }
+
     /// "Best" route is defined as the route with the lowest cost. If there is a tie, one is picked arbitrarily.
     /// These routes are cached and only updated when topology changes.
     pub fn get_best_route(&self, addr_a: &IpAddr, addr_b: &IpAddr) -> Option<Route> {

@@ -55,15 +55,33 @@ impl From<&IpAddr> for NodeId {
     }
 }
 
+impl Into<IpAddr> for NodeId {
+    fn into(self) -> IpAddr {
+        self.0.parse().expect("NodeId should be a valid IP address")
+    }
+}
+
 impl From<&str> for NodeId {
     fn from(s: &str) -> Self {
         NodeId(s.to_string())
     }
 }
 
+impl From<String> for NodeId {
+    fn from(s: String) -> Self {
+        NodeId(s)
+    }
+}
+
 impl From<&str> for LinkId {
     fn from(s: &str) -> Self {
         LinkId(s.to_string())
+    }
+}
+
+impl From<String> for LinkId {
+    fn from(s: String) -> Self {
+        LinkId(s)
     }
 }
 

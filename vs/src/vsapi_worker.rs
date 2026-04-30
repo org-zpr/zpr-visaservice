@@ -273,6 +273,73 @@ impl VSHandleImpl {
             }
         }
     }
+
+    // TODO: Should this be in a topology_mgr module?
+    // That module could also provide access to or act as a router.
+    //
+    // TODO: using our authenticate pathway, how does a node indicate a re-connect?
+    // TODO: How do we signal that we are only doing re-auth?
+    async fn try_add_linked_node(
+        &self,
+        actor: &Actor,
+        connect_via: &IpAddr,
+        new_node_addr: &IpAddr,
+    ) -> Result<(), ServiceError> {
+        let link_desc = self
+            .asm
+            .policy_mgr
+            .describe_link(connect_via, new_node_addr)
+            .await?;
+
+        // Ok this is a bit nutty. The actor_mgr by default will try to remove the
+        // node before adding it.  What if we are merely adding a link?
+        //
+        // I think we need to add the node.
+        // But I'm not sure that the actor-mgr needs to know about links.
+        // It does know about tethers.  So maybe is should?  But the router has the
+        // actual graph. So maybe we add redis backing to the router???
+        //
+
+        // Is this node already in our graph over another link?
+        // QUESTION - how to tell if this node is just making a link or if it is reconnecting and we need to restore state?
+
+        let peer_node_addrs = self.asm.router.get_peers(new_node_addr);
+
+        // If the new node has peers and one is the 'connect_via' .... uh, that's odd.  Error out?
+        // If the new node has peers and none are the 'connect_via', then we already know about
+        // this node, but it is just forming a new link.
+        // If the new node has no peers then it is not yet in our system.
+
+        if peer_node_addrs.is_empty() {
+            // Brand new node. Add to router, add to actor_mgr.
+
+            self.asm.router.add_node(new_node_addr)?;
+            self.asm.actor_mgr.add_node(actor, false).await?; // TODO: reconnect?
+        } else if peer_node_addrs.contains(connect_via) {
+            // TODO: This might happen during a reconnect or a re-auth.
+            warn!(target: API, "try_add_node but node at addr {} is already connected to us via {}: FINE!", new_node_addr, connect_via);
+
+            // Assume everything is just fine!
+            return Ok(());
+        }
+
+        // TODO: When the router PR is done, add_link should consume its args (not take references)
+        if let Err(e) = self.asm.router.add_link(
+            connect_via,
+            new_node_addr,
+            &link_desc.link_id.into(),
+            &link_desc.attrs,
+            link_desc.cost,
+        ) {
+            if peer_node_addrs.is_empty() {
+                self.asm.router.remove_node(new_node_addr);
+                self.asm.actor_mgr.remove_node(new_node_addr).await?;
+            }
+            return Err(e.into());
+        }
+
+        Ok(())
+    }
 }
 
 /// Helper to write an error into a capnp error builder with a retry of zero.
@@ -873,6 +940,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
     // a node ends up making a call here to authorize the connection.  If successful the VS returns
     // a ZPR address for the adapter, and an expiration time.
     //
+    // TODO: How do we handle re-connect or re-auth?
     async fn authorize_connect(
         self: Rc<Self>,
         params: vsapi::v_s_handle::AuthorizeConnectParams,
@@ -891,12 +959,12 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         let actor = match self
             .asm
             .cc
-            .authenticate_adapter(self.asm.clone(), creq, connect_via)
+            .authenticate_adapter_or_node(self.asm.clone(), creq, connect_via)
             .await
         {
             Ok(actor) => actor,
             Err(e) => {
-                warn!(target: API, "adapter connection authorization failed for node {:?}: {}", connect_via, e);
+                warn!(target: API, "connection authorization failed for node {:?}: {}", connect_via, e);
                 let mut err_builder = results.get().init_resp().init_error();
                 write_error(
                     &mut err_builder,
@@ -909,28 +977,50 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
 
         let actor_addr = actor.get_zpr_addr().unwrap().clone(); // MUST have an addr by now.
 
-        // Have an actor. Will have a ZPR address at this point.
-        if let Err(e) = self
-            .asm
-            .actor_mgr
-            .add_adapter_via_node(&actor, &connect_via)
-            .await
-        {
-            error!(target: API, "failed to add authenticated adapter {:?} to actor db: {}", actor.get_cn(), e);
-
-            if self.asm.net_mgr.is_managed_address(&actor_addr) {
-                if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr) {
-                    warn!(target: API, "failed to release adapter address {}: {}", actor_addr, e);
+        if actor.is_node() {
+            if let Err(e) = self
+                .try_add_linked_node(&actor, &connect_via, &actor_addr)
+                .await
+            {
+                if self.asm.net_mgr.is_managed_address(&actor_addr) {
+                    if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr) {
+                        warn!(target: API, "failed to release node address {}: {}", actor_addr, e);
+                    }
                 }
-            }
 
-            let mut err_builder = results.get().init_resp().init_error();
-            write_error(
-                &mut err_builder,
-                vsapi::ErrorCode::Internal,
-                "state update failed",
-            );
-            return Ok(());
+                warn!(target: API, "failed to add connecting node {:?} to during authorize_connect: {}", actor.get_cn(), e);
+                let mut err_builder = results.get().init_resp().init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "state update failed",
+                );
+                return Ok(());
+            }
+        } else {
+            // Have an actor. Will have a ZPR address at this point.
+            if let Err(e) = self
+                .asm
+                .actor_mgr
+                .add_adapter_via_node(&actor, &connect_via)
+                .await
+            {
+                error!(target: API, "failed to add authenticated adapter {:?} to actor db: {}", actor.get_cn(), e);
+
+                if self.asm.net_mgr.is_managed_address(&actor_addr) {
+                    if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr) {
+                        warn!(target: API, "failed to release adapter address {}: {}", actor_addr, e);
+                    }
+                }
+
+                let mut err_builder = results.get().init_resp().init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "state update failed",
+                );
+                return Ok(());
+            }
         }
 
         let addr_attr = actor.get_attribute(key::ZPR_ADDR).unwrap();
@@ -938,9 +1028,9 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             let expires_utc: DateTime<Utc> = addr_attr.get_expires().into();
             info!(
                 target: API,
-                "successfully authorized adapter {:?} with address {} (expires {})",
+                "successfully authorized {} {:?} with address {actor_addr} (expires {})",
+                if actor.is_node() { "node" } else { "adapter" },
                 actor.get_cn(),
-                actor_addr,
                 expires_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
             );
         }

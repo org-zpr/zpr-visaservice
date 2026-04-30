@@ -57,17 +57,20 @@ pub struct Policy {
     link_attrs: Option<HashMap<String, Vec<AttrExp>>>, // link_id -> attributes
 }
 
-/// A "Peer" is a one way view of a link. This is the remote substrate address from the persective
-/// of one of the ends. See [Policy::get_peers_for_node].
-#[derive(Debug, Clone)]
+/// A "Peer" is a one-way view of a link from the perspective of one endpoint.
+/// See [Policy::get_peers_for_node].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Peer {
     /// Each link has an identifier set in compiler. Used for debugging, and in policy here this is
     /// used to get the link attributes.
     ///
     /// See [Policy::get_link_attrs].
-    pub peer_id: String,
+    pub link_id: String,
 
-    /// Note that a [NetAddr] may require a DNS lookup to resolve.
+    /// ZPR address of the remote peer on this link.
+    pub remote_zpr_addr: IpAddr,
+
+    /// Substrate (physical/underlay) address used to reach the remote peer.
     pub remote_substrate: NetAddr,
 }
 
@@ -103,18 +106,22 @@ impl Policy {
                 // Each "Peering" is an edge with two endpoints. We create entries in our peer table
                 // for each endpoint.
                 //
+                // From node_a's perspective: remote is node_b, reachable at substrate_b.
                 let peer_a_to_b = Peer {
-                    peer_id: p.link_id.clone(),
-                    remote_substrate: p.substrate_a.clone(),
+                    link_id: p.link_id.clone(),
+                    remote_zpr_addr: p.node_b,
+                    remote_substrate: p.substrate_b.clone(),
                 };
                 table
                     .entry(p.node_a)
                     .or_insert_with(Vec::new)
                     .push(peer_a_to_b);
 
+                // From node_b's perspective: remote is node_a, reachable at substrate_a.
                 let peer_b_to_a = Peer {
-                    peer_id: p.link_id.clone(),
-                    remote_substrate: p.substrate_b.clone(),
+                    link_id: p.link_id.clone(),
+                    remote_zpr_addr: p.node_a,
+                    remote_substrate: p.substrate_a.clone(),
                 };
                 table
                     .entry(p.node_b)
@@ -357,7 +364,10 @@ mod test {
     use std::env;
     use std::path::PathBuf;
 
+    use bytes::Bytes;
     use zpr::policy::v1 as policy_capnp;
+    use zpr::policy_types::{AttrExp, AttrOp, NetAddr, Peering};
+    use zpr::write_to::WriteTo;
 
     const MIN_COMPILER_VERSION: Version = Version(0, 9, 2);
 
@@ -436,5 +446,247 @@ mod test {
         let policy = Policy::new_empty();
 
         assert!(policy.get_cpol_source(0).is_none());
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// Build a Policy containing the given peerings via an in-memory capnp message.
+    fn policy_with_peerings(peerings: &[Peering]) -> Policy {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy = msg.init_root::<policy_capnp::policy::Builder>();
+            policy.reborrow().set_created("1970-01-01T00:00:00Z");
+            if !peerings.is_empty() {
+                let mut topo = policy.reborrow().init_topology(peerings.len() as u32);
+                for (i, p) in peerings.iter().enumerate() {
+                    p.write_to(&mut topo.reborrow().get(i as u32));
+                }
+            }
+        }
+        let mut bytes = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        Policy::new_from_policy_bytes(Bytes::from(bytes)).unwrap()
+    }
+
+    /// Build a Peering between two ZPR nodes with explicit substrate addresses.
+    fn make_peering_full(
+        node_a: IpAddr,
+        sub_a: &str,
+        node_b: IpAddr,
+        sub_b: &str,
+        link_id: &str,
+        attrs: Vec<AttrExp>,
+    ) -> Peering {
+        Peering {
+            link_id: link_id.to_string(),
+            node_a,
+            substrate_a: NetAddr::new_for_ip_or_host(sub_a, 5000),
+            node_b,
+            substrate_b: NetAddr::new_for_ip_or_host(sub_b, 5001),
+            attributes: attrs,
+        }
+    }
+
+    // --- get_peers_for_node ---
+
+    #[test]
+    /// get_peers_for_node returns None when the policy has no topology (new_empty).
+    fn test_get_peers_for_node_no_topology() {
+        let policy = Policy::new_empty();
+        assert!(policy.get_peers_for_node(&ip("fd5a:5052::1")).is_none());
+    }
+
+    #[test]
+    /// get_peers_for_node returns None for a node that is not in any peering.
+    fn test_get_peers_for_node_unknown_node() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        assert!(policy.get_peers_for_node(&ip("fd5a:5052::99")).is_none());
+    }
+
+    #[test]
+    /// get_peers_for_node returns a Peer for node_a with the correct remote ZPR address
+    /// and the remote's substrate (substrate_b), not node_a's own substrate.
+    fn test_get_peers_for_node_a_sees_correct_remote() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-abc",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let peers = policy.get_peers_for_node(&ip("fd5a:5052::1")).unwrap();
+        assert_eq!(peers.len(), 1);
+        let p = &peers[0];
+        assert_eq!(p.link_id, "link-abc");
+        assert_eq!(p.remote_zpr_addr, ip("fd5a:5052::2"));
+        assert_eq!(
+            p.remote_substrate,
+            NetAddr::new_for_ip_or_host("10.0.0.2", 5001)
+        );
+    }
+
+    #[test]
+    /// A single peering creates entries for both endpoints; querying node_b yields node_a as the
+    /// remote, with substrate_a as the reachable address.
+    fn test_get_peers_for_node_bidirectional() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-x",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[peering]);
+
+        // node_b's peer entry should point back at node_a via substrate_a
+        let peers_b = policy.get_peers_for_node(&ip("fd5a:5052::2")).unwrap();
+        assert_eq!(peers_b.len(), 1);
+        let p = &peers_b[0];
+        assert_eq!(p.link_id, "link-x");
+        assert_eq!(p.remote_zpr_addr, ip("fd5a:5052::1"));
+        assert_eq!(
+            p.remote_substrate,
+            NetAddr::new_for_ip_or_host("10.0.0.1", 5000)
+        );
+    }
+
+    #[test]
+    /// A node that appears in two peerings has two entries in its peer list.
+    fn test_get_peers_for_node_multiple_peers() {
+        let p1 = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![],
+        );
+        let p2 = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::3"),
+            "10.0.0.3",
+            "link-2",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[p1, p2]);
+        let peers = policy.get_peers_for_node(&ip("fd5a:5052::1")).unwrap();
+        assert_eq!(peers.len(), 2);
+        let ids: Vec<&str> = peers.iter().map(|p| p.link_id.as_str()).collect();
+        assert!(ids.contains(&"link-1"));
+        assert!(ids.contains(&"link-2"));
+    }
+
+    // --- get_link_attrs ---
+
+    #[test]
+    /// get_link_attrs returns None when the policy has no topology (new_empty).
+    fn test_get_link_attrs_no_topology() {
+        let policy = Policy::new_empty();
+        assert!(policy.get_link_attrs("link-1").is_none());
+    }
+
+    #[test]
+    /// get_link_attrs returns None for an unknown link_id when topology is present.
+    fn test_get_link_attrs_unknown_link() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![AttrExp {
+                key: "link.class".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["trusted".to_string()],
+            }],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        assert!(policy.get_link_attrs("no-such-link").is_none());
+    }
+
+    #[test]
+    /// get_link_attrs returns None for a link that exists but has no attributes, because
+    /// the link_attrs table only stores entries for peerings with non-empty attribute lists.
+    fn test_get_link_attrs_link_with_no_attrs_returns_none() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-bare",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        assert!(policy.get_link_attrs("link-bare").is_none());
+    }
+
+    #[test]
+    /// get_link_attrs returns the correct attribute list for a link with attributes.
+    fn test_get_link_attrs_known_link() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-rich",
+            vec![AttrExp {
+                key: "link.class".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["trusted".to_string()],
+            }],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let attrs = policy.get_link_attrs("link-rich").unwrap();
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0].key, "link.class");
+        assert_eq!(attrs[0].value, vec!["trusted"]);
+    }
+
+    #[test]
+    /// get_link_attrs for two distinct links returns independent attribute lists keyed by link_id.
+    fn test_get_link_attrs_multiple_links_independent() {
+        let p1 = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-alpha",
+            vec![AttrExp {
+                key: "link.zpr.cost".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["3".to_string()],
+            }],
+        );
+        let p2 = make_peering_full(
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            ip("fd5a:5052::3"),
+            "10.0.0.3",
+            "link-beta",
+            vec![AttrExp {
+                key: "link.class".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["untrusted".to_string()],
+            }],
+        );
+        let policy = policy_with_peerings(&[p1, p2]);
+        let alpha = policy.get_link_attrs("link-alpha").unwrap();
+        assert_eq!(alpha[0].key, "link.zpr.cost");
+        let beta = policy.get_link_attrs("link-beta").unwrap();
+        assert_eq!(beta[0].key, "link.class");
     }
 }
