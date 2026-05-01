@@ -25,7 +25,7 @@ use std::usize;
 use tracing::{debug, error, info, warn};
 
 use libeval::actor::{Actor, Role};
-use libeval::attribute::{Attribute, ROLE_ADAPTER, ROLE_NODE, key};
+use libeval::attribute::{Attribute, ROLE_NODE, key};
 use libeval::eval::EvalContext;
 use libeval::policy::Policy;
 
@@ -55,7 +55,6 @@ struct JwtClaims {
 }
 
 pub struct ConnectionControl {
-    vs_ident: String,
     jwt_key: jwt::EncodingKey,
     authority: String,
 }
@@ -78,7 +77,6 @@ impl ConnectionControl {
 
         ConnectionControl {
             authority: format!("vs.zpr/{}", &vs_ident),
-            vs_ident,
             jwt_key,
         }
     }
@@ -160,6 +158,13 @@ impl ConnectionControl {
             signature: challenge_response.to_vec(),
         };
 
+        // We are the authority since we are checking RSA locally.
+        authd_claims.push(
+            Attribute::builder(key::AUTHORITY)
+                .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
+                .value(&self.authority),
+        );
+
         let node_actor = self
             .authenticate_zpr_entity_rsa(asm, &ss_blob, unauthd_claims, authd_claims, 0)
             .await?;
@@ -200,6 +205,13 @@ impl ConnectionControl {
         let actor = match &req.blobs[0] {
             AuthBlob::SS(ssb) => match ssb.alg {
                 ChallengeAlg::RsaSha256Pkcs1v15 => {
+                    // We are the authority since we are checking RSA locally.
+                    authd_claims.push(
+                        Attribute::builder(key::AUTHORITY)
+                            .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
+                            .value(&self.authority),
+                    );
+
                     self.authenticate_zpr_entity_rsa(
                         asm,
                         ssb,
@@ -249,8 +261,8 @@ impl ConnectionControl {
         &self,
         asm: Arc<Assembly>,
         ssb: &SelfSignedBlob,
-        mut unauthd_claims: Vec<Attribute>,
-        mut authd_claims: Vec<Attribute>,
+        unauthd_claims: Vec<Attribute>,
+        authd_claims: Vec<Attribute>,
         dock_interface: u8,
     ) -> Result<Actor, ServiceError> {
         // a) is the auth correct (check policy for CN, check sig.)
@@ -292,15 +304,6 @@ impl ConnectionControl {
                 "invalid signature".into(),
             ));
         }
-
-        // We are the authority since we are checking RSA locally.
-        authd_claims.push(
-            Attribute::builder(key::AUTHORITY)
-                .expires(SystemTime::now() + config::DEFAULT_AUTH_EXPIRATION)
-                .value(&self.authority),
-        );
-
-        // unauthd_claims.push(Attribute::builder(key::ROLE).value(ROLE_ADAPTER));
 
         // Ok checks out -- now run through policy.
         let mut actor = self
@@ -383,7 +386,7 @@ impl ConnectionControl {
         };
 
         if let Some(addr) = authd_actor.get_zpr_addr() {
-            info!(target: CC, "authorized adapter/{actor_role:?} cn {} with ZPR addr {}", endpoint_cn, addr);
+            info!(target: CC, "authorized connection of {actor_role:?} cn {} with ZPR addr {}", endpoint_cn, addr);
         } else {
             match asm.net_mgr.get_next_zpr_addr(&actor_role) {
                 Ok(addr) => {
@@ -590,13 +593,13 @@ mod tests {
     #[test]
     fn new_preserves_valid_ident_chars() {
         let cc = make_cc("valid-ident_1.2");
-        assert_eq!(cc.vs_ident, "valid-ident_1.2");
+        assert_eq!(cc.authority, "vs.zpr/valid-ident_1.2");
     }
 
     #[test]
     fn new_sanitizes_special_chars() {
         let cc = make_cc("test@host:port/path");
-        assert_eq!(cc.vs_ident, "test_host_port_path");
+        assert_eq!(cc.authority, "vs.zpr/test_host_port_path");
     }
 
     #[test]
