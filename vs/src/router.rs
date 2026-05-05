@@ -8,7 +8,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 use libeval::attribute::{AttrMatch, Attribute};
 use libeval::eval_route::{RouteHint, TopologyQueryApi};
@@ -23,6 +23,22 @@ use crate::error::TopologyError;
 /// `get_routes` runs a DFS over the full topology to enumerate all simple paths between two
 /// nodes, which is expensive on large or dense graphs.  Results are stored in
 /// `RouterInner::route_cache` keyed by `(src, dst, hint)`.
+///
+/// ### Concurrency model
+///
+/// `RouterInner` is protected by a `RwLock`.  Cache hits and DFS computation on cache misses
+/// both proceed under a **read** lock, so concurrent route lookups run in parallel.  Only the
+/// brief final step of inserting a computed result into the cache requires a **write** lock.
+///
+/// Because the DFS runs under a read lock, a topology mutation (write lock) may land between
+/// the DFS and the write-lock acquisition.  `RouterInner::topo_generation` is incremented on every
+/// topology change; `get_routes` compares the topo_generation it read against the topo_generation it sees
+/// when it acquires the write lock.  A mismatch means the computed routes may be stale: the
+/// call re-computes from the current topology under the write lock and skips caching to keep
+/// the critical section short.  The caller always receives correct routes.
+///
+/// Note that we are assuming that the co-occurance of full DFS and node changes is infrequent.
+/// If this turns out not to be the case we can look to something like an `ArcSwap<RwLock<>>`.
 ///
 /// ### Targeted invalidation
 ///
@@ -40,11 +56,22 @@ use crate::error::TopologyError;
 /// Targeted invalidation on link *removal* is exact: any affected route must traverse the
 /// removed link, so `link_to_cache_keys` identifies the precise affected set.
 ///
-/// Link *addition* is different.  A new link a-b can create routes for pairs (x, y) whose
-/// previously cached routes never touched a or b at all (e.g. x→a and b→y existed but
-/// a-b did not, so the only cached route was direct x→y).  Determining which pairs could
-/// gain new routes would require a full graph traversal — no cheaper exact answer exists.
-/// `add_link` therefore flushes the entire route cache.
+/// Link *addition* cannot use the same index.  A new link a→b may render stale a cached
+/// entry for (x, y) whose existing routes never touched a or b
+/// (e.g. x→a and b→y existed, a→b did not, so the only cached route was x→y direct;
+/// that entry is now incomplete).  `link_to_cache_keys` won't find it because the entry
+/// doesn't traverse the new link.
+///
+/// A tighter bound exists — the *topological horizon*: only pairs (x, y) where x can
+/// reach {a, b} and {a, b} can reach y are potentially affected; pairs in disconnected
+/// subgraphs are safe.  Computing that reachable set requires a BFS from a and b,
+/// O(V + E).  For shortest-path caches a further *cost horizon* applies: only pairs
+/// where d(x,a) + cost(a,b) + d(b,y) < d(x,y) are actually affected (the incremental
+/// SSSP problem; see Ramalingam & Reps 1996).  Because this cache covers all simple
+/// paths — not just shortest paths — the cost horizon does not directly apply here.
+///
+/// For now `add_link` flushes the entire route cache; targeted invalidation can be
+/// added later if profiling shows link addition is a hot path.
 ///
 /// ### Ordering constraint
 ///
@@ -63,6 +90,8 @@ struct RouterInner {
     route_cache: HashMap<RouteCacheKey, Vec<Route>>,
     /// Reverse index: cache keys whose routes traverse a given link. See [RouteCacheKey].
     link_to_cache_keys: HashMap<LinkId, HashSet<RouteCacheKey>>,
+    /// Incremented on every topology mutation; lets `get_routes` detect stale DFS results.
+    topo_generation: u64,
 }
 
 impl RouterInner {
@@ -93,16 +122,17 @@ impl RouterInner {
 }
 
 pub struct Router {
-    inner: Mutex<RouterInner>,
+    inner: RwLock<RouterInner>,
 }
 
 impl Router {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(RouterInner {
+            inner: RwLock::new(RouterInner {
                 topology: Graph::default(),
                 route_cache: HashMap::new(),
                 link_to_cache_keys: HashMap::new(),
+                topo_generation: 0,
             }),
         }
     }
@@ -116,14 +146,15 @@ impl Router {
     /// ## Errors
     /// - If node already exists then this returns [TopologyError::NodeExists]
     pub fn add_node(&self, node_addr: &IpAddr) -> Result<(), TopologyError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         inner.topology.add_node(node_addr)?;
+        inner.topo_generation += 1;
         Ok(())
     }
 
     /// Removes a node and all its incident links from the topology.
     pub fn remove_node(&self, node_addr: &IpAddr) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         let nid: NodeId = node_addr.into();
 
         // Phase 1: evict entries whose routes traverse any of the node's incident links.
@@ -161,6 +192,7 @@ impl Router {
 
         // Topology mutation comes last — invalidate_keys needs topology.edges intact.
         inner.topology.remove_node(&nid);
+        inner.topo_generation += 1;
     }
 
     /// Adds a link between the two nodes identified by the given IP addresses.
@@ -180,7 +212,7 @@ impl Router {
         attributes: &[Attribute],
         cost: u32,
     ) -> Result<(), TopologyError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         let a: NodeId = zpr_addr_a.into();
         let b: NodeId = zpr_addr_b.into();
 
@@ -193,13 +225,14 @@ impl Router {
         inner
             .topology
             .add_link(a, b, id.clone(), attributes.to_vec(), cost)?;
+        inner.topo_generation += 1;
         Ok(())
     }
 
     /// Remove a link by its id. If the link does not exist this is a no-op.
     #[allow(dead_code)]
     pub fn remove_link(&self, id: &LinkId) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
 
         // Only evict entries that actually traverse this specific link — routes on
         // completely disjoint parts of the topology are unaffected.
@@ -216,6 +249,7 @@ impl Router {
         inner.link_to_cache_keys.remove(id);
 
         inner.topology.remove_link(id);
+        inner.topo_generation += 1;
     }
 
     /// "Best" route is defined as the route with the lowest cost. If there is a tie, one is picked arbitrarily.
@@ -230,7 +264,7 @@ impl Router {
                 cost: 0,
             });
         }
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
         let (links, cost) = inner.topology.get_low_cost_path(&a, &b)?;
         Some(Route {
             kind: RouteKind::Multihop,
@@ -254,14 +288,34 @@ impl Router {
             b: addr_b.into(),
             hint: hint.cloned(),
         };
-        let mut inner = self.inner.lock().unwrap();
+
+        // Fast path: cache hit under read lock.
+        // Cache miss: compute DFS under read lock so concurrent callers run in parallel.
+        let (topo_gen, computed) = {
+            let inner = self.inner.read().unwrap();
+            if let Some(routes) = inner.route_cache.get(&key) {
+                return routes.clone();
+            }
+            let topo_gen = inner.topo_generation;
+            (
+                topo_gen,
+                Self::compute_routes(&inner.topology, addr_a, addr_b, hint),
+            )
+        };
+
+        // Commit under write lock.  If the topology changed while we were computing
+        // (detected via topo_generation mismatch), re-compute from the current topology
+        // and skip caching to keep the write critical section short.
+        let mut inner = self.inner.write().unwrap();
+        if inner.topo_generation != topo_gen {
+            return Self::compute_routes(&inner.topology, addr_a, addr_b, hint);
+        }
+        // Another thread may have won the race and already populated this key.
         if let Some(routes) = inner.route_cache.get(&key) {
             return routes.clone();
         }
-        let routes = Self::compute_routes(&inner.topology, addr_a, addr_b, hint);
-
         // Populate link_to_cache_keys so remove_link can do targeted eviction.
-        for route in &routes {
+        for route in &computed {
             for link_id in &route.links {
                 inner
                     .link_to_cache_keys
@@ -270,9 +324,8 @@ impl Router {
                     .insert(key.clone());
             }
         }
-
-        inner.route_cache.insert(key, routes.clone());
-        routes
+        inner.route_cache.insert(key, computed.clone());
+        computed
     }
 
     /// Unlike `get_best_route` this returns all the routes between addr_a and addr_b.
@@ -365,12 +418,14 @@ impl Graph {
     /// - If link id already exists then this returns [TopologyError::LinkExists]
     fn add_link(
         &mut self,
-        a: NodeId,
-        b: NodeId,
+        a: impl Into<NodeId>,
+        b: impl Into<NodeId>,
         id: LinkId,
         attributes: Vec<Attribute>,
         cost: u32,
     ) -> Result<(), TopologyError> {
+        let a = a.into();
+        let b = b.into();
         if a == b {
             return Err(TopologyError::LinkToSelf(
                 "add_link: self-links are not allowed".into(),
@@ -882,8 +937,7 @@ mod tests {
     fn test_graph_add_link_inserts_into_both_nodes() {
         // A new link is stored in the edges map and in both endpoint nodes' edge sets.
         let mut g = make_graph_abc();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
         assert!(g.edges.contains_key(&lid("ab")));
         assert!(g.nodes[&nid("a")].edges.contains(&lid("ab")));
         assert!(g.nodes[&nid("b")].edges.contains(&lid("ab")));
@@ -894,10 +948,7 @@ mod tests {
         // A link whose two endpoints are the same node is rejected.
         let mut g = Graph::default();
         g.add_node("a").unwrap();
-        assert!(
-            g.add_link(nid("a"), nid("a"), lid("aa"), vec![], 1)
-                .is_err()
-        );
+        assert!(g.add_link("a", "a", lid("aa"), vec![], 1).is_err());
     }
 
     #[test]
@@ -905,10 +956,7 @@ mod tests {
         // A link referencing a non-existent source node is rejected.
         let mut g = Graph::default();
         g.add_node("b").unwrap();
-        assert!(
-            g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-                .is_err()
-        );
+        assert!(g.add_link("a", "b", lid("ab"), vec![], 1).is_err());
     }
 
     #[test]
@@ -916,30 +964,22 @@ mod tests {
         // A link referencing a non-existent destination node is rejected.
         let mut g = Graph::default();
         g.add_node("a").unwrap();
-        assert!(
-            g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-                .is_err()
-        );
+        assert!(g.add_link("a", "b", lid("ab"), vec![], 1).is_err());
     }
 
     #[test]
     fn test_graph_add_link_duplicate_id_errors() {
         // Inserting two links with the same ID is rejected.
         let mut g = make_graph_abc();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-            .unwrap();
-        assert!(
-            g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 2)
-                .is_err()
-        );
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
+        assert!(g.add_link("a", "b", lid("ab"), vec![], 2).is_err());
     }
 
     #[test]
     fn test_graph_remove_link_cleans_up() {
         // Removing a link returns it and clears it from both nodes' edge sets.
         let mut g = make_graph_abc();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
         let removed = g.remove_link(&lid("ab"));
         assert!(removed.is_some());
         assert!(!g.edges.contains_key(&lid("ab")));
@@ -958,10 +998,8 @@ mod tests {
     fn test_graph_remove_node_removes_incident_links() {
         // Removing a node removes it along with all its incident links and clears peer edge sets.
         let mut g = make_graph_abc();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-            .unwrap();
-        g.add_link(nid("a"), nid("c"), lid("ac"), vec![], 1)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
+        g.add_link("a", "c", lid("ac"), vec![], 1).unwrap();
         g.remove_node(&nid("a"));
         assert!(!g.nodes.contains_key(&nid("a")));
         assert!(!g.edges.contains_key(&lid("ab")));
@@ -981,10 +1019,8 @@ mod tests {
     fn test_graph_neighbors_returns_connected_nodes() {
         // neighbors() returns all nodes directly connected by a link.
         let mut g = make_graph_abc();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-            .unwrap();
-        g.add_link(nid("a"), nid("c"), lid("ac"), vec![], 1)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
+        g.add_link("a", "c", lid("ac"), vec![], 1).unwrap();
         let mut nbrs = g.neighbors(&nid("a")).unwrap();
         nbrs.sort();
         assert_eq!(nbrs, vec![nid("b"), nid("c")]);
@@ -1012,8 +1048,7 @@ mod tests {
         let mut g = Graph::default();
         g.add_node("a").unwrap();
         g.add_node("b").unwrap();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 7)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 7).unwrap();
         let (path, cost) = g.get_low_cost_path(&nid("a"), &nid("b")).unwrap();
         assert_eq!(cost, 7);
         assert_eq!(path, vec![lid("ab")]);
@@ -1025,8 +1060,7 @@ mod tests {
         let mut g = Graph::default();
         g.add_node("a").unwrap();
         g.add_node("b").unwrap();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 4)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 4).unwrap();
         let (_, fwd) = g.get_low_cost_path(&nid("a"), &nid("b")).unwrap();
         let (_, rev) = g.get_low_cost_path(&nid("b"), &nid("a")).unwrap();
         assert_eq!(fwd, rev);
@@ -1036,10 +1070,8 @@ mod tests {
     fn test_graph_multihop_path() {
         // A two-hop path through an intermediate node is returned in traversal order.
         let mut g = make_graph_abc();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-            .unwrap();
-        g.add_link(nid("b"), nid("c"), lid("bc"), vec![], 1)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
+        g.add_link("b", "c", lid("bc"), vec![], 1).unwrap();
         let (path, cost) = g.get_low_cost_path(&nid("a"), &nid("c")).unwrap();
         assert_eq!(cost, 2);
         assert_eq!(path, vec![lid("ab"), lid("bc")]);
@@ -1049,12 +1081,9 @@ mod tests {
     fn test_graph_prefers_lower_cost_path() {
         // Dijkstra chooses the cheaper multi-hop route over a costlier direct link.
         let mut g = make_graph_abc();
-        g.add_link(nid("a"), nid("b"), lid("ab-direct"), vec![], 10)
-            .unwrap();
-        g.add_link(nid("a"), nid("c"), lid("ac"), vec![], 3)
-            .unwrap();
-        g.add_link(nid("c"), nid("b"), lid("cb"), vec![], 3)
-            .unwrap();
+        g.add_link("a", "b", lid("ab-direct"), vec![], 10).unwrap();
+        g.add_link("a", "c", lid("ac"), vec![], 3).unwrap();
+        g.add_link("c", "b", lid("cb"), vec![], 3).unwrap();
         let (path, cost) = g.get_low_cost_path(&nid("a"), &nid("b")).unwrap();
         assert_eq!(cost, 6);
         assert_eq!(path, vec![lid("ac"), lid("cb")]);
@@ -1066,8 +1095,7 @@ mod tests {
         let mut g = Graph::default();
         g.add_node("a").unwrap();
         g.add_node("b").unwrap();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
         assert!(g.get_low_cost_path(&nid("a"), &nid("b")).is_some());
         g.remove_link(&lid("ab"));
         assert!(g.get_low_cost_path(&nid("a"), &nid("b")).is_none());
@@ -1077,10 +1105,8 @@ mod tests {
     fn test_graph_remove_intermediate_node_invalidates_route() {
         // Removing the only intermediate node on a path leaves the endpoints unreachable.
         let mut g = make_graph_abc();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 1)
-            .unwrap();
-        g.add_link(nid("b"), nid("c"), lid("bc"), vec![], 1)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
+        g.add_link("b", "c", lid("bc"), vec![], 1).unwrap();
         assert!(g.get_low_cost_path(&nid("a"), &nid("c")).is_some());
         g.remove_node(&nid("b"));
         assert!(g.get_low_cost_path(&nid("a"), &nid("c")).is_none());
@@ -1092,8 +1118,7 @@ mod tests {
         let mut g = Graph::default();
         g.add_node("a").unwrap();
         g.add_node("b").unwrap();
-        g.add_link(nid("a"), nid("b"), lid("ab"), vec![], 9)
-            .unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 9).unwrap();
         let l = g.link(&lid("ab")).unwrap();
         assert_eq!(l.a, nid("a"));
         assert_eq!(l.b, nid("b"));
