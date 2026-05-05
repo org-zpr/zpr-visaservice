@@ -25,7 +25,7 @@ pub struct ActorMgr {
     actor_db: db::ActorRepo,
     node_db: db::NodeRepo,
     counters: Arc<Counters>,
-    connection_table: DashMap<IpAddr, IpAddr>, // adapter_zpr_addr -> docking_node_zpr_addr
+    connection_table: Arc<DashMap<IpAddr, IpAddr>>, // adapter_zpr_addr -> docking_node_zpr_addr
 
     /// Maps AAA address → (docking_node, expiry). Registered on the request side when an
     /// unauthenticated adapter contacts an auth service. Looked up on the response side to
@@ -58,7 +58,7 @@ impl ActorMgr {
             actor_db: actor_repo,
             node_db: node_repo,
             counters,
-            connection_table: DashMap::new(),
+            connection_table: Arc::new(DashMap::new()),
             aaa_table: DashMap::new(),
         }
     }
@@ -157,8 +157,17 @@ impl ActorMgr {
     pub async fn remove_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
         self.node_db.remove_node(node_addr).await?;
 
-        // Remove any connections that point to this node.
-        self.connection_table.retain(|_, v| v != node_addr);
+        // Remove any connections that point to this node.  Could be slow to iterate if
+        // this is large, so this is run in spawn_blocking to avoid blocking the async runtime.
+        tokio::task::spawn_blocking({
+            let connection_table_ptr = self.connection_table.clone();
+            let node_addr = *node_addr;
+            move || {
+                connection_table_ptr.retain(|_, v| v != &node_addr);
+            }
+        })
+        .await
+        .unwrap();
 
         self.counters.remove_node_info(node_addr);
         Ok(())
