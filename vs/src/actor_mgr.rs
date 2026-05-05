@@ -338,21 +338,15 @@ impl ActorMgr {
     /// of "adapter identity" addresses.
     /// See issue: https://github.com/org-zpr/zpr-visaservice/issues/200
     pub fn get_docking_node_for_aaa(&self, aaa_addr: &IpAddr) -> Option<IpAddr> {
-        let result = match self.aaa_table.get(aaa_addr) {
-            Some(entry) => {
-                let (docking_node, expiry) = entry.value();
-                if *expiry > SystemTime::now() {
-                    Some(*docking_node)
-                } else {
-                    None
-                }
+        let now = SystemTime::now();
+        match self.aaa_table.get(aaa_addr) {
+            Some(entry) if entry.value().1 > now => Some(entry.value().0),
+            _ => {
+                self.aaa_table
+                    .remove_if(aaa_addr, |_, (_, expiry)| *expiry <= now); // rechecks the entry while holding write lock
+                None
             }
-            None => None,
-        };
-        if result.is_none() {
-            self.aaa_table.remove(aaa_addr);
         }
-        result
     }
 
     pub async fn get_adapter_cns_connected_to_node(
