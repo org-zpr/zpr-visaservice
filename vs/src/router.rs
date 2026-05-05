@@ -520,15 +520,10 @@ impl Graph {
 
     /// Returns None if node not found. If node does exist then it is removed and returned.
     fn remove_node(&mut self, node_id: &NodeId) -> Option<Node> {
-        let link_ids: Vec<LinkId> = match self.nodes.get(node_id) {
-            Some(node) => node.edges.iter().cloned().collect(),
-            None => return None,
-        };
-
+        let link_ids: Vec<LinkId> = self.nodes.get(node_id)?.edges.iter().cloned().collect();
         for link_id in &link_ids {
             self.remove_link_impl(link_id);
         }
-
         let result = self.nodes.remove(node_id);
         self.recompute();
         result
