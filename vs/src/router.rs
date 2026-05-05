@@ -535,52 +535,99 @@ impl Graph {
     }
 
     /// Return every simple path from `start` to `end` (no repeated nodes).
+    /// Uses an explicit heap-allocated stack to avoid recursion depth limits.
     fn get_all_paths(&self, start: &NodeId, end: &NodeId) -> Vec<(Vec<LinkId>, u32)> {
-        let mut results = Vec::new();
-        let mut visited = HashSet::new();
-        visited.insert(start.clone());
-        self.dfs_all_paths(start, end, &mut visited, &mut vec![], 0, &mut results);
-        results
-    }
-
-    /// Recursive DFS helper for `get_all_paths`. Extends `path` one link at a time,
-    /// records a result when `current == end`, and backtracks on return.
-    fn dfs_all_paths(
-        &self,
-        current: &NodeId,
-        end: &NodeId,
-        visited: &mut HashSet<NodeId>,
-        path: &mut Vec<LinkId>,
-        cost: u32,
-        results: &mut Vec<(Vec<LinkId>, u32)>,
-    ) {
-        if current == end {
-            results.push((path.clone(), cost));
-            return;
+        struct Frame {
+            current: NodeId,
+            /// Remaining edges to try; treated as a stack (pop from end).
+            remaining: Vec<LinkId>,
+            /// Link used to reach this node — popped from `path` on backtrack.
+            entered_via: Option<LinkId>,
+            /// Neighbor added to `visited` on entry — removed on backtrack.
+            entered_neighbor: Option<NodeId>,
+            cost: u32,
         }
-        let Some(node) = self.nodes.get(current) else {
-            return;
+
+        if start == end {
+            return vec![(vec![], 0)];
+        }
+        let Some(start_node) = self.nodes.get(start) else {
+            return vec![];
         };
-        for link_id in &node.edges {
-            let Some(link) = self.edges.get(link_id) else {
+
+        let mut results = Vec::new();
+        let mut visited: HashSet<NodeId> = HashSet::new();
+        visited.insert(start.clone());
+        let mut path: Vec<LinkId> = Vec::new();
+        let mut stack = vec![Frame {
+            current: start.clone(),
+            remaining: start_node.edges.iter().cloned().collect(),
+            entered_via: None,
+            entered_neighbor: None,
+            cost: 0,
+        }];
+
+        loop {
+            // Phase 1: backtrack if this frame's edges are exhausted.
+            let exhausted = match stack.last() {
+                None => break,
+                Some(f) => f.remaining.is_empty(),
+            };
+            if exhausted {
+                let f = stack.pop().unwrap();
+                if f.entered_via.is_some() {
+                    path.pop();
+                }
+                if let Some(nb) = f.entered_neighbor {
+                    visited.remove(&nb);
+                }
+                continue;
+            }
+
+            // Phase 2: take the next edge (borrow ends before any stack.push below).
+            let (link_id, cost, current) = {
+                let f = stack.last_mut().unwrap();
+                (f.remaining.pop().unwrap(), f.cost, f.current.clone())
+            };
+
+            let Some(link) = self.edges.get(&link_id) else {
                 continue;
             };
-            let neighbor = if &link.a == current { &link.b } else { &link.a };
-            if !visited.contains(neighbor) {
+            let neighbor = if &link.a == &current {
+                &link.b
+            } else {
+                &link.a
+            };
+
+            if visited.contains(neighbor) {
+                continue;
+            }
+
+            let new_cost = cost.saturating_add(link.cost);
+
+            if neighbor == end {
+                let mut full_path = path.clone();
+                full_path.push(link_id);
+                results.push((full_path, new_cost));
+                continue;
+            }
+
+            // Descend: mark neighbor visited, extend path, push a new frame.
+            let neighbor = neighbor.clone();
+            if let Some(nb_node) = self.nodes.get(&neighbor) {
                 visited.insert(neighbor.clone());
                 path.push(link_id.clone());
-                self.dfs_all_paths(
-                    neighbor,
-                    end,
-                    visited,
-                    path,
-                    cost.saturating_add(link.cost),
-                    results,
-                );
-                path.pop();
-                visited.remove(neighbor);
+                stack.push(Frame {
+                    current: neighbor.clone(),
+                    remaining: nb_node.edges.iter().cloned().collect(),
+                    entered_via: Some(link_id),
+                    entered_neighbor: Some(neighbor),
+                    cost: new_cost,
+                });
             }
         }
+
+        results
     }
 
     /// Recompute the `best_routes` cache by running Dijkstra from every node.
@@ -599,15 +646,15 @@ impl Graph {
     /// Run Dijkstra from `start` and return, for each reachable destination, the
     /// ordered sequence of link ids on the shortest path and its total cost.
     fn dijkstra_from(&self, start: &NodeId) -> HashMap<NodeId, (Vec<LinkId>, u32)> {
-        let mut dist: HashMap<NodeId, u32> = HashMap::new();
+        let mut dist: HashMap<NodeId, u64> = HashMap::new();
         let mut prev: HashMap<NodeId, LinkId> = HashMap::new();
-        let mut heap: BinaryHeap<Reverse<(u32, NodeId)>> = BinaryHeap::new();
+        let mut heap: BinaryHeap<Reverse<(u64, NodeId)>> = BinaryHeap::new();
 
         dist.insert(start.clone(), 0);
         heap.push(Reverse((0, start.clone())));
 
         while let Some(Reverse((cost, node))) = heap.pop() {
-            if cost > *dist.get(&node).unwrap_or(&u32::MAX) {
+            if cost > *dist.get(&node).unwrap_or(&u64::MAX) {
                 continue;
             }
 
@@ -619,8 +666,8 @@ impl Graph {
                     continue;
                 };
                 let neighbor = if link.a == node { &link.b } else { &link.a };
-                let next_cost = cost.saturating_add(link.cost);
-                if next_cost < *dist.get(neighbor).unwrap_or(&u32::MAX) {
+                let next_cost = cost + link.cost as u64;
+                if next_cost < *dist.get(neighbor).unwrap_or(&u64::MAX) {
                     dist.insert(neighbor.clone(), next_cost);
                     prev.insert(neighbor.clone(), link_id.clone());
                     heap.push(Reverse((next_cost, neighbor.clone())));
@@ -646,7 +693,7 @@ impl Graph {
             }
             if &cur == start {
                 path.reverse();
-                result.insert(dest.clone(), (path, dist[dest]));
+                result.insert(dest.clone(), (path, dist[dest].min(u32::MAX as u64) as u32));
             }
         }
         result
@@ -728,6 +775,34 @@ mod tests {
         let route = r.get_best_route(&a, &b).unwrap();
         assert_eq!(route.cost, 6);
         assert_eq!(route.links, vec![LinkId("ac".into()), LinkId("cb".into())]);
+    }
+
+    #[test]
+    fn test_high_cost_multihop_is_reachable() {
+        // Verifies the u64 fix: with saturating_add the old code would compute
+        // u32::MAX + 1 == u32::MAX and fail the < guard, silently dropping node b.
+        let (r, a, b, c) = make_router_abc();
+        r.add_link(&a, &c, &LinkId("ac".into()), &[], u32::MAX)
+            .unwrap();
+        r.add_link(&c, &b, &LinkId("cb".into()), &[], 1).unwrap();
+        let route = r.get_best_route(&a, &b).unwrap();
+        assert_eq!(route.links, vec![LinkId("ac".into()), LinkId("cb".into())]);
+    }
+
+    #[test]
+    fn test_high_cost_prefers_cheaper_over_saturating_path() {
+        // A direct link costing u32::MAX-1 must beat a 2-hop path whose u64
+        // accumulated cost exceeds u32::MAX (old u32 arithmetic would saturate
+        // both to u32::MAX and pick arbitrarily).
+        let (r, a, b, c) = make_router_abc();
+        let half = u32::MAX / 2 + 1;
+        r.add_link(&a, &b, &LinkId("ab".into()), &[], u32::MAX - 1)
+            .unwrap();
+        r.add_link(&a, &c, &LinkId("ac".into()), &[], half).unwrap();
+        r.add_link(&c, &b, &LinkId("cb".into()), &[], half).unwrap();
+        let route = r.get_best_route(&a, &b).unwrap();
+        assert_eq!(route.links, vec![LinkId("ab".into())]);
+        assert_eq!(route.cost, u32::MAX - 1);
     }
 
     #[test]
@@ -1118,5 +1193,71 @@ mod tests {
         assert_eq!(l.a, nid("a"));
         assert_eq!(l.b, nid("b"));
         assert_eq!(l.cost, 9);
+    }
+
+    // --- get_all_paths cycle tests ---
+
+    fn sorted_paths(mut paths: Vec<(Vec<LinkId>, u32)>) -> Vec<Vec<LinkId>> {
+        // Sort by the sequence of link-ID strings so assertions are deterministic.
+        paths.sort_by_key(|(links, _)| links.iter().map(|l| l.0.clone()).collect::<Vec<_>>());
+        paths.into_iter().map(|(l, _)| l).collect()
+    }
+
+    #[test]
+    fn test_graph_get_all_paths_triangle() {
+        // Triangle a-b, b-c, a-c: node c is reachable from a via a direct link
+        // and via b, so get_all_paths must return exactly two paths.
+        let mut g = make_graph_abc();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
+        g.add_link("b", "c", lid("bc"), vec![], 1).unwrap();
+        g.add_link("a", "c", lid("ac"), vec![], 5).unwrap();
+        let paths = sorted_paths(g.get_all_paths(&nid("a"), &nid("c")));
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&vec![lid("ab"), lid("bc")]));
+        assert!(paths.contains(&vec![lid("ac")]));
+    }
+
+    #[test]
+    fn test_graph_get_all_paths_diamond() {
+        // Diamond a-b, a-c, b-d, c-d: node d is reachable from a via two
+        // vertex-disjoint paths.  The DFS must not revisit nodes and must
+        // enumerate both routes exactly once each.
+        let mut g = Graph::default();
+        g.add_node("a").unwrap();
+        g.add_node("b").unwrap();
+        g.add_node("c").unwrap();
+        g.add_node("d").unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
+        g.add_link("a", "c", lid("ac"), vec![], 1).unwrap();
+        g.add_link("b", "d", lid("bd"), vec![], 1).unwrap();
+        g.add_link("c", "d", lid("cd"), vec![], 1).unwrap();
+        let paths = sorted_paths(g.get_all_paths(&nid("a"), &nid("d")));
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&vec![lid("ab"), lid("bd")]));
+        assert!(paths.contains(&vec![lid("ac"), lid("cd")]));
+    }
+
+    #[test]
+    fn test_graph_get_all_paths_4node_ring_with_chord() {
+        // 4-node ring a-b-c-d-a plus a direct chord a-c.
+        // Paths from a to c: the chord (a-c), the clockwise hop via b (a-b-c),
+        // and the counter-clockwise hop via d (a-d-c).
+        // This verifies that the iterative DFS correctly backtracks through cycles
+        // without revisiting any node.
+        let mut g = Graph::default();
+        g.add_node("a").unwrap();
+        g.add_node("b").unwrap();
+        g.add_node("c").unwrap();
+        g.add_node("d").unwrap();
+        g.add_link("a", "b", lid("ab"), vec![], 1).unwrap();
+        g.add_link("b", "c", lid("bc"), vec![], 1).unwrap();
+        g.add_link("c", "d", lid("cd"), vec![], 1).unwrap();
+        g.add_link("d", "a", lid("da"), vec![], 1).unwrap();
+        g.add_link("a", "c", lid("ac"), vec![], 3).unwrap();
+        let paths = sorted_paths(g.get_all_paths(&nid("a"), &nid("c")));
+        assert_eq!(paths.len(), 3);
+        assert!(paths.contains(&vec![lid("ab"), lid("bc")]));
+        assert!(paths.contains(&vec![lid("ac")]));
+        assert!(paths.contains(&vec![lid("da"), lid("cd")]));
     }
 }
