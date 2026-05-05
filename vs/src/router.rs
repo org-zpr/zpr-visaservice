@@ -691,10 +691,9 @@ impl Graph {
                     link.a.clone()
                 };
             }
-            if &cur == start {
-                path.reverse();
-                result.insert(dest.clone(), (path, dist[dest].min(u32::MAX as u64) as u32));
-            }
+            debug_assert_eq!(&cur, start, "prev chain must terminate at start");
+            path.reverse();
+            result.insert(dest.clone(), (path, dist[dest].min(u32::MAX as u64) as u32));
         }
         result
     }
