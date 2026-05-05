@@ -257,7 +257,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             "visa request from {:?} denied: no route between {:?} and {:?}",
             job.requesting_node, node_addr_a, node_addr_b
         );
-        return Ok(VisaDecision::Deny(DenyCode::NoReason)); // TODO: Update to the NoRoute code when available in vsapi
+        return Ok(VisaDecision::Deny(DenyCode::NoRoute));
     };
 
     let policy = asm.policy_mgr.get_current();
@@ -892,7 +892,7 @@ mod tests {
     }
 
     // An AAA source with no route between the docking node and the auth service docking node
-    // is denied NoReason (not SourceNotFound), confirming the docking check passed.
+    // is denied NoRoute (not SourceNotFound), confirming the docking check passed.
     #[tokio::test]
     async fn process_visa_request_aaa_source_no_route_denied() {
         let asm = build_aaa_test_asm(false).await;
@@ -906,7 +906,7 @@ mod tests {
         .unwrap();
         let (job, _rx) = VisaRequestJob::new(requesting_node, pkt);
         let result = process_visa_request(asm, &job).await.unwrap();
-        assert!(matches!(result, VisaDecision::Deny(DenyCode::NoReason)));
+        assert!(matches!(result, VisaDecision::Deny(DenyCode::NoRoute)));
     }
 
     // An AAA destination actor with the AAA table pre-populated reaches policy evaluation.
