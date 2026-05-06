@@ -145,7 +145,7 @@ impl Router {
     ///
     /// ## Errors
     /// - If node already exists then this returns [TopologyError::NodeExists]
-    pub fn add_node(&self, node_addr: &IpAddr) -> Result<(), TopologyError> {
+    pub fn add_node(&self, node_addr: IpAddr) -> Result<(), TopologyError> {
         let mut inner = self.inner.write().unwrap();
         inner.topology.add_node(node_addr)?;
         inner.topo_generation += 1;
@@ -206,10 +206,10 @@ impl Router {
     #[allow(dead_code)]
     pub fn add_link(
         &self,
-        zpr_addr_a: &IpAddr,
-        zpr_addr_b: &IpAddr,
-        id: &LinkId,
-        attributes: &[Attribute],
+        zpr_addr_a: IpAddr,
+        zpr_addr_b: IpAddr,
+        id: LinkId,
+        attributes: Vec<Attribute>,
         cost: u32,
     ) -> Result<(), TopologyError> {
         let mut inner = self.inner.write().unwrap();
@@ -222,9 +222,7 @@ impl Router {
         inner.route_cache.clear();
         inner.link_to_cache_keys.clear();
 
-        inner
-            .topology
-            .add_link(a, b, id.clone(), attributes.to_vec(), cost)?;
+        inner.topology.add_link(a, b, id, attributes, cost)?;
         inner.topo_generation += 1;
         Ok(())
     }
@@ -254,7 +252,7 @@ impl Router {
 
     /// Given a node address, return the connected peers.
     pub fn get_peers(&self, zpr_addr: &IpAddr) -> Vec<IpAddr> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read().unwrap();
         let node_id: NodeId = zpr_addr.into();
         inner
             .topology
@@ -725,9 +723,9 @@ mod tests {
         let b = ip("10.0.0.2");
         let c = ip("10.0.0.3");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
-        r.add_node(&c).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_node(c).unwrap();
         (r, a, b, c)
     }
 
@@ -745,7 +743,7 @@ mod tests {
     fn test_direct_same_node() {
         let a = ip("10.0.0.1");
         let r = Router::new();
-        r.add_node(&a).unwrap();
+        r.add_node(a).unwrap();
         let route = r.get_best_route(&a, &a).unwrap();
         assert!(route.is_direct());
         assert_eq!(route.cost, 0);
@@ -757,9 +755,9 @@ mod tests {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 5).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 5).unwrap();
         let route = r.get_best_route(&a, &b).unwrap();
         assert!(!route.is_direct());
         assert_eq!(route.cost, 5);
@@ -769,8 +767,8 @@ mod tests {
     #[test]
     fn test_multihop() {
         let (r, a, b, c) = make_router_abc();
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
-        r.add_link(&b, &c, &LinkId("bc".into()), &[], 1).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
+        r.add_link(b, c, LinkId("bc".into()), vec![], 1).unwrap();
         let route = r.get_best_route(&a, &c).unwrap();
         assert!(!route.is_direct());
         assert_eq!(route.cost, 2);
@@ -780,10 +778,10 @@ mod tests {
     #[test]
     fn test_prefers_lower_cost() {
         let (r, a, b, c) = make_router_abc();
-        r.add_link(&a, &b, &LinkId("ab-direct".into()), &[], 10)
+        r.add_link(a, b, LinkId("ab-direct".into()), vec![], 10)
             .unwrap();
-        r.add_link(&a, &c, &LinkId("ac".into()), &[], 3).unwrap();
-        r.add_link(&c, &b, &LinkId("cb".into()), &[], 3).unwrap();
+        r.add_link(a, c, LinkId("ac".into()), vec![], 3).unwrap();
+        r.add_link(c, b, LinkId("cb".into()), vec![], 3).unwrap();
         let route = r.get_best_route(&a, &b).unwrap();
         assert_eq!(route.cost, 6);
         assert_eq!(route.links, vec![LinkId("ac".into()), LinkId("cb".into())]);
@@ -794,9 +792,9 @@ mod tests {
         // Verifies the u64 fix: with saturating_add the old code would compute
         // u32::MAX + 1 == u32::MAX and fail the < guard, silently dropping node b.
         let (r, a, b, c) = make_router_abc();
-        r.add_link(&a, &c, &LinkId("ac".into()), &[], u32::MAX)
+        r.add_link(a, c, LinkId("ac".into()), vec![], u32::MAX)
             .unwrap();
-        r.add_link(&c, &b, &LinkId("cb".into()), &[], 1).unwrap();
+        r.add_link(c, b, LinkId("cb".into()), vec![], 1).unwrap();
         let route = r.get_best_route(&a, &b).unwrap();
         assert_eq!(route.links, vec![LinkId("ac".into()), LinkId("cb".into())]);
     }
@@ -808,10 +806,10 @@ mod tests {
         // both to u32::MAX and pick arbitrarily).
         let (r, a, b, c) = make_router_abc();
         let half = u32::MAX / 2 + 1;
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], u32::MAX - 1)
+        r.add_link(a, b, LinkId("ab".into()), vec![], u32::MAX - 1)
             .unwrap();
-        r.add_link(&a, &c, &LinkId("ac".into()), &[], half).unwrap();
-        r.add_link(&c, &b, &LinkId("cb".into()), &[], half).unwrap();
+        r.add_link(a, c, LinkId("ac".into()), vec![], half).unwrap();
+        r.add_link(c, b, LinkId("cb".into()), vec![], half).unwrap();
         let route = r.get_best_route(&a, &b).unwrap();
         assert_eq!(route.links, vec![LinkId("ab".into())]);
         assert_eq!(route.cost, u32::MAX - 1);
@@ -822,8 +820,8 @@ mod tests {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
         assert!(r.get_best_route(&a, &b).is_none());
     }
 
@@ -831,9 +829,9 @@ mod tests {
     fn test_compute_routes_returns_all_paths() {
         // A-B, B-C, A-C: routes from A to C should include both A-B-C and A-C.
         let (r, a, b, c) = make_router_abc();
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
-        r.add_link(&b, &c, &LinkId("bc".into()), &[], 1).unwrap();
-        r.add_link(&a, &c, &LinkId("ac".into()), &[], 5).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
+        r.add_link(b, c, LinkId("bc".into()), vec![], 1).unwrap();
+        r.add_link(a, c, LinkId("ac".into()), vec![], 5).unwrap();
         let hint = no_hint();
         let routes = r.get_routes(&a, &c, Some(&hint));
         assert_eq!(routes.len(), 2);
@@ -853,9 +851,9 @@ mod tests {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
         let hint = no_hint();
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
         r.remove_link(&LinkId("ab".into()));
@@ -868,11 +866,11 @@ mod tests {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
         let hint = no_hint();
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 0);
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
     }
 
@@ -883,11 +881,11 @@ mod tests {
         let b = ip("10.0.0.2");
         let c = ip("10.0.0.3");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
-        r.add_node(&c).unwrap();
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
-        r.add_link(&b, &c, &LinkId("bc".into()), &[], 1).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_node(c).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
+        r.add_link(b, c, LinkId("bc".into()), vec![], 1).unwrap();
         let hint = no_hint();
         assert_eq!(r.get_routes(&a, &c, Some(&hint)).len(), 1);
         r.remove_node(&b);
@@ -901,12 +899,12 @@ mod tests {
         let b = ip("10.0.0.2");
         let d = ip("10.0.0.4");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
         let hint = no_hint();
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
-        r.add_node(&d).unwrap();
+        r.add_node(d).unwrap();
         // Route a->b still valid and served from cache.
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
         // New isolated node d has no routes to a.
@@ -921,12 +919,12 @@ mod tests {
         let c = ip("10.0.0.3");
         let d = ip("10.0.0.4");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
-        r.add_node(&c).unwrap();
-        r.add_node(&d).unwrap();
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
-        r.add_link(&c, &d, &LinkId("cd".into()), &[], 1).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_node(c).unwrap();
+        r.add_node(d).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
+        r.add_link(c, d, LinkId("cd".into()), vec![], 1).unwrap();
         let hint = no_hint();
         // Warm both cache entries.
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
@@ -943,13 +941,13 @@ mod tests {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let r = Router::new();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
         let hint = no_hint();
         // Warm cache with empty result (no path exists yet).
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 0);
         // Adding a link between a and b must bust the stale empty entry.
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
         assert_eq!(r.get_routes(&a, &b, Some(&hint)).len(), 1);
     }
 
@@ -963,19 +961,19 @@ mod tests {
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let r = Router::new();
-        r.add_node(&x).unwrap();
-        r.add_node(&y).unwrap();
-        r.add_node(&a).unwrap();
-        r.add_node(&b).unwrap();
+        r.add_node(x).unwrap();
+        r.add_node(y).unwrap();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
         // Direct x-y link and dormant legs x-a and b-y; no a-b yet.
-        r.add_link(&x, &y, &LinkId("xy".into()), &[], 10).unwrap();
-        r.add_link(&x, &a, &LinkId("xa".into()), &[], 1).unwrap();
-        r.add_link(&b, &y, &LinkId("by".into()), &[], 1).unwrap();
+        r.add_link(x, y, LinkId("xy".into()), vec![], 10).unwrap();
+        r.add_link(x, a, LinkId("xa".into()), vec![], 1).unwrap();
+        r.add_link(b, y, LinkId("by".into()), vec![], 1).unwrap();
         let hint = no_hint();
         // Warm the cache: only the direct x-y route exists.
         assert_eq!(r.get_routes(&x, &y, Some(&hint)).len(), 1);
         // Adding the bridge a-b creates a second path x→a→b→y.
-        r.add_link(&a, &b, &LinkId("ab".into()), &[], 1).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
         // Cache must be invalidated; both routes should now be returned.
         assert_eq!(r.get_routes(&x, &y, Some(&hint)).len(), 2);
     }

@@ -312,7 +312,7 @@ impl VSHandleImpl {
 
         if peer_node_addrs.is_empty() {
             // Brand new node. Add to router, add to actor_mgr.
-            self.asm.router.add_node(new_node_addr)?;
+            self.asm.router.add_node(new_node_addr.clone())?;
             self.asm.actor_mgr.add_node(actor, false).await?; // TODO: reconnect?
         } else if peer_node_addrs.contains(connect_via) {
             // TODO: This might happen during a reconnect or a re-auth.
@@ -323,10 +323,10 @@ impl VSHandleImpl {
         // TODO: When the router PR is done, add_link should consume its args (not take references)
 
         if let Err(e) = self.asm.router.add_link(
-            connect_via,
-            new_node_addr,
-            &link_desc.link_id.into(),
-            &link_desc.attrs,
+            connect_via.clone(),
+            new_node_addr.clone(),
+            link_desc.link_id.into(),
+            link_desc.attrs,
             link_desc.cost,
         ) {
             if !matches!(e, TopologyError::LinkExists(_)) {
@@ -768,13 +768,13 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         }
 
         // Add the node to the router.
-        match self.asm.router.add_node(&node_zpr_addr) {
+        match self.asm.router.add_node(node_zpr_addr) {
             Ok(()) => (),
             Err(TopologyError::NodeExists(_)) => {
                 // Attempt to remove and re-add.
                 warn!(target: API, "node {:?} already exists in router, attempting to remove and re-add", &node_cn);
                 self.asm.router.remove_node(&node_zpr_addr);
-                if let Err(e) = self.asm.router.add_node(&node_zpr_addr) {
+                if let Err(e) = self.asm.router.add_node(node_zpr_addr) {
                     // Failed to add the node to the router. We won't be able to route visas through this node.
                     // Best to just abort this connect.
                     error!(target: API, "router: failed to add node {} to router after removing existing: {}", node_zpr_addr, e);
@@ -1368,7 +1368,7 @@ mod tests {
             let asm = Arc::new(new_assembly_for_tests(None).await);
             let addr: IpAddr = "fd5a:5052:90de:1::1".parse().unwrap();
 
-            asm.router.add_node(&addr).unwrap();
+            asm.router.add_node(addr).unwrap();
 
             let mut undo = AuthenticateUndo::default();
             undo.added_node_to_router(&addr);
@@ -1376,7 +1376,7 @@ mod tests {
 
             // Node was removed, so add_node must succeed again.
             assert!(
-                asm.router.add_node(&addr).is_ok(),
+                asm.router.add_node(addr).is_ok(),
                 "node should have been removed from router by undo"
             );
         }
@@ -1409,7 +1409,7 @@ mod tests {
                 make_node_actor_defexp(&addr.to_string(), "test-node-2", "[fd5a:5052::101]:1234");
 
             asm.actor_mgr.add_node(&actor, false).await.unwrap();
-            asm.router.add_node(&addr).unwrap();
+            asm.router.add_node(addr).unwrap();
 
             let mut undo = AuthenticateUndo::default();
             undo.took_zpr_addr(&addr);
@@ -1418,7 +1418,7 @@ mod tests {
             undo.undo(&asm).await;
 
             assert!(
-                asm.router.add_node(&addr).is_ok(),
+                asm.router.add_node(addr).is_ok(),
                 "node should have been removed from router"
             );
             asm.router.remove_node(&addr);

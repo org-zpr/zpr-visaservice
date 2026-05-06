@@ -589,11 +589,11 @@ mod tests {
         let asm_inner = new_assembly_for_tests(Some(vreq_tx)).await;
         let src_zpr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
         let dst_zpr: IpAddr = "fd5a:5052:3000::2".parse().unwrap();
-        asm_inner.router.add_node(&src_zpr).unwrap();
-        asm_inner.router.add_node(&dst_zpr).unwrap();
+        asm_inner.router.add_node(src_zpr).unwrap();
+        asm_inner.router.add_node(dst_zpr).unwrap();
         asm_inner
             .router
-            .add_link(&src_zpr, &dst_zpr, &LinkId("test-link".into()), &[], 1)
+            .add_link(src_zpr, dst_zpr, LinkId("test-link".into()), vec![], 1)
             .unwrap();
         let asm = Arc::new(asm_inner);
 
@@ -839,16 +839,16 @@ mod tests {
         let node_b = make_node_actor_defexp("fd5a:5052:3000::2", "node-b", "10.0.0.2:1002");
         asm.actor_mgr.add_node(&node_a, false).await.unwrap();
         asm.actor_mgr.add_node(&node_b, false).await.unwrap();
-        asm.router.add_node(&node_a_addr).unwrap();
-        asm.router.add_node(&node_b_addr).unwrap();
+        asm.router.add_node(node_a_addr).unwrap();
+        asm.router.add_node(node_b_addr).unwrap();
 
         if with_link {
             asm.router
                 .add_link(
-                    &node_a_addr,
-                    &node_b_addr,
-                    &LinkId("link-ab".into()),
-                    &[],
+                    node_a_addr,
+                    node_b_addr,
+                    LinkId("link-ab".into()),
+                    vec![],
                     1,
                 )
                 .unwrap();
