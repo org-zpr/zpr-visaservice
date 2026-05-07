@@ -1042,7 +1042,11 @@ mod tests {
         let r = Router::new();
         r.add_node(a).unwrap();
         let na: NodeId = (&a).into();
-        let route = Route { kind: RouteKind::Multihop, links: vec![], cost: 0 };
+        let route = Route {
+            kind: RouteKind::Multihop,
+            links: vec![],
+            cost: 0,
+        };
         assert!(r.route_to_path(&route, &na).unwrap().is_empty());
     }
 

@@ -94,6 +94,29 @@ impl FakeDb {
         }
     }
 
+    async fn hset_multiple_with_lock(
+        &self,
+        key: &str,
+        field_values: &[(String, String)],
+    ) -> DbResult<()> {
+        let entry = self
+            .store
+            .entry(key.to_string())
+            .or_insert_with(|| Entry::new(FakeDbValue::Hash(DashMap::new())));
+        match &entry.value {
+            FakeDbValue::Hash(h) => {
+                for (field, value) in field_values {
+                    h.insert(field.to_string(), value.to_string());
+                }
+                Ok(())
+            }
+            _ => Err(redis::RedisError::from((
+                redis::ErrorKind::UnexpectedReturnType,
+                "value is not a hash",
+            ))),
+        }
+    }
+
     /// Remove a member from a set.
     async fn srem_with_lock(&self, key: &str, member: &str) -> DbResult<()> {
         if !self.exists_with_lock(key).await? {
@@ -113,6 +136,20 @@ impl FakeDb {
         } else {
             Ok(())
         }
+    }
+
+    async fn expire_with_lock(&self, key: &str, seconds: i64) -> DbResult<()> {
+        if !self.exists_with_lock(key).await? {
+            return Ok(());
+        }
+        if seconds <= 0 {
+            self.store.remove(key);
+            return Ok(());
+        }
+        if let Some(mut entry) = self.store.get_mut(key) {
+            entry.exp = Instant::now() + std::time::Duration::from_secs(seconds as u64);
+        }
+        Ok(())
     }
 }
 
@@ -424,6 +461,15 @@ impl DbConnection for FakeDb {
                     value,
                 } => {
                     self.hset_with_lock(hash_key, field, value).await?;
+                }
+                DbOp::HSetMultiple {
+                    hash_key,
+                    field_values,
+                } => {
+                    self.hset_multiple_with_lock(hash_key, field_values).await?;
+                }
+                DbOp::Expire { key, seconds } => {
+                    self.expire_with_lock(key, *seconds).await?;
                 }
             }
         }
