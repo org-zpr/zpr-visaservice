@@ -177,6 +177,9 @@ impl VisaRequestJob {
 
     /// Complete this job by sending a result to the requester.
     /// Logs a warning if the requester has dropped the receiver.
+    ///
+    /// TODO: The visa here must be an "actualized" visa, which means it is properly configured
+    /// for its place on the path (based on requesting node). XXX
     pub fn complete(self, result: VisaRequestResult) {
         if let Err(_) = self.response_chan.send(result) {
             // Means the requester has dropped the receiver.
@@ -381,6 +384,7 @@ async fn visa_from_allow(
     let visa = asm
         .visa_mgr
         .create_visa(
+            asm,
             &job.requesting_node,
             &job.packet_desc,
             &hits[0],
@@ -388,6 +392,13 @@ async fn visa_from_allow(
             policy_version,
         )
         .await?;
+
+    // Visa created and stored in repo along with path.
+    // Will already have been set "pending" on the requesting_node.
+
+    // TODO: need to 'actualize' the visa whenever we return it to something.
+    //
+    // XXX TODO: Do actualization here prior to returning.
 
     Ok(VisaDecision::Allow(visa, allowed_route))
 }

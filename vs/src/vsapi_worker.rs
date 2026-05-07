@@ -320,8 +320,6 @@ impl VSHandleImpl {
             return Ok(()); // Assume everything is just fine!
         }
 
-        // TODO: When the router PR is done, add_link should consume its args (not take references)
-
         if let Err(e) = self.asm.router.add_link(
             connect_via.clone(),
             new_node_addr.clone(),
@@ -866,7 +864,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         let initial_visas = match self
             .asm
             .visa_mgr
-            .initial_visas_for_node(amgr_asm, node_zpr_addr, &saddr)
+            .post_register_vss_visas_for_node(amgr_asm, node_zpr_addr, &saddr)
             .await
         {
             Ok(visas) => visas,
@@ -1053,6 +1051,21 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         if let Err(e) = self.asm.event_mgr.record_event(evt).await {
             warn!(target: API, "failed to record actor joins event for adapter {:?}: {}", actor.get_cn(), e);
         }
+
+        // If this is a node connection (to another node, ie a link) preempty the NODE->VSAPI visa.
+        // Generate the visa and send it to the node it is docked to.
+        // Also send to any nodes on the path from DOCKING_NODE to VS_DOCKING_NODE.
+
+        //    let route = get_route(from:NEWNODE, to:VS_DOCKING_NODE)
+        //    let v = create_vsapi_visa(src: DOCKING_NODE, target: VS_VSAPI)
+        //    Actually the visa manager does the route check.
+        //    So let the manager do the work.
+        //
+        //    mgr.create_visa_chain(from: NEWNODE, to:VS_DOCKING_NODE, access_vsapi)
+        //
+        //    Now we are the docking node for this new node.
+        //    We should be getting a visa allowing new node to talk to VSAPI (or is that built in?)
+
         // TODO: Is this counter name misleading?  We use node-connection-success for VSAPI node-authorization calls.
         // This success is for the VSAPI authorize_connect call which could be authorizing an
         // actor with role node or adapter.

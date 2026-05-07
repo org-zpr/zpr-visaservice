@@ -227,6 +227,50 @@ impl Router {
         Ok(())
     }
 
+    /// Given a route, return the ordered sequence of NodeIds that must be traveresed to follow the route.
+    /// For a DirectSameNode route this is an empty Vec.
+    ///
+    /// The passed `starting_node` is used to get the direction of the path correct.
+    ///
+    /// ## Errors
+    /// - If any of the links in the route are not found in the topology then this returns [TopologyError::LinkNotFound]
+    /// - If any of the links in the route do not connect to the current node in the path then this returns [TopologyError::NodeNotFound]
+    pub fn route_to_path(
+        &self,
+        route: &Route,
+        starting_node: &NodeId,
+    ) -> Result<Vec<NodeId>, TopologyError> {
+        match &route.kind {
+            RouteKind::DirectSameNode { node_id: _ } => Ok(vec![]),
+            RouteKind::Multihop => {
+                let inner = self.inner.read().unwrap();
+                let mut path = Vec::new();
+                let mut current_node = starting_node.clone();
+                for link_id in &route.links {
+                    let Some(link) = inner.topology.link(link_id) else {
+                        return Err(TopologyError::LinkNotFound(format!(
+                            "route_to_path: link {:?} not found",
+                            link_id
+                        )));
+                    };
+                    let next_node = if link.a == current_node {
+                        link.b.clone()
+                    } else if link.b == current_node {
+                        link.a.clone()
+                    } else {
+                        return Err(TopologyError::NodeNotFound(format!(
+                            "route_to_path: link {:?} does not connect to current node {:?}",
+                            link_id, current_node
+                        )));
+                    };
+                    path.push(next_node.clone());
+                    current_node = next_node;
+                }
+                Ok(path)
+            }
+        }
+    }
+
     /// Remove a link by its id. If the link does not exist this is a no-op.
     #[allow(dead_code)]
     pub fn remove_link(&self, id: &LinkId) {
@@ -976,6 +1020,128 @@ mod tests {
         r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
         // Cache must be invalidated; both routes should now be returned.
         assert_eq!(r.get_routes(&x, &y, Some(&hint)).len(), 2);
+    }
+
+    // --- route_to_path tests ---
+
+    #[test]
+    fn test_route_to_path_direct_same_node_returns_empty() {
+        // A same-node route requires no traversal so the path must be empty.
+        let a = ip("10.0.0.1");
+        let r = Router::new();
+        r.add_node(a).unwrap();
+        let route = r.get_best_route(&a, &a).unwrap();
+        let na: NodeId = (&a).into();
+        assert!(r.route_to_path(&route, &na).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_route_to_path_multihop_empty_links_returns_empty() {
+        // A Multihop route with no links produces an empty path.
+        let a = ip("10.0.0.1");
+        let r = Router::new();
+        r.add_node(a).unwrap();
+        let na: NodeId = (&a).into();
+        let route = Route { kind: RouteKind::Multihop, links: vec![], cost: 0 };
+        assert!(r.route_to_path(&route, &na).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_route_to_path_single_hop_forward() {
+        // A one-link A→B route starting from A should yield [B].
+        let a = ip("10.0.0.1");
+        let b = ip("10.0.0.2");
+        let r = Router::new();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
+        let route = r.get_best_route(&a, &b).unwrap();
+        let na: NodeId = (&a).into();
+        let nb: NodeId = (&b).into();
+        assert_eq!(r.route_to_path(&route, &na).unwrap(), vec![nb]);
+    }
+
+    #[test]
+    fn test_route_to_path_single_hop_reverse() {
+        // The same link traversed starting from B should yield [A].
+        let a = ip("10.0.0.1");
+        let b = ip("10.0.0.2");
+        let r = Router::new();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
+        let route = r.get_best_route(&b, &a).unwrap();
+        let na: NodeId = (&a).into();
+        let nb: NodeId = (&b).into();
+        assert_eq!(r.route_to_path(&route, &nb).unwrap(), vec![na]);
+    }
+
+    #[test]
+    fn test_route_to_path_multihop_forward() {
+        // A two-hop A→B→C route starting from A should yield [B, C] in traversal order.
+        let (r, a, b, c) = make_router_abc();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
+        r.add_link(b, c, LinkId("bc".into()), vec![], 1).unwrap();
+        let route = r.get_best_route(&a, &c).unwrap();
+        let na: NodeId = (&a).into();
+        let nb: NodeId = (&b).into();
+        let nc: NodeId = (&c).into();
+        assert_eq!(r.route_to_path(&route, &na).unwrap(), vec![nb, nc]);
+    }
+
+    #[test]
+    fn test_route_to_path_multihop_reverse() {
+        // The same topology traversed from C should yield [B, A].
+        let (r, a, b, c) = make_router_abc();
+        r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
+        r.add_link(b, c, LinkId("bc".into()), vec![], 1).unwrap();
+        let route = r.get_best_route(&c, &a).unwrap();
+        let na: NodeId = (&a).into();
+        let nb: NodeId = (&b).into();
+        let nc: NodeId = (&c).into();
+        assert_eq!(r.route_to_path(&route, &nc).unwrap(), vec![nb, na]);
+    }
+
+    #[test]
+    fn test_route_to_path_link_not_found_returns_error() {
+        // A route referencing a link_id absent from the topology returns LinkNotFound.
+        let a = ip("10.0.0.1");
+        let r = Router::new();
+        r.add_node(a).unwrap();
+        let na: NodeId = (&a).into();
+        let route = Route {
+            kind: RouteKind::Multihop,
+            links: vec![LinkId("ghost".into())],
+            cost: 0,
+        };
+        assert!(matches!(
+            r.route_to_path(&route, &na),
+            Err(TopologyError::LinkNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_route_to_path_disconnected_link_returns_error() {
+        // A link that does not touch the current node returns NodeNotFound.
+        let a = ip("10.0.0.1");
+        let b = ip("10.0.0.2");
+        let c = ip("10.0.0.3");
+        let r = Router::new();
+        r.add_node(a).unwrap();
+        r.add_node(b).unwrap();
+        r.add_node(c).unwrap();
+        r.add_link(b, c, LinkId("bc".into()), vec![], 1).unwrap();
+        // Route claims to start at `a` but the only link connects b and c.
+        let na: NodeId = (&a).into();
+        let route = Route {
+            kind: RouteKind::Multihop,
+            links: vec![LinkId("bc".into())],
+            cost: 0,
+        };
+        assert!(matches!(
+            r.route_to_path(&route, &na),
+            Err(TopologyError::NodeNotFound(_))
+        ));
     }
 
     // --- Graph unit tests ---

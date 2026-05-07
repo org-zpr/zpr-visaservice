@@ -742,7 +742,7 @@ mod tests {
         // Add a visa.
         let v = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc, &hit, "", 0)
             .await
             .unwrap();
 
@@ -789,17 +789,17 @@ mod tests {
 
         let v0 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc0, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc0, &hit, "", 0)
             .await
             .unwrap();
         let v1 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc1, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc1, &hit, "", 0)
             .await
             .unwrap();
         let v2 = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc2, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc2, &hit, "", 0)
             .await
             .unwrap();
 
@@ -1026,7 +1026,7 @@ mod tests {
 
         let v = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc, &hit, zpl_str, policy_version)
+            .create_visa(&asm, &node_addr, &pdesc, &hit, zpl_str, policy_version)
             .await
             .unwrap();
 
@@ -1071,7 +1071,7 @@ mod tests {
 
         let v = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc, &hit, "", 0)
             .await
             .unwrap();
 
@@ -1114,7 +1114,7 @@ mod tests {
 
         let v = asm
             .visa_mgr
-            .create_visa(&node_addr, &pdesc, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc, &hit, "", 0)
             .await
             .unwrap();
 

@@ -13,6 +13,7 @@ use crate::packet::make_fivetuple_tcp;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval_result::{Direction, Hit};
+use libeval::route::NodeId;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
     CommFlag, DockPep, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa, VsapiFiveTuple,
@@ -34,7 +35,22 @@ impl VisaMgr {
         VisaMgr { repo: db }
     }
 
-    pub async fn initial_visas_for_node(
+    /// Used when a node has already connected to the VS via the VSAPI and has called
+    /// `register_vss`.
+    ///
+    /// Creates visas for:
+    /// - allow visa service to talk to node VSS.
+    ///
+    /// `node_addr` - The node, already connected and has just called `register_vss` over
+    /// VSAPI.  The idea is that the VS is next going to open a connection back to the node's
+    /// VSS so this can preempt the visa request.
+    ///
+    /// The visas returned here are any pending visas that should be installed on the
+    /// node `node_addr` which has just called to initialize vss.  If there are intermediary
+    /// nodes between the VS and `node_addr` those other visas are also created and set
+    /// PENDING on the relevant nodes -- but are not returned here.
+    ///
+    pub async fn post_register_vss_visas_for_node(
         &self,
         asm: Arc<Assembly>,
         node_addr: &IpAddr,
@@ -42,6 +58,7 @@ impl VisaMgr {
     ) -> Result<Vec<Visa>, ServiceError> {
         let mut visas = Vec::new();
 
+        // Start with any visas that may already be pending.
         if let Ok(pendings) = self.get_pending_visas_for_node(node_addr).await {
             visas.extend(pendings); // ignore errors here
         }
@@ -105,7 +122,14 @@ impl VisaMgr {
     }
 
     /// Ask policy for a visa permitting this visa service to talk to the given node VSS addr.
-    pub async fn create_vs_to_node_vss_visa(
+    /// Creating the visa has side effect of storing it in state and as PENDING on the requesting node.
+    ///
+    /// TODO: Should also be set pending on any intermediary nodes.
+    ///
+    /// `node_addr` - node ZPR address hosting the VSS.
+    ///
+    /// Returns a visa for the docking node of `node_addr` (based on route of VS->node_addr).
+    async fn create_vs_to_node_vss_visa(
         &self,
         asm: Arc<Assembly>,
         node_addr: &IpAddr,
@@ -122,9 +146,88 @@ impl VisaMgr {
         )
         .unwrap();
 
+        // TODO: This call to return a FULL visa plus Route info.
+        // then we need to do some work.
+        self.create_visa_for_packet(asm, pkt_data, node_addr).await
+    }
+
+    /// Ask policy for a visa permitting the client node to connect to the VSAPI port on the VS.
+    /// This is requested as if from the docking node.
+    /// Creating the visa has side effect of storing it in state and as PENDING on the requesting node
+    /// which in this case is `docking_node_addr`.
+    ///
+    /// A single node alone has a built in rule that allows it to talk to the
+    /// VSAPI.
+    ///
+    async fn create_node_to_vsapi_visas(
+        &self,
+        asm: Arc<Assembly>,
+        client_node_addr: &IpAddr,
+        docking_node_addr: &IpAddr,
+    ) -> Result<(), ServiceError> {
+        // TODO: We may have this visa on hand already, if so return it and do not re-generate.
+
+        // if docking_node_addr is the VS dock, it is the egress node.
+        //   It gets a full visa, with SRC=NODE,DST=VS
+        //   and client_node_gets: SRC=NODE,DST=VS,FWD=docking_node.
+
+        let pkt_data = PacketDesc::new_tcp(
+            &client_node_addr.to_string(),
+            &config::VS_ZPR_ADDR.to_string(),
+            0,
+            asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
+        )
+        .unwrap();
+
+        // TODO: This call to return a FULL visa plus Route info.
+        // then we need to do some work.
+        let _ = self
+            .create_visa_for_packet(asm, pkt_data, docking_node_addr)
+            .await?;
+        Ok(())
+    }
+
+    /// TODO: Update this to create a chain of visas or at any rate to set up the visa installation chain.
+    /// Or maybe this can return route info and we can do something useful with it.
+    /// That is better but we must be sure that the PATH visas are derived from this one.
+    /// We need to store PATH in our mgr/state. The actual PEP info in the delivered visa
+    /// has to be based on PATH.
+    ///
+    /// So the visa created should have no FwdPep and should have everything else
+    /// filed in and by of type 'full'.
+    ///
+    /// The actual visa delivered needs to be computed based on the route.
+    ///
+    /// `requesting_node_addr` - The visa is created as if this node has requested it.
+    ///
+    /// The returned visa is a full visa (TODO: return route info).
+    /// The visa needs to be crunched through PATH to determine what is sent to `requesting_node_addr` node.
+    async fn create_visa_for_packet(
+        &self,
+        asm: Arc<Assembly>,
+        pkt_data: PacketDesc,
+        requesting_node_addr: &IpAddr,
+    ) -> Result<Visa, ServiceError> {
+        // This will end up calling into `create_visa` which means we get a route
+        // and state will have been updated if any visas need to be sent to nodes.
+        // We should have already stored the route too (TODO).
+        //
+        // When it comes time to actually deliver a visa to a node
+        // we can use the PATH to create correct visa contents. The visa stored in state
+        // by ID is the FULL visa.
+        //
+        // So we need centralized code somewhere that can do something like:
+        //
+        //      get_visa_for_node_on_path(visa_id, node_addr) -> "actualized visa"
+        //        - get full visa from store.
+        //        - get path from store.
+        //        - see where node_addr is on path, then
+        //        - populate a visa struct to send with FwdPep and other fields set up properly.
+        //
+
         match request_visa_wait_response(
             &asm,
-            node_addr,
+            requesting_node_addr,
             pkt_data,
             config::DEFAULT_VISA_REQ_TIMEOUT,
         )
@@ -142,9 +245,14 @@ impl VisaMgr {
     /// No checking to see if visa already exists.
     /// Fake keys.
     ///
-    /// Note that visa state with respect tot he requesting node is set to PENDING_INSTALL.
+    /// Note that visa state with respect to the requesting node is set to PENDING_INSTALL.
+    /// TODO: store route somewhere.
+    /// TODO: Use route to set pending visas on the path too.
+    ///
+    /// This returns a FULL visa.
     pub async fn create_visa(
         &self,
+        asm: &Assembly,
         requesting_node: &IpAddr,
         pdesc: &PacketDesc,
         hit: &Hit,
@@ -206,11 +314,29 @@ impl VisaMgr {
 
         let visa_id = self.repo.get_next_visa_id().await?;
 
+        let path: Option<Vec<IpAddr>> = match &hit.route {
+            Some(route) => {
+                if matches!(route.kind, libeval::route::RouteKind::Multihop) {
+                    let starting_node = if hit.direction == Direction::Forward {
+                        NodeId(pdesc.five_tuple.source_addr.to_string())
+                    } else {
+                        NodeId(pdesc.five_tuple.dest_addr.to_string())
+                    };
+                    let node_id_path = asm.router.route_to_path(route, &starting_node)?;
+                    Some(node_id_path.into_iter().map(|id| id.into()).collect())
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+
         let mut metadata = db::VisaMetadata::new(
             requesting_node.clone(),
             policy_version,
             source_zpl.into(),
             hit.direction,
+            path,
         );
         if let Some(sig) = hit.signal.as_ref() {
             metadata.signal_msgs.push(sig.message.clone());
@@ -400,8 +526,13 @@ mod tests {
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(1, std::time::Duration::from_secs(60));
 
-        let metadata =
-            db::VisaMetadata::new(node_addr.clone(), 0, "zpl".to_string(), Direction::Forward);
+        let metadata = db::VisaMetadata::new(
+            node_addr.clone(),
+            0,
+            "zpl".to_string(),
+            Direction::Forward,
+            None,
+        );
 
         mgr.repo
             .store_visa(&visa, metadata, db::NodeVisaState::Installed)
@@ -451,8 +582,13 @@ mod tests {
         let mgr = make_mgr().await;
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(2, std::time::Duration::from_secs(60));
-        let metadata =
-            db::VisaMetadata::new(node_addr.clone(), 0, "zpl".to_string(), Direction::Forward);
+        let metadata = db::VisaMetadata::new(
+            node_addr.clone(),
+            0,
+            "zpl".to_string(),
+            Direction::Forward,
+            None,
+        );
 
         mgr.repo
             .store_visa(&visa, metadata, db::NodeVisaState::Installed)
@@ -481,8 +617,13 @@ mod tests {
         let mgr = make_mgr().await;
         let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
         let visa = make_visa(3, std::time::Duration::from_secs(60));
-        let metadata =
-            db::VisaMetadata::new(node_addr.clone(), 0, "zpl".to_string(), Direction::Forward);
+        let metadata = db::VisaMetadata::new(
+            node_addr.clone(),
+            0,
+            "zpl".to_string(),
+            Direction::Forward,
+            None,
+        );
 
         mgr.repo
             .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
