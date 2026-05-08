@@ -394,11 +394,14 @@ async fn visa_from_allow(
         .await?;
 
     // Visa created and stored in repo along with path.
-    // Will already have been set "pending" on the requesting_node.
+    // Will already have been set "pending" on the requesting_node and the path.
 
     // TODO: need to 'actualize' the visa whenever we return it to something.
-    //
-    // XXX TODO: Do actualization here prior to returning.
+
+    let visa = asm
+        .visa_mgr
+        .actualize_visa_for_target_node(visa, &job.requesting_node, hits[0].direction)
+        .await?;
 
     Ok(VisaDecision::Allow(visa, allowed_route))
 }

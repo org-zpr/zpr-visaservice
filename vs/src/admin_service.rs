@@ -25,7 +25,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
-use zpr::vsapi_types::{DockPep, KeyFormat, KeySet, Visa};
+use zpr::vsapi_types::{DockPepType, KeyFormat, KeySet, Visa};
 
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
@@ -324,13 +324,25 @@ async fn get_visa(
                             admin_api_types::VisaMatchDirection::Reverse
                         }
                     },
-                    source_addr: visa.source_addr.to_string(),
-                    dest_addr: visa.dest_addr.to_string(),
+                    source_addr: if let Some(ref dock_pep) = visa.dock_pep {
+                        dock_pep.source_addr.to_string()
+                    } else {
+                        "".to_string()
+                    },
+                    dest_addr: if let Some(ref dock_pep) = visa.dock_pep {
+                        dock_pep.dest_addr.to_string()
+                    } else {
+                        "".to_string()
+                    },
                     source_port: proto_deets.source_port,
                     dest_port: proto_deets.dest_port,
                     proto: proto_deets.protocol,
                     signals: metadata.signal_msgs.clone(),
-                    session_key: to_api_keyset(&visa.session_key),
+                    session_key: if let Some(ref dock_pep) = visa.dock_pep {
+                        to_api_keyset(&dock_pep.session_key)
+                    } else {
+                        ApiKeySet::default()
+                    },
                 };
                 return Ok(Json(vd));
             }
@@ -339,14 +351,21 @@ async fn get_visa(
 }
 
 fn protocol_details_for_visa(visa: &Visa) -> ProtocolDetails {
-    let (proto_name, source_port, dest_port) = match &visa.dock_pep {
-        DockPep::ICMP(icmp_pep) => (
+    if visa.dock_pep.is_none() {
+        return ProtocolDetails {
+            protocol: "N/A".to_string(),
+            source_port: 0,
+            dest_port: 0,
+        };
+    }
+    let (proto_name, source_port, dest_port) = match &visa.dock_pep.as_ref().unwrap().pep {
+        DockPepType::ICMP(icmp_pep) => (
             "ICMP".to_string(),
             icmp_pep.icmp_type as u16,
             icmp_pep.icmp_code as u16,
         ),
-        DockPep::UDP(tu_pep) => ("UDP".to_string(), tu_pep.source_port, tu_pep.dest_port),
-        DockPep::TCP(tu_pep) => ("TCP".to_string(), tu_pep.source_port, tu_pep.dest_port),
+        DockPepType::UDP(tu_pep) => ("UDP".to_string(), tu_pep.source_port, tu_pep.dest_port),
+        DockPepType::TCP(tu_pep) => ("TCP".to_string(), tu_pep.source_port, tu_pep.dest_port),
     };
 
     ProtocolDetails {

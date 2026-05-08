@@ -709,8 +709,14 @@ mod test {
 
         let loaded = repo.get_visa_by_id(77).await.unwrap();
         assert_eq!(loaded.issuer_id, 77);
-        assert_eq!(loaded.source_addr, visa.source_addr);
-        assert_eq!(loaded.dest_addr, visa.dest_addr);
+        assert_eq!(
+            loaded.dock_pep.as_ref().unwrap().source_addr,
+            visa.dock_pep.as_ref().unwrap().source_addr
+        );
+        assert_eq!(
+            loaded.dock_pep.as_ref().unwrap().dest_addr,
+            visa.dock_pep.as_ref().unwrap().dest_addr
+        );
     }
 
     #[tokio::test]

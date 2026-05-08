@@ -2,7 +2,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::assembly::Assembly;
 use crate::config;
@@ -16,7 +16,8 @@ use libeval::eval_result::{Direction, Hit};
 use libeval::route::NodeId;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
-    CommFlag, DockPep, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa, VsapiFiveTuple,
+    CommFlag, DockPep, DockPepType, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa,
+    VisaType, VsapiFiveTuple,
 };
 
 use tracing::info;
@@ -30,9 +31,73 @@ pub struct VisaWithMetadata {
     pub metadata: db::VisaMetadata,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VCtx {
+    Ingress,
+    Intermediary,
+    Egress,
+}
+
 impl VisaMgr {
     pub fn new(db: db::VisaRepo) -> Self {
         VisaMgr { repo: db }
+    }
+
+    /// To "actualize" a visa means to adjust it for the context in which it is deployed.
+    /// The contexts are:
+    /// - On an ingress node we send a full visa which may also have forwarding instuctions
+    ///   when there are links that need to be traversed.
+    /// - On an intermediary node we send a very truncated visa: just the ID and forwarding
+    ///   instructions.
+    /// - On an egress node we send a full visa, no forwarding info.
+    ///
+    pub async fn actualize_visa_for_target_node(
+        &self,
+        visa: Visa,
+        target_node: &IpAddr,
+        direction: Direction,
+    ) -> Result<Visa, ServiceError> {
+        let md = self.repo.get_visa_metadata_by_id(visa.issuer_id).await?;
+
+        let Some(path) = md.path.as_ref() else {
+            return Ok(visa);
+        };
+        if path.len() < 2 {
+            // should not happen but just in case, treat as no path.
+            return Ok(visa);
+        }
+
+        let vctx = if path.first().unwrap() == target_node {
+            match direction {
+                Direction::Forward => VCtx::Ingress,
+                Direction::Reverse => VCtx::Egress,
+            }
+        } else if path.last().unwrap() == target_node {
+            match direction {
+                Direction::Forward => VCtx::Egress,
+                Direction::Reverse => VCtx::Ingress,
+            }
+        } else {
+            VCtx::Intermediary
+        };
+
+        match vctx {
+            VCtx::Ingress => {
+                // We already know path is at least 2 so there is a forwarding instruction.
+                // TODO: Build FwdPep and add it to visa, then
+                // TODO ...
+                return Ok(visa);
+            }
+            VCtx::Egress => {
+                // Just return the full visa.
+                return Ok(visa);
+            }
+            VCtx::Intermediary => {
+                // Build a forwardingOnly visa ...
+                // TODO
+                return Ok(visa);
+            }
+        }
     }
 
     /// Used when a node has already connected to the VS via the VSAPI and has called
@@ -101,10 +166,16 @@ impl VisaMgr {
             .get_visas_for_node_by_state(node_addr, db::NodeVisaState::Installed)
             .await?
         {
-            if &visa.source_addr == &ft.source_addr && &visa.dest_addr == &ft.dest_addr {
+            if visa.dock_pep.is_none() {
+                warn!(target: VISA, "found visa in store with no dock_pep ID={}", visa.issuer_id);
+                continue; // not a full visa -- should not happen as only full visas are stored.
+            }
+            let vsource = &visa.dock_pep.as_ref().unwrap().source_addr;
+            let vdest = &visa.dock_pep.as_ref().unwrap().dest_addr;
+            if vsource == &ft.source_addr && vdest == &ft.dest_addr {
                 // Is from VS -> NODE, check for VSS port match.
-                match &visa.dock_pep {
-                    DockPep::TCP(tpep) => {
+                match &visa.dock_pep.as_ref().unwrap().pep {
+                    DockPepType::TCP(tpep) => {
                         if tpep.dest_port == ft.dest_port && tpep.source_port == ft.source_port {
                             // Found it
                             return Ok(Some(visa));
@@ -246,8 +317,8 @@ impl VisaMgr {
     /// Fake keys.
     ///
     /// Note that visa state with respect to the requesting node is set to PENDING_INSTALL.
-    /// TODO: store route somewhere.
-    /// TODO: Use route to set pending visas on the path too.
+    ///
+    /// A path is created from the route using the direction inforation in the hit.
     ///
     /// This returns a FULL visa.
     pub async fn create_visa(
@@ -297,17 +368,19 @@ impl VisaMgr {
         };
 
         let pep = match pdesc.five_tuple.l4_protocol {
-            ip_proto::TCP => DockPep::TCP(TcpUdpPep::new(
+            ip_proto::TCP => DockPepType::TCP(TcpUdpPep::new(
                 source_port,
                 dest_port,
                 ep_from_dir(&hit.direction),
             )),
-            ip_proto::UDP => DockPep::UDP(TcpUdpPep::new(
+            ip_proto::UDP => DockPepType::UDP(TcpUdpPep::new(
                 source_port,
                 dest_port,
                 ep_from_dir(&hit.direction),
             )),
-            ip_proto::IPV6_ICMP => DockPep::ICMP(IcmpPep::new(source_port as u8, dest_port as u8)),
+            ip_proto::IPV6_ICMP => {
+                DockPepType::ICMP(IcmpPep::new(source_port as u8, dest_port as u8))
+            }
 
             _ => unreachable!(), // already handled above
         };
@@ -342,17 +415,24 @@ impl VisaMgr {
             metadata.signal_msgs.push(sig.message.clone());
         }
 
+        let pep = DockPep {
+            pep,
+            source_addr: pdesc.five_tuple.source_addr.clone(),
+            dest_addr: pdesc.five_tuple.dest_addr.clone(),
+            session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
+        };
+
         let visa = Visa {
             issuer_id: visa_id,
             config: 0,
             expires: expiration_time,
-            source_addr: pdesc.five_tuple.source_addr.clone(),
-            dest_addr: pdesc.five_tuple.dest_addr.clone(),
-            dock_pep: pep,
+            visa_type: VisaType::Full,
+            dock_pep: Some(pep),
+            fwd_pep: None,
             cons: None,
-            session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
         };
 
+        // The store also updates the visa state along the path.
         self.repo
             .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
             .await?;
