@@ -38,7 +38,6 @@ pub struct PolicyMgr {
 #[derive(Debug, Clone)]
 pub struct LinkDescription {
     pub link_id: String,
-    //pub attrs: Vec<AttrExp>,
     pub attrs: Vec<Attribute>,
     pub cost: u32,
 }
@@ -104,7 +103,7 @@ impl PolicyMgr {
     ///
     /// ## Errors
     /// - `TopologyError::LinkNotFound` if there is no link between `node_a` and `node_b` in the policy.
-    pub async fn describe_link(
+    pub fn describe_link(
         &self,
         node_a: &IpAddr,
         node_b: &IpAddr,
@@ -232,9 +231,7 @@ mod tests {
     /// describe_link returns LinkNotFound when the policy has no topology.
     async fn test_describe_link_no_topology() {
         let mgr = make_policy_mgr(policy_no_topology()).await;
-        let result = mgr
-            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .await;
+        let result = mgr.describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"));
         assert!(matches!(
             result,
             Err(ServiceError::Topology(TopologyError::LinkNotFound(_)))
@@ -246,9 +243,7 @@ mod tests {
     async fn test_describe_link_node_a_not_in_topology() {
         let peering = make_peering(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1", vec![]);
         let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr
-            .describe_link(&ip("fd5a:5052::99"), &ip("fd5a:5052::2"))
-            .await;
+        let result = mgr.describe_link(&ip("fd5a:5052::99"), &ip("fd5a:5052::2"));
         assert!(matches!(
             result,
             Err(ServiceError::Topology(TopologyError::LinkNotFound(_)))
@@ -261,9 +256,7 @@ mod tests {
     async fn test_describe_link_node_b_not_matched() {
         let peering = make_peering(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1", vec![]);
         let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr
-            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::99"))
-            .await;
+        let result = mgr.describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::99"));
         assert!(matches!(
             result,
             Err(ServiceError::Topology(TopologyError::LinkNotFound(_)))
@@ -277,7 +270,6 @@ mod tests {
         let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
         let result = mgr
             .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .await
             .unwrap();
         assert_eq!(result.link_id, "link-abc");
     }
@@ -290,7 +282,6 @@ mod tests {
         let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
         let result = mgr
             .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .await
             .unwrap();
         assert_eq!(result.cost, DEFAULT_LINK_COST);
         assert!(result.attrs.is_empty());
@@ -312,7 +303,6 @@ mod tests {
         let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
         let result = mgr
             .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .await
             .unwrap();
         assert_eq!(result.cost, 5);
     }
@@ -333,7 +323,6 @@ mod tests {
         let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
         let result = mgr
             .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .await
             .unwrap();
         assert_eq!(result.cost, DEFAULT_LINK_COST);
     }
@@ -354,7 +343,6 @@ mod tests {
         let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
         let result = mgr
             .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .await
             .unwrap();
         assert_eq!(result.attrs.len(), 1);
         assert_eq!(result.attrs[0].get_key(), "link.class");

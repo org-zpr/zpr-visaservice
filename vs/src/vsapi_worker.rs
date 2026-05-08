@@ -288,8 +288,7 @@ impl VSHandleImpl {
         let link_desc = self
             .asm
             .policy_mgr
-            .describe_link(connect_via, new_node_addr)
-            .await?;
+            .describe_link(connect_via, new_node_addr)?;
 
         // I think we need to add the node.
         // But I'm not sure that the actor-mgr needs to know about links.
@@ -1056,9 +1055,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                     vsapi::ErrorCode::AuthError,
                     format!("adapter authorization failed: {}", e).as_str(),
                 );
-                self.asm
-                    .counters
-                    .incr(CounterType::AdapterConnectionsFailed);
+                self.asm.counters.incr(CounterType::AuthorizeConnectFailed);
                 return Ok(());
             }
         };
@@ -1084,9 +1081,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                     vsapi::ErrorCode::Internal,
                     "state update failed",
                 );
-                self.asm
-                    .counters
-                    .incr(CounterType::AdapterConnectionsFailed);
+                self.asm.counters.incr(CounterType::AuthorizeConnectFailed);
                 return Ok(());
             }
         } else {
@@ -1111,9 +1106,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                     vsapi::ErrorCode::Internal,
                     "state update failed",
                 );
-                self.asm
-                    .counters
-                    .incr(CounterType::AdapterConnectionsFailed);
+                self.asm.counters.incr(CounterType::AuthorizeConnectFailed);
                 return Ok(());
             }
         }
@@ -1143,9 +1136,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         // TODO: Is this counter name misleading?  We use node-connection-success for VSAPI node-authorization calls.
         // This success is for the VSAPI authorize_connect call which could be authorizing an
         // actor with role node or adapter.
-        self.asm
-            .counters
-            .incr(CounterType::AdapterConnectionsSuccess);
+        self.asm.counters.incr(CounterType::AuthorizeConnectSuccess);
 
         Ok(())
     }

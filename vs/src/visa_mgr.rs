@@ -170,11 +170,12 @@ impl VisaMgr {
                 warn!(target: VISA, "found visa in store with no dock_pep ID={}", visa.issuer_id);
                 continue; // not a full visa -- should not happen as only full visas are stored.
             }
-            let vsource = &visa.dock_pep.as_ref().unwrap().source_addr;
-            let vdest = &visa.dock_pep.as_ref().unwrap().dest_addr;
+            let dock_pep = visa.dock_pep.as_ref().unwrap();
+            let vsource = &dock_pep.source_addr;
+            let vdest = &dock_pep.dest_addr;
             if vsource == &ft.source_addr && vdest == &ft.dest_addr {
                 // Is from VS -> NODE, check for VSS port match.
-                match &visa.dock_pep.as_ref().unwrap().pep {
+                match &dock_pep.pep {
                     DockPepType::TCP(tpep) => {
                         if tpep.dest_port == ft.dest_port && tpep.source_port == ft.source_port {
                             // Found it

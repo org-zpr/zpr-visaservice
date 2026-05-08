@@ -100,8 +100,8 @@ pub enum CounterType {
     NodeConnectionsSuccess,
     NodeConnectionsFailed,
 
-    AdapterConnectionsSuccess,
-    AdapterConnectionsFailed,
+    AuthorizeConnectSuccess,
+    AuthorizeConnectFailed,
 }
 
 impl CounterType {
@@ -119,8 +119,8 @@ impl CounterType {
             CounterType::VssErrors => "vss_errors",
             CounterType::NodeConnectionsSuccess => "node_connections_success",
             CounterType::NodeConnectionsFailed => "node_connections_failed",
-            CounterType::AdapterConnectionsSuccess => "adapter_connections_success",
-            CounterType::AdapterConnectionsFailed => "adapter_connections_failed",
+            CounterType::AuthorizeConnectSuccess => "authorize_connect_success",
+            CounterType::AuthorizeConnectFailed => "authorize_connect_failed",
         }
     }
 }

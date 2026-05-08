@@ -32,7 +32,7 @@ pub struct Route {
 pub struct NodeId(pub String);
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
-pub struct LinkId(pub String);
+pub struct LinkId(pub String); // TODO: use IpAddr ?
 
 #[derive(Debug, Serialize, Clone)]
 pub enum RouteKind {
@@ -55,9 +55,12 @@ impl From<&IpAddr> for NodeId {
     }
 }
 
-impl Into<IpAddr> for NodeId {
-    fn into(self) -> IpAddr {
-        self.0.parse().expect("NodeId should be a valid IP address")
+impl From<NodeId> for IpAddr {
+    fn from(node_id: NodeId) -> Self {
+        node_id
+            .0
+            .parse()
+            .expect("NodeId should be a valid IP address")
     }
 }
 

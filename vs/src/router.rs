@@ -203,7 +203,6 @@ impl Router {
     /// - If a or b do not exist returns [TopologyError::NodeNotFound]
     /// - If link id already exists then this returns [TopologyError::LinkExists]
     ///
-    #[allow(dead_code)]
     pub fn add_link(
         &self,
         zpr_addr_a: IpAddr,
@@ -227,8 +226,8 @@ impl Router {
         Ok(())
     }
 
-    /// Given a route, return the ordered sequence of NodeIds that must be traveresed to follow the route.
-    /// For a DirectSameNode route this is an empty Vec.
+    /// Given a route, return the ordered sequence of NodeIds that must be traversed to follow the route,
+    /// including the starting node as the first element.
     ///
     /// The passed `starting_node` is used to get the direction of the path correct.
     ///
@@ -241,10 +240,10 @@ impl Router {
         starting_node: &NodeId,
     ) -> Result<Vec<NodeId>, TopologyError> {
         match &route.kind {
-            RouteKind::DirectSameNode { node_id: _ } => Ok(vec![]),
+            RouteKind::DirectSameNode { node_id: _ } => Ok(vec![starting_node.clone()]),
             RouteKind::Multihop => {
                 let inner = self.inner.read().unwrap();
-                let mut path = Vec::new();
+                let mut path = vec![starting_node.clone()];
                 let mut current_node = starting_node.clone();
                 for link_id in &route.links {
                     let Some(link) = inner.topology.link(link_id) else {
@@ -1025,19 +1024,19 @@ mod tests {
     // --- route_to_path tests ---
 
     #[test]
-    fn test_route_to_path_direct_same_node_returns_empty() {
-        // A same-node route requires no traversal so the path must be empty.
+    fn test_route_to_path_direct_same_node_returns_self() {
+        // A same-node route produces a path containing only the starting node.
         let a = ip("10.0.0.1");
         let r = Router::new();
         r.add_node(a).unwrap();
         let route = r.get_best_route(&a, &a).unwrap();
         let na: NodeId = (&a).into();
-        assert!(r.route_to_path(&route, &na).unwrap().is_empty());
+        assert_eq!(r.route_to_path(&route, &na).unwrap(), vec![na]);
     }
 
     #[test]
-    fn test_route_to_path_multihop_empty_links_returns_empty() {
-        // A Multihop route with no links produces an empty path.
+    fn test_route_to_path_multihop_empty_links_returns_starting_node() {
+        // A Multihop route with no links produces a path containing only the starting node.
         let a = ip("10.0.0.1");
         let r = Router::new();
         r.add_node(a).unwrap();
@@ -1047,12 +1046,12 @@ mod tests {
             links: vec![],
             cost: 0,
         };
-        assert!(r.route_to_path(&route, &na).unwrap().is_empty());
+        assert_eq!(r.route_to_path(&route, &na).unwrap(), vec![na.clone()]);
     }
 
     #[test]
     fn test_route_to_path_single_hop_forward() {
-        // A one-link A→B route starting from A should yield [B].
+        // A one-link A→B route starting from A should yield [A, B].
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let r = Router::new();
@@ -1062,12 +1061,12 @@ mod tests {
         let route = r.get_best_route(&a, &b).unwrap();
         let na: NodeId = (&a).into();
         let nb: NodeId = (&b).into();
-        assert_eq!(r.route_to_path(&route, &na).unwrap(), vec![nb]);
+        assert_eq!(r.route_to_path(&route, &na).unwrap(), vec![na, nb]);
     }
 
     #[test]
     fn test_route_to_path_single_hop_reverse() {
-        // The same link traversed starting from B should yield [A].
+        // The same link traversed starting from B should yield [B, A].
         let a = ip("10.0.0.1");
         let b = ip("10.0.0.2");
         let r = Router::new();
@@ -1077,12 +1076,12 @@ mod tests {
         let route = r.get_best_route(&b, &a).unwrap();
         let na: NodeId = (&a).into();
         let nb: NodeId = (&b).into();
-        assert_eq!(r.route_to_path(&route, &nb).unwrap(), vec![na]);
+        assert_eq!(r.route_to_path(&route, &nb).unwrap(), vec![nb, na]);
     }
 
     #[test]
     fn test_route_to_path_multihop_forward() {
-        // A two-hop A→B→C route starting from A should yield [B, C] in traversal order.
+        // A two-hop A→B→C route starting from A should yield [A, B, C] in traversal order.
         let (r, a, b, c) = make_router_abc();
         r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
         r.add_link(b, c, LinkId("bc".into()), vec![], 1).unwrap();
@@ -1090,12 +1089,12 @@ mod tests {
         let na: NodeId = (&a).into();
         let nb: NodeId = (&b).into();
         let nc: NodeId = (&c).into();
-        assert_eq!(r.route_to_path(&route, &na).unwrap(), vec![nb, nc]);
+        assert_eq!(r.route_to_path(&route, &na).unwrap(), vec![na, nb, nc]);
     }
 
     #[test]
     fn test_route_to_path_multihop_reverse() {
-        // The same topology traversed from C should yield [B, A].
+        // The same topology traversed from C should yield [C, B, A].
         let (r, a, b, c) = make_router_abc();
         r.add_link(a, b, LinkId("ab".into()), vec![], 1).unwrap();
         r.add_link(b, c, LinkId("bc".into()), vec![], 1).unwrap();
@@ -1103,7 +1102,7 @@ mod tests {
         let na: NodeId = (&a).into();
         let nb: NodeId = (&b).into();
         let nc: NodeId = (&c).into();
-        assert_eq!(r.route_to_path(&route, &nc).unwrap(), vec![nb, na]);
+        assert_eq!(r.route_to_path(&route, &nc).unwrap(), vec![nc, nb, na]);
     }
 
     #[test]
