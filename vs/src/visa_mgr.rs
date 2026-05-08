@@ -2,7 +2,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::assembly::Assembly;
 use crate::config;
@@ -16,8 +16,8 @@ use libeval::eval_result::{Direction, Hit};
 use libeval::route::NodeId;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
-    CommFlag, DockPep, DockPepType, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa,
-    VisaType, VsapiFiveTuple,
+    CommFlag, DockPep, DockPepType, EndpointT, FwdPep, FwdPepStyle, IcmpPep, KeySet, PacketDesc,
+    TcpUdpPep, Visa, VisaType, VsapiFiveTuple,
 };
 
 use tracing::info;
@@ -53,7 +53,7 @@ impl VisaMgr {
     ///
     pub async fn actualize_visa_for_target_node(
         &self,
-        visa: Visa,
+        mut visa: Visa,
         target_node: &IpAddr,
         direction: Direction,
     ) -> Result<Visa, ServiceError> {
@@ -84,9 +84,17 @@ impl VisaMgr {
         match vctx {
             VCtx::Ingress => {
                 // We already know path is at least 2 so there is a forwarding instruction.
-                // TODO: Build FwdPep and add it to visa, then
-                // TODO ...
-                return Ok(visa);
+                if let Some(next_hop) = path.iter().find(|n| *n != target_node) {
+                    let fwd_pep = FwdPep {
+                        next_hop: *next_hop,
+                        style: FwdPepStyle::OneWay, // TODO: Not sure when to set this to symmetric.
+                    };
+                    visa.fwd_pep = Some(fwd_pep);
+                    return Ok(visa);
+                } else {
+                    error!(target: VISA, "error actualizing visa for ingress node {target_node} on path is {path:?}: no next_hop found");
+                    return Err(ServiceError::Internal(format!("failed to actualize visa")));
+                }
             }
             VCtx::Egress => {
                 // Just return the full visa.
@@ -94,8 +102,19 @@ impl VisaMgr {
             }
             VCtx::Intermediary => {
                 // Build a forwardingOnly visa ...
-                // TODO
-                return Ok(visa);
+                match path.iter().find(|n| *n != target_node) {
+                    Some(next_hop) => {
+                        let fpep = FwdPep {
+                            next_hop: *next_hop,
+                            style: FwdPepStyle::OneWay, // TODO: Not sure when to set this to symmetric.
+                        };
+                        return Ok(to_forwarding_visa(visa, fpep));
+                    }
+                    None => {
+                        error!(target: VISA, "error actualizing visa for ingress node {target_node} on path is {path:?}: no next_hop found");
+                        return Err(ServiceError::Internal(format!("failed to actualize visa")));
+                    }
+                }
             }
         }
     }
@@ -546,6 +565,13 @@ fn ep_from_dir(dir: &Direction) -> EndpointT {
     }
 }
 
+fn to_forwarding_visa(mut visa: Visa, fwd_pep: FwdPep) -> Visa {
+    visa.visa_type = VisaType::ForwardOnly;
+    visa.dock_pep = None;
+    visa.fwd_pep = Some(fwd_pep);
+    visa
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +579,7 @@ mod tests {
     use crate::packet::make_fivetuple_tcp;
     use crate::test_helpers::make_visa;
     use std::sync::Arc;
+    use std::time::Duration;
 
     async fn make_mgr() -> VisaMgr {
         let db = Arc::new(FakeDb::new());
@@ -689,5 +716,170 @@ mod tests {
             .unwrap();
 
         assert!(result.is_none());
+    }
+
+    // --- actualize_visa_for_target_node tests ---
+
+    // Path nodes used by actualize tests; distinct from the constants above.
+    const PATH_NODE_A: &str = "fd5a:5052::a"; // ingress position
+    const PATH_NODE_B: &str = "fd5a:5052::b"; // intermediary position
+    const PATH_NODE_C: &str = "fd5a:5052::c"; // egress position
+
+    /// Three-node path [A, B, C] used by the actualize tests.
+    fn three_node_path() -> Vec<IpAddr> {
+        vec![
+            PATH_NODE_A.parse().unwrap(),
+            PATH_NODE_B.parse().unwrap(),
+            PATH_NODE_C.parse().unwrap(),
+        ]
+    }
+
+    /// Store a visa in the repo with the given path; requesting_node is the first path node (or A if no path).
+    async fn store_test_visa(mgr: &VisaMgr, id: u64, path: Option<Vec<IpAddr>>) -> Visa {
+        let visa = make_visa(id, Duration::from_secs(60));
+        let requesting_node: IpAddr = path
+            .as_ref()
+            .and_then(|p| p.first())
+            .cloned()
+            .unwrap_or_else(|| PATH_NODE_A.parse().unwrap());
+        let metadata = db::VisaMetadata::new(
+            requesting_node,
+            0,
+            "zpl".to_string(),
+            Direction::Forward,
+            path,
+        );
+        mgr.repo
+            .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+        visa
+    }
+
+    /// No path in metadata → visa returned unchanged with no fwd_pep.
+    #[tokio::test]
+    async fn test_actualize_no_path_returns_unchanged() {
+        let mgr = make_mgr().await;
+        let node_addr: IpAddr = PATH_NODE_A.parse().unwrap();
+        let visa = store_test_visa(&mgr, 1, None).await;
+
+        let result = mgr
+            .actualize_visa_for_target_node(visa, &node_addr, Direction::Forward)
+            .await
+            .unwrap();
+        assert_eq!(result.issuer_id, 1);
+        assert!(result.fwd_pep.is_none());
+    }
+
+    /// Path with only one node → visa returned unchanged.
+    #[tokio::test]
+    async fn test_actualize_path_too_short_returns_unchanged() {
+        let mgr = make_mgr().await;
+        let node_addr: IpAddr = PATH_NODE_A.parse().unwrap();
+        let visa = store_test_visa(&mgr, 1, Some(vec![node_addr.clone()])).await;
+
+        let result = mgr
+            .actualize_visa_for_target_node(visa, &node_addr, Direction::Forward)
+            .await
+            .unwrap();
+        assert_eq!(result.issuer_id, 1);
+        assert!(result.fwd_pep.is_none());
+    }
+
+    /// Ingress context (first node + Forward) → full visa with fwd_pep pointing to the second path node.
+    #[tokio::test]
+    async fn test_actualize_ingress_forward_sets_fwd_pep() {
+        let mgr = make_mgr().await;
+        let node_a: IpAddr = PATH_NODE_A.parse().unwrap();
+        let node_b: IpAddr = PATH_NODE_B.parse().unwrap();
+        let visa = store_test_visa(&mgr, 1, Some(three_node_path())).await;
+
+        let result = mgr
+            .actualize_visa_for_target_node(visa, &node_a, Direction::Forward)
+            .await
+            .unwrap();
+        let fwd_pep = result.fwd_pep.expect("expected fwd_pep on ingress visa");
+        assert_eq!(fwd_pep.next_hop, node_b);
+        assert!(result.dock_pep.is_some(), "ingress visa retains dock_pep");
+    }
+
+    /// Egress context (last node + Forward) → full visa returned unchanged (no fwd_pep added).
+    #[tokio::test]
+    async fn test_actualize_egress_forward_returns_full_visa() {
+        let mgr = make_mgr().await;
+        let node_c: IpAddr = PATH_NODE_C.parse().unwrap();
+        let visa = store_test_visa(&mgr, 1, Some(three_node_path())).await;
+
+        let result = mgr
+            .actualize_visa_for_target_node(visa, &node_c, Direction::Forward)
+            .await
+            .unwrap();
+        assert!(result.fwd_pep.is_none());
+        assert!(result.dock_pep.is_some(), "egress returns full visa");
+    }
+
+    /// Ingress context (last node + Reverse) → full visa with fwd_pep pointing to first non-self path node.
+    #[tokio::test]
+    async fn test_actualize_ingress_reverse_sets_fwd_pep() {
+        let mgr = make_mgr().await;
+        let node_a: IpAddr = PATH_NODE_A.parse().unwrap();
+        let node_c: IpAddr = PATH_NODE_C.parse().unwrap();
+        let visa = store_test_visa(&mgr, 1, Some(three_node_path())).await;
+
+        let result = mgr
+            .actualize_visa_for_target_node(visa, &node_c, Direction::Reverse)
+            .await
+            .unwrap();
+        let fwd_pep = result
+            .fwd_pep
+            .expect("expected fwd_pep on ingress-reverse visa");
+        // path.iter().find(|n| *n != node_c) returns node_a (first element != node_c)
+        assert_eq!(fwd_pep.next_hop, node_a);
+        assert!(
+            result.dock_pep.is_some(),
+            "ingress-reverse visa retains dock_pep"
+        );
+    }
+
+    /// Egress context (first node + Reverse) → full visa returned unchanged.
+    #[tokio::test]
+    async fn test_actualize_egress_reverse_returns_full_visa() {
+        let mgr = make_mgr().await;
+        let node_a: IpAddr = PATH_NODE_A.parse().unwrap();
+        let visa = store_test_visa(&mgr, 1, Some(three_node_path())).await;
+
+        let result = mgr
+            .actualize_visa_for_target_node(visa, &node_a, Direction::Reverse)
+            .await
+            .unwrap();
+        assert!(result.fwd_pep.is_none());
+        assert!(
+            result.dock_pep.is_some(),
+            "egress-reverse returns full visa"
+        );
+    }
+
+    /// Intermediary context → ForwardOnly visa: dock_pep stripped, fwd_pep set to first non-self path node.
+    #[tokio::test]
+    async fn test_actualize_intermediary_returns_forwarding_only_visa() {
+        let mgr = make_mgr().await;
+        let node_a: IpAddr = PATH_NODE_A.parse().unwrap();
+        let node_b: IpAddr = PATH_NODE_B.parse().unwrap();
+        let visa = store_test_visa(&mgr, 1, Some(three_node_path())).await;
+
+        let result = mgr
+            .actualize_visa_for_target_node(visa, &node_b, Direction::Forward)
+            .await
+            .unwrap();
+        assert_eq!(result.visa_type, VisaType::ForwardOnly);
+        assert!(
+            result.dock_pep.is_none(),
+            "ForwardOnly visa has no dock_pep"
+        );
+        let fwd_pep = result
+            .fwd_pep
+            .expect("expected fwd_pep on intermediary visa");
+        // path.iter().find(|n| *n != node_b) returns node_a (first element != node_b)
+        assert_eq!(fwd_pep.next_hop, node_a);
     }
 }
