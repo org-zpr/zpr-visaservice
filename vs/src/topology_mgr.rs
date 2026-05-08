@@ -26,6 +26,9 @@ impl TopologyMgr {
 
     /// Add a linked node to the graph.
     /// Also adds the node via the actor_manager if it is not already in the graph.
+    ///
+    /// TODO: not yet integrated with state!
+    /// See https://github.com/org-zpr/zpr-visaservice/issues/209
     pub async fn add_linked_node(
         &self,
         policy_mgr: &PolicyMgr,
