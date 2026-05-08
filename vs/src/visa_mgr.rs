@@ -84,7 +84,7 @@ impl VisaMgr {
         match vctx {
             VCtx::Ingress => {
                 // We already know path is at least 2 so there is a forwarding instruction.
-                if let Some(next_hop) = path.iter().find(|n| *n != target_node) {
+                if let Some(next_hop) = next_hop_in_path(path, target_node, direction) {
                     let fwd_pep = FwdPep {
                         next_hop: *next_hop,
                         style: FwdPepStyle::OneWay, // TODO: Not sure when to set this to symmetric.
@@ -102,7 +102,7 @@ impl VisaMgr {
             }
             VCtx::Intermediary => {
                 // Build a forwardingOnly visa ...
-                match path.iter().find(|n| *n != target_node) {
+                match next_hop_in_path(path, target_node, direction) {
                     Some(next_hop) => {
                         let fpep = FwdPep {
                             next_hop: *next_hop,
@@ -144,7 +144,13 @@ impl VisaMgr {
 
         // Start with any visas that may already be pending.
         if let Ok(pendings) = self.get_pending_visas_for_node(node_addr).await {
-            visas.extend(pendings); // ignore errors here
+            for v in pendings {
+                let md = self.repo.get_visa_metadata_by_id(v.issuer_id).await?;
+                let av = self
+                    .actualize_visa_for_target_node(v, node_addr, md.direction)
+                    .await?;
+                visas.push(av);
+            }
         }
 
         // The node may be reconnecting, in which case it may already have the core visas installed.
@@ -572,6 +578,21 @@ fn to_forwarding_visa(mut visa: Visa, fwd_pep: FwdPep) -> Visa {
     visa
 }
 
+/// Returns the adjacent node after `target_node` in `path`, stepping forward or backward
+/// according to `direction`. Returns None if `target_node` is not in the path or there is
+/// no neighbor in the requested direction.
+fn next_hop_in_path<'a>(
+    path: &'a [IpAddr],
+    target_node: &IpAddr,
+    direction: Direction,
+) -> Option<&'a IpAddr> {
+    let pos = path.iter().position(|n| n == target_node)?;
+    match direction {
+        Direction::Forward => path.get(pos + 1),
+        Direction::Reverse => pos.checked_sub(1).and_then(|i| path.get(i)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,11 +839,11 @@ mod tests {
         assert!(result.dock_pep.is_some(), "egress returns full visa");
     }
 
-    /// Ingress context (last node + Reverse) → full visa with fwd_pep pointing to first non-self path node.
+    /// Ingress context (last node + Reverse) → full visa with fwd_pep pointing to node before target.
     #[tokio::test]
     async fn test_actualize_ingress_reverse_sets_fwd_pep() {
         let mgr = make_mgr().await;
-        let node_a: IpAddr = PATH_NODE_A.parse().unwrap();
+        let node_b: IpAddr = PATH_NODE_B.parse().unwrap();
         let node_c: IpAddr = PATH_NODE_C.parse().unwrap();
         let visa = store_test_visa(&mgr, 1, Some(three_node_path())).await;
 
@@ -833,8 +854,8 @@ mod tests {
         let fwd_pep = result
             .fwd_pep
             .expect("expected fwd_pep on ingress-reverse visa");
-        // path.iter().find(|n| *n != node_c) returns node_a (first element != node_c)
-        assert_eq!(fwd_pep.next_hop, node_a);
+        // Traversing in reverse from C, the next hop is B (the node immediately before C).
+        assert_eq!(fwd_pep.next_hop, node_b);
         assert!(
             result.dock_pep.is_some(),
             "ingress-reverse visa retains dock_pep"
@@ -859,12 +880,36 @@ mod tests {
         );
     }
 
-    /// Intermediary context → ForwardOnly visa: dock_pep stripped, fwd_pep set to first non-self path node.
+    /// Demonstrates the next_hop bug: for intermediary node B on path [A, B, C] with Forward
+    /// direction, the correct next hop is C (the node AFTER B in the path), not A (the first
+    /// node != B, as returned by the buggy iter().find()).
+    #[tokio::test]
+    async fn test_actualize_next_hop_bug_intermediary_forward() {
+        let mgr = make_mgr().await;
+        let node_b: IpAddr = PATH_NODE_B.parse().unwrap();
+        let node_c: IpAddr = PATH_NODE_C.parse().unwrap();
+        let visa = store_test_visa(&mgr, 1, Some(three_node_path())).await;
+
+        let result = mgr
+            .actualize_visa_for_target_node(visa, &node_b, Direction::Forward)
+            .await
+            .unwrap();
+        assert_eq!(result.visa_type, VisaType::ForwardOnly);
+        let fwd_pep = result
+            .fwd_pep
+            .expect("expected fwd_pep on intermediary visa");
+        assert_eq!(
+            fwd_pep.next_hop, node_c,
+            "next hop for B (Forward) must be C, not A"
+        );
+    }
+
+    /// Intermediary context → ForwardOnly visa: dock_pep stripped, fwd_pep set to node after target.
     #[tokio::test]
     async fn test_actualize_intermediary_returns_forwarding_only_visa() {
         let mgr = make_mgr().await;
-        let node_a: IpAddr = PATH_NODE_A.parse().unwrap();
         let node_b: IpAddr = PATH_NODE_B.parse().unwrap();
+        let node_c: IpAddr = PATH_NODE_C.parse().unwrap();
         let visa = store_test_visa(&mgr, 1, Some(three_node_path())).await;
 
         let result = mgr
@@ -879,7 +924,6 @@ mod tests {
         let fwd_pep = result
             .fwd_pep
             .expect("expected fwd_pep on intermediary visa");
-        // path.iter().find(|n| *n != node_b) returns node_a (first element != node_b)
-        assert_eq!(fwd_pep.next_hop, node_a);
+        assert_eq!(fwd_pep.next_hop, node_c);
     }
 }
