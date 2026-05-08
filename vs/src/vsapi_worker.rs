@@ -55,7 +55,7 @@ impl AuthenticateUndo {
 
     async fn undo(self, asm: &Assembly) {
         if let Some(addr) = self.added_node_to_router {
-            asm.router.remove_node(&addr);
+            asm.topo_mgr.remove_node(&addr);
         }
         if let Some(addr) = self.actor_mgr_add_node {
             let _ = asm.actor_mgr.remove_node(&addr).await;
@@ -76,8 +76,6 @@ pub async fn launch_capnp(
     let listener = tokio::net::TcpListener::bind(listen).await?;
 
     loop {
-        // TODO: Figure out how to get tokio TLS in here.
-
         let (sock, addr) = listener.accept().await?;
         info!(target: API, "TCP connection from {}", addr);
         sock.set_nodelay(true)?;
@@ -101,7 +99,6 @@ pub async fn launch_capnp(
         let rpc_system =
             capnp_rpc::RpcSystem::new(Box::new(network), Some(vs_service.clone().client));
 
-        // TODO: spawn_local or spawn?
         tokio::task::spawn_local(async move {
             let err = rpc_system.await;
             err
@@ -272,71 +269,6 @@ impl VSHandleImpl {
                 ))
             }
         }
-    }
-
-    // TODO: Should this be in a topology_mgr module?
-    // That module could also provide access to or act as a router.
-    //
-    // TODO: using our authenticate pathway, how does a node indicate a re-connect?
-    // TODO: How do we signal that we are only doing re-auth?
-    async fn try_add_linked_node(
-        &self,
-        actor: &Actor,
-        connect_via: &IpAddr,
-        new_node_addr: &IpAddr,
-    ) -> Result<(), ServiceError> {
-        let link_desc = self
-            .asm
-            .policy_mgr
-            .describe_link(connect_via, new_node_addr)?;
-
-        // I think we need to add the node.
-        // But I'm not sure that the actor-mgr needs to know about links.
-        // It does know about tethers.  So maybe is should?  But the router has the
-        // actual graph. So maybe we add redis backing to the router???
-        //
-        // Is this node already in our graph over another link?
-        //
-        // QUESTION - how to tell if this node is just making a link or if it is reconnecting and we need to restore state?
-        //
-        // If a node is already connected to ZPR why does it need to authenticate again?
-        // Well, it may not be allowed to make the link for one thing.
-
-        let peer_node_addrs = self.asm.router.get_peers(new_node_addr);
-
-        // If the new node has peers and one is the 'connect_via' .... uh, that's odd.  Error out?
-        // If the new node has peers and none are the 'connect_via', then we already know about
-        //    this node, but it is just forming a new link.
-        // If the new node has no peers then it is not yet in our system.
-
-        if peer_node_addrs.is_empty() {
-            // Brand new node. Add to router, add to actor_mgr.
-            self.asm.router.add_node(new_node_addr.clone())?;
-            self.asm.actor_mgr.add_node(actor, false).await?; // TODO: reconnect?
-        } else if peer_node_addrs.contains(connect_via) {
-            // TODO: This might happen during a reconnect or a re-auth.
-            warn!(target: API, "try_add_node but node at addr {} is already connected to us via {}: FINE!", new_node_addr, connect_via);
-            return Ok(()); // Assume everything is just fine!
-        }
-
-        if let Err(e) = self.asm.router.add_link(
-            connect_via.clone(),
-            new_node_addr.clone(),
-            link_desc.link_id.into(),
-            link_desc.attrs,
-            link_desc.cost,
-        ) {
-            if !matches!(e, TopologyError::LinkExists(_)) {
-                error!(target: API, "failed to add link from {} to {}: {}", connect_via, new_node_addr, e);
-                if peer_node_addrs.is_empty() {
-                    self.asm.router.remove_node(new_node_addr);
-                    self.asm.actor_mgr.remove_node(new_node_addr).await?;
-                }
-                return Err(e.into());
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -794,7 +726,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                     "failed to clear node state",
                 );
             }
-            self.asm.router.remove_node(&node_zpr_addr);
+            self.asm.topo_mgr.remove_node(&node_zpr_addr);
         }
 
         // The add_node call will clean up after ifself if it fails.
@@ -851,13 +783,13 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         }
 
         // Add the node to the router.
-        match self.asm.router.add_node(node_zpr_addr) {
+        match self.asm.topo_mgr.add_node(node_zpr_addr) {
             Ok(()) => (),
             Err(TopologyError::NodeExists(_)) => {
                 // Attempt to remove and re-add.
                 warn!(target: API, "node {:?} already exists in router, attempting to remove and re-add", &node_cn);
-                self.asm.router.remove_node(&node_zpr_addr);
-                if let Err(e) = self.asm.router.add_node(node_zpr_addr) {
+                self.asm.topo_mgr.remove_node(&node_zpr_addr);
+                if let Err(e) = self.asm.topo_mgr.add_node(node_zpr_addr) {
                     // Failed to add the node to the router. We won't be able to route visas through this node.
                     // Best to just abort this connect.
                     error!(target: API, "router: failed to add node {} to router after removing existing: {}", node_zpr_addr, e);
@@ -1064,7 +996,15 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
 
         if actor.is_node() {
             if let Err(add_err) = self
-                .try_add_linked_node(&actor, &connect_via, &actor_addr)
+                .asm
+                .topo_mgr
+                .add_linked_node(
+                    &self.asm.policy_mgr,
+                    &self.asm.actor_mgr,
+                    &actor,
+                    &connect_via,
+                    &actor_addr,
+                )
                 .await
             {
                 warn!(target: API, "failed to add connecting node {:?} to during authorize_connect: {}", actor.get_cn(), add_err);
@@ -1446,7 +1386,7 @@ mod tests {
             let asm = Arc::new(new_assembly_for_tests(None).await);
             let addr: IpAddr = "fd5a:5052:90de:1::1".parse().unwrap();
 
-            asm.router.add_node(addr).unwrap();
+            asm.topo_mgr.add_node(addr).unwrap();
 
             let mut undo = AuthenticateUndo::default();
             undo.added_node_to_router(&addr);
@@ -1454,7 +1394,7 @@ mod tests {
 
             // Node was removed, so add_node must succeed again.
             assert!(
-                asm.router.add_node(addr).is_ok(),
+                asm.topo_mgr.add_node(addr).is_ok(),
                 "node should have been removed from router by undo"
             );
         }
@@ -1487,7 +1427,7 @@ mod tests {
                 make_node_actor_defexp(&addr.to_string(), "test-node-2", "[fd5a:5052::101]:1234");
 
             asm.actor_mgr.add_node(&actor, false).await.unwrap();
-            asm.router.add_node(addr).unwrap();
+            asm.topo_mgr.add_node(addr).unwrap();
 
             let mut undo = AuthenticateUndo::default();
             undo.took_zpr_addr(&addr);
@@ -1496,10 +1436,10 @@ mod tests {
             undo.undo(&asm).await;
 
             assert!(
-                asm.router.add_node(addr).is_ok(),
+                asm.topo_mgr.add_node(addr).is_ok(),
                 "node should have been removed from router"
             );
-            asm.router.remove_node(&addr);
+            asm.topo_mgr.remove_node(&addr);
 
             let actor_result = asm.actor_mgr.get_actor_by_zpr_addr(&addr).await.unwrap();
             assert!(

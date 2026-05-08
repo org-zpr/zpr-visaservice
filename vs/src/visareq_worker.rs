@@ -255,7 +255,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         },
     };
 
-    let Some(default_route) = asm.router.get_best_route(&node_addr_a, &node_addr_b) else {
+    let Some(default_route) = asm.topo_mgr.get_best_route(&node_addr_a, &node_addr_b) else {
         info!(target: VREQ,
             "visa request from {:?} denied: no route between {:?} and {:?}",
             job.requesting_node, node_addr_a, node_addr_b
@@ -299,9 +299,11 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         }
         PartialEvalResult::NeedsRoute(residual_evaluator) => {
             let hint = residual_evaluator.hint();
-            let routes = asm.router.get_routes(source_zpr_addr, dest_zpr_addr, hint);
+            let routes = asm
+                .topo_mgr
+                .get_routes(source_zpr_addr, dest_zpr_addr, hint);
 
-            match residual_evaluator.eval_routes(&routes, &asm.router) {
+            match residual_evaluator.eval_routes(&routes, &asm.topo_mgr) {
                 // TODO: Note that when we get a match using routes, the route it returned in the hit.
                 Ok(FinalEvalResult::Allow(hits)) => {
                     visa_from_allow(&asm, job, &hits, &policy, default_route).await
@@ -603,10 +605,10 @@ mod tests {
         let asm_inner = new_assembly_for_tests(Some(vreq_tx)).await;
         let src_zpr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
         let dst_zpr: IpAddr = "fd5a:5052:3000::2".parse().unwrap();
-        asm_inner.router.add_node(src_zpr).unwrap();
-        asm_inner.router.add_node(dst_zpr).unwrap();
+        asm_inner.topo_mgr.add_node(src_zpr).unwrap();
+        asm_inner.topo_mgr.add_node(dst_zpr).unwrap();
         asm_inner
-            .router
+            .topo_mgr
             .add_link(src_zpr, dst_zpr, LinkId("test-link".into()), vec![], 1)
             .unwrap();
         let asm = Arc::new(asm_inner);
@@ -853,11 +855,11 @@ mod tests {
         let node_b = make_node_actor_defexp("fd5a:5052:3000::2", "node-b", "10.0.0.2:1002");
         asm.actor_mgr.add_node(&node_a, false).await.unwrap();
         asm.actor_mgr.add_node(&node_b, false).await.unwrap();
-        asm.router.add_node(node_a_addr).unwrap();
-        asm.router.add_node(node_b_addr).unwrap();
+        asm.topo_mgr.add_node(node_a_addr).unwrap();
+        asm.topo_mgr.add_node(node_b_addr).unwrap();
 
         if with_link {
-            asm.router
+            asm.topo_mgr
                 .add_link(
                     node_a_addr,
                     node_b_addr,

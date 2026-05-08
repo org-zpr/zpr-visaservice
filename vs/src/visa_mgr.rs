@@ -379,7 +379,7 @@ impl VisaMgr {
                     } else {
                         NodeId(pdesc.five_tuple.dest_addr)
                     };
-                    let node_id_path = asm.router.route_to_path(route, &starting_node)?;
+                    let node_id_path = asm.topo_mgr.route_to_path(route, &starting_node)?;
                     Some(node_id_path.into_iter().map(|id| id.into()).collect())
                 } else {
                     None

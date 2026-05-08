@@ -10,8 +10,8 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::RwLock;
 
-use libeval::attribute::{AttrMatch, Attribute};
-use libeval::eval_route::{RouteHint, TopologyQueryApi};
+use libeval::attribute::Attribute;
+use libeval::eval_route::RouteHint;
 use libeval::route::{LinkId, NodeId, Route, RouteKind};
 
 use crate::error::TopologyError;
@@ -150,6 +150,12 @@ impl Router {
         inner.topology.add_node(node_addr)?;
         inner.topo_generation += 1;
         Ok(())
+    }
+
+    /// TRUE if node exists in the network graph.
+    pub fn has_node(&self, node_addr: &IpAddr) -> bool {
+        let inner = self.inner.read().unwrap();
+        inner.topology.nodes.contains_key(&node_addr.into())
     }
 
     /// Removes a node and all its incident links from the topology.
@@ -414,13 +420,6 @@ impl Router {
     }
 }
 
-impl TopologyQueryApi for Router {
-    /// TODO: We do not yet support policy on link attributes and [AttrMatch] is not yet defined. This alwayes returns false.
-    fn link_has_attr(&self, _link_id: &LinkId, _attr: &AttrMatch) -> bool {
-        false
-    }
-}
-
 #[derive(Debug)]
 struct Node {
     edges: HashSet<LinkId>,
@@ -501,7 +500,7 @@ impl Graph {
         }
 
         if self.edges.contains_key(&id) {
-            return Err(TopologyError::LinkExists(id.0));
+            return Err(TopologyError::LinkExists(id.0)); // Well the ID exists anyway...
         }
 
         self.edges.insert(
