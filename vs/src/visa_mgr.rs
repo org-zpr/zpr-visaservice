@@ -375,9 +375,9 @@ impl VisaMgr {
             Some(route) => {
                 if matches!(route.kind, libeval::route::RouteKind::Multihop) {
                     let starting_node = if hit.direction == Direction::Forward {
-                        NodeId(pdesc.five_tuple.source_addr.to_string())
+                        NodeId(pdesc.five_tuple.source_addr)
                     } else {
-                        NodeId(pdesc.five_tuple.dest_addr.to_string())
+                        NodeId(pdesc.five_tuple.dest_addr)
                     };
                     let node_id_path = asm.router.route_to_path(route, &starting_node)?;
                     Some(node_id_path.into_iter().map(|id| id.into()).collect())
