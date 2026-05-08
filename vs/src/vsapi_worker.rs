@@ -428,6 +428,21 @@ impl VisaServiceImpl {
         write_error(&mut err_builder, code, message);
         Ok(())
     }
+
+    /// Helper to handle errors during connect call.
+    /// Returns a Capn Proto OK, but an API level error.
+    fn ok_with_open_error(
+        &self,
+        mut results: vsapi::visa_service::OpenResults,
+        code: vsapi::ErrorCode,
+        message: &str,
+    ) -> Result<(), capnp::Error> {
+        self.asm.counters.incr(CounterType::NodeConnectionsFailed);
+        let res_builder = results.get().init_resp();
+        let mut err_builder = res_builder.init_error();
+        write_error(&mut err_builder, code, message);
+        Ok(())
+    }
 }
 
 impl vsapi::visa_service::Server for VisaServiceImpl {
@@ -521,6 +536,77 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
 
         res_builder.set_ok(vs_gate)?;
 
+        Ok(())
+    }
+
+    async fn open(
+        self: Rc<Self>,
+        params: vsapi::visa_service::OpenParams,
+        mut results: vsapi::visa_service::OpenResults,
+    ) -> Result<(), capnp::Error> {
+        debug!(target: API, "open call from {}", self.remote);
+
+        let vs_connect_request = params.get()?.get_req()?;
+        let req_cn = vs_connect_request.get_cn()?.to_string()?;
+        let req_type = vs_connect_request.get_ctype()?;
+
+        /* TODO are there any needed params for an Open call?
+        let parsed_params = match params_from_connect_request(&vs_connect_request, 4) {
+            Ok(p) => p,
+            Err(e) => {
+                return self.ok_with_open_error(
+                    results,
+                    vsapi::ErrorCode::ParamError,
+                    &format!("failed to parse connect params: {}", e),
+                );
+            }
+        };
+        */
+
+        // The node should be using its real ZPR address already authenticated/granted during
+        // authorize_conenct.
+
+        let node_zpr_addr = self.remote.ip();
+        info!(target: API, "node {} requests open from addr {} (CONNECT_TYPE={:?})", req_cn, node_zpr_addr, req_type);
+
+        let existing_actor = match self
+            .asm
+            .actor_mgr
+            .get_actor_by_zpr_addr(&node_zpr_addr)
+            .await
+        {
+            Ok(Some(actor)) => actor,
+            Ok(None) => {
+                return self.ok_with_open_error(results, vsapi::ErrorCode::OutOfSync, "no state");
+            }
+            Err(e) => {
+                error!(target: API, "error checking existing state for node calling open {}: {}", node_zpr_addr, e);
+                return self.ok_with_open_error(
+                    results,
+                    vsapi::ErrorCode::Internal,
+                    "internal error during open",
+                );
+            }
+        };
+        if !existing_actor.is_node() {
+            warn!(target: API, "reconnect attempt denied for {}: found {:?}", node_zpr_addr, existing_actor.get_cn());
+            return self.ok_with_open_error(
+                results,
+                vsapi::ErrorCode::InvalidOperation,
+                "address in use",
+            );
+        }
+
+        // Not yet sure if we support a RESET over this channel...but might make sense.
+        if matches!(req_type, vsapi::VSConnT::Reset) {
+            warn!(target: API, "{req_cn} requests RESET: not yet implemented");
+        }
+
+        // Skip ahead to the handle:
+        let vs_handle: vsapi::v_s_handle::Client =
+            capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), existing_actor));
+        let mut res_builder = results.get().init_resp();
+        res_builder.set_ok(vs_handle)?;
         Ok(())
     }
 }
@@ -1052,19 +1138,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             warn!(target: API, "failed to record actor joins event for adapter {:?}: {}", actor.get_cn(), e);
         }
 
-        // If this is a node connection (to another node, ie a link) preempty the NODE->VSAPI visa.
-        // Generate the visa and send it to the node it is docked to.
-        // Also send to any nodes on the path from DOCKING_NODE to VS_DOCKING_NODE.
-
-        //    let route = get_route(from:NEWNODE, to:VS_DOCKING_NODE)
-        //    let v = create_vsapi_visa(src: DOCKING_NODE, target: VS_VSAPI)
-        //    Actually the visa manager does the route check.
-        //    So let the manager do the work.
-        //
-        //    mgr.create_visa_chain(from: NEWNODE, to:VS_DOCKING_NODE, access_vsapi)
-        //
-        //    Now we are the docking node for this new node.
-        //    We should be getting a visa allowing new node to talk to VSAPI (or is that built in?)
+        // TODO: How does the linked node get its node<->VSAPI visa? When creating this visa it will also set up the visas needed along the path.
 
         // TODO: Is this counter name misleading?  We use node-connection-success for VSAPI node-authorization calls.
         // This success is for the VSAPI authorize_connect call which could be authorizing an

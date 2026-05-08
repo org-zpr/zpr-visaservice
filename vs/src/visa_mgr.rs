@@ -222,42 +222,6 @@ impl VisaMgr {
         self.create_visa_for_packet(asm, pkt_data, node_addr).await
     }
 
-    /// Ask policy for a visa permitting the client node to connect to the VSAPI port on the VS.
-    /// This is requested as if from the docking node.
-    /// Creating the visa has side effect of storing it in state and as PENDING on the requesting node
-    /// which in this case is `docking_node_addr`.
-    ///
-    /// A single node alone has a built in rule that allows it to talk to the
-    /// VSAPI.
-    ///
-    async fn create_node_to_vsapi_visas(
-        &self,
-        asm: Arc<Assembly>,
-        client_node_addr: &IpAddr,
-        docking_node_addr: &IpAddr,
-    ) -> Result<(), ServiceError> {
-        // TODO: We may have this visa on hand already, if so return it and do not re-generate.
-
-        // if docking_node_addr is the VS dock, it is the egress node.
-        //   It gets a full visa, with SRC=NODE,DST=VS
-        //   and client_node_gets: SRC=NODE,DST=VS,FWD=docking_node.
-
-        let pkt_data = PacketDesc::new_tcp(
-            &client_node_addr.to_string(),
-            &config::VS_ZPR_ADDR.to_string(),
-            0,
-            asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
-        )
-        .unwrap();
-
-        // TODO: This call to return a FULL visa plus Route info.
-        // then we need to do some work.
-        let _ = self
-            .create_visa_for_packet(asm, pkt_data, docking_node_addr)
-            .await?;
-        Ok(())
-    }
-
     /// TODO: Update this to create a chain of visas or at any rate to set up the visa installation chain.
     /// Or maybe this can return route info and we can do something useful with it.
     /// That is better but we must be sure that the PATH visas are derived from this one.
