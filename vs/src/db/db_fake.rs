@@ -364,22 +364,11 @@ impl DbConnection for FakeDb {
     /// Set multiple hash fields at once.
     async fn hset_multiple(&self, key: &str, field_values: &[(&str, &str)]) -> DbResult<()> {
         let _rlock = self.lock.read().await;
-        let entry = self
-            .store
-            .entry(key.to_string())
-            .or_insert_with(|| Entry::new(FakeDbValue::Hash(DashMap::new())));
-        match &entry.value {
-            FakeDbValue::Hash(h) => {
-                for (field, value) in field_values {
-                    h.insert(field.to_string(), value.to_string());
-                }
-                Ok(())
-            }
-            _ => Err(redis::RedisError::from((
-                redis::ErrorKind::UnexpectedReturnType,
-                "value is not a hash",
-            ))),
-        }
+        let owned: Vec<(String, String)> = field_values
+            .iter()
+            .map(|(f, v)| (f.to_string(), v.to_string()))
+            .collect();
+        self.hset_multiple_with_lock(key, &owned).await
     }
 
     /// Add a member to a set, creating the set if it does not exist.
@@ -430,17 +419,7 @@ impl DbConnection for FakeDb {
     /// Set key expiration in seconds.
     async fn expire(&self, key: &str, seconds: i64) -> DbResult<()> {
         let _rlock = self.lock.read().await;
-        if !self.exists(key).await? {
-            return Ok(());
-        }
-        if seconds <= 0 {
-            self.store.remove(key);
-            return Ok(());
-        }
-        if let Some(mut entry) = self.store.get_mut(key) {
-            entry.exp = Instant::now() + std::time::Duration::from_secs(seconds as u64);
-        }
-        Ok(())
+        self.expire_with_lock(key, seconds).await
     }
 
     /// To simulate atomic we take a lock that prevents all the other operations
