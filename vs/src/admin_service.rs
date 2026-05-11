@@ -697,6 +697,7 @@ mod tests {
     use axum::body::Body;
     use http_body_util::BodyExt;
     use libeval::eval_result::{Direction, Hit, Signal};
+    use libeval::route::Route;
     use std::net::IpAddr;
     use tower::ServiceExt;
     use zpr::vsapi_types::PacketDesc;
@@ -758,10 +759,12 @@ mod tests {
             PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
 
+        let route = Route::new_direct(node_addr.into());
+
         // Add a visa.
         let v = asm
             .visa_mgr
-            .create_visa(&asm, &node_addr, &pdesc, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc, &hit, &route, "", 0)
             .await
             .unwrap();
 
@@ -806,19 +809,21 @@ mod tests {
         let pdesc2 =
             PacketDesc::new_tcp("fd5a:5052:3000::5", "fd5a:5052:3000::6", 12347, 22).unwrap();
 
+        let route = Route::new_direct(node_addr.into());
+
         let v0 = asm
             .visa_mgr
-            .create_visa(&asm, &node_addr, &pdesc0, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc0, &hit, &route, "", 0)
             .await
             .unwrap();
         let v1 = asm
             .visa_mgr
-            .create_visa(&asm, &node_addr, &pdesc1, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc1, &hit, &route, "", 0)
             .await
             .unwrap();
         let v2 = asm
             .visa_mgr
-            .create_visa(&asm, &node_addr, &pdesc2, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc2, &hit, &route, "", 0)
             .await
             .unwrap();
 
@@ -1042,10 +1047,19 @@ mod tests {
         let zpl_str = "permit tcp from groupA to groupB port 80";
         let policy_version: u64 = 42;
         let hit = Hit::new_no_signal(0, Direction::Forward);
+        let route = Route::new_direct(node_addr.into());
 
         let v = asm
             .visa_mgr
-            .create_visa(&asm, &node_addr, &pdesc, &hit, zpl_str, policy_version)
+            .create_visa(
+                &asm,
+                &node_addr,
+                &pdesc,
+                &hit,
+                &route,
+                zpl_str,
+                policy_version,
+            )
             .await
             .unwrap();
 
@@ -1087,10 +1101,11 @@ mod tests {
         let pdesc =
             PacketDesc::new_tcp("fd5a:5052:3000::1", "fd5a:5052:3000::2", 12345, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Reverse);
+        let route = Route::new_direct(node_addr.into());
 
         let v = asm
             .visa_mgr
-            .create_visa(&asm, &node_addr, &pdesc, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc, &hit, &route, "", 0)
             .await
             .unwrap();
 
@@ -1130,10 +1145,11 @@ mod tests {
             service: "svc1".to_string(),
         };
         let hit = Hit::new_with_signal(0, Direction::Forward, signal);
+        let route = Route::new_direct(node_addr.into());
 
         let v = asm
             .visa_mgr
-            .create_visa(&asm, &node_addr, &pdesc, &hit, "", 0)
+            .create_visa(&asm, &node_addr, &pdesc, &hit, &route, "", 0)
             .await
             .unwrap();
 

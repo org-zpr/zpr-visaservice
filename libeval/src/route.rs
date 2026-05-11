@@ -36,7 +36,7 @@ pub struct LinkId(pub String); // TODO: use IpAddr ?
 
 #[derive(Debug, Serialize, Clone)]
 pub enum RouteKind {
-    /// Not even a route - adapaters are connected to the same node.
+    /// Not even a route - adapters are connected to the same node.
     DirectSameNode {
         node_id: NodeId,
     },
@@ -81,5 +81,14 @@ impl Route {
 
     pub fn hop_count(&self) -> usize {
         self.links.len()
+    }
+
+    /// The "direct" route isn't really a route at all. It means that the client and service are on the same node, so no links need to be traversed.
+    pub fn new_direct(node_id: NodeId) -> Self {
+        Route {
+            kind: RouteKind::DirectSameNode { node_id },
+            links: vec![],
+            cost: 0,
+        }
     }
 }

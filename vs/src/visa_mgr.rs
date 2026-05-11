@@ -13,7 +13,7 @@ use crate::packet::make_fivetuple_tcp;
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval_result::{Direction, Hit};
-use libeval::route::NodeId;
+use libeval::route::{NodeId, Route};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
     CommFlag, DockPep, DockPepType, EndpointT, FwdPep, FwdPepStyle, IcmpPep, KeySet, PacketDesc,
@@ -317,6 +317,7 @@ impl VisaMgr {
         requesting_node: &IpAddr,
         pdesc: &PacketDesc,
         hit: &Hit,
+        route: &Route,
         source_zpl: impl Into<String>,
         policy_version: u64,
     ) -> Result<Visa, ServiceError> {
@@ -377,21 +378,17 @@ impl VisaMgr {
 
         let visa_id = self.repo.get_next_visa_id().await?;
 
-        let path: Option<Vec<IpAddr>> = match &hit.route {
-            Some(route) => {
-                if matches!(route.kind, libeval::route::RouteKind::Multihop) {
-                    let starting_node = if hit.direction == Direction::Forward {
-                        NodeId(pdesc.five_tuple.source_addr)
-                    } else {
-                        NodeId(pdesc.five_tuple.dest_addr)
-                    };
-                    let node_id_path = asm.topo_mgr.route_to_path(route, &starting_node)?;
-                    Some(node_id_path.into_iter().map(|id| id.into()).collect())
-                } else {
-                    None
-                }
-            }
-            None => None,
+        let path: Option<Vec<IpAddr>> = if matches!(route.kind, libeval::route::RouteKind::Multihop)
+        {
+            let starting_node = if hit.direction == Direction::Forward {
+                NodeId(pdesc.five_tuple.source_addr)
+            } else {
+                NodeId(pdesc.five_tuple.dest_addr)
+            };
+            let node_id_path = asm.topo_mgr.route_to_path(route, &starting_node)?;
+            Some(node_id_path.into_iter().map(|id| id.into()).collect())
+        } else {
+            None
         };
 
         let mut metadata = db::VisaMetadata::new(
@@ -925,5 +922,135 @@ mod tests {
             .fwd_pep
             .expect("expected fwd_pep on intermediary visa");
         assert_eq!(fwd_pep.next_hop, node_c);
+    }
+
+    // --- create_visa multihop integration tests ---
+    // These verify that create_visa uses the explicit route parameter to populate
+    // metadata.path, mark all path nodes pending, and enable actualize to set fwd_pep.
+
+    use crate::assembly::tests::new_assembly_for_tests;
+    use libeval::route::LinkId;
+
+    // Three nodes forming a linear chain: SRC → MID → DST (no direct SRC–DST link).
+    const MH_SRC: &str = "fd5a:5052::a1";
+    const MH_MID: &str = "fd5a:5052::b1";
+    const MH_DST: &str = "fd5a:5052::c1";
+
+    /// Build an assembly with topology SRC→MID→DST and no direct SRC–DST link.
+    async fn make_multihop_assembly() -> Assembly {
+        let asm = new_assembly_for_tests(None).await;
+        let src: IpAddr = MH_SRC.parse().unwrap();
+        let mid: IpAddr = MH_MID.parse().unwrap();
+        let dst: IpAddr = MH_DST.parse().unwrap();
+        asm.topo_mgr.add_node(src).unwrap();
+        asm.topo_mgr.add_node(mid).unwrap();
+        asm.topo_mgr.add_node(dst).unwrap();
+        asm.topo_mgr
+            .add_link(src, mid, LinkId("link-src-mid".into()), vec![], 1)
+            .unwrap();
+        asm.topo_mgr
+            .add_link(mid, dst, LinkId("link-mid-dst".into()), vec![], 1)
+            .unwrap();
+        asm
+    }
+
+    /// create_visa with a multihop route records the full [src, mid, dst] path in metadata.
+    #[tokio::test]
+    async fn test_create_visa_multihop_path_stored_in_metadata() {
+        let asm = make_multihop_assembly().await;
+        let src: IpAddr = MH_SRC.parse().unwrap();
+        let mid: IpAddr = MH_MID.parse().unwrap();
+        let dst: IpAddr = MH_DST.parse().unwrap();
+        let pdesc = PacketDesc::new_tcp(MH_SRC, MH_DST, 12345, 80).unwrap();
+        let hit = Hit::new_no_signal(0, Direction::Forward);
+        let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
+
+        let visa = asm
+            .visa_mgr
+            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
+            .await
+            .unwrap();
+
+        let metadata = asm
+            .visa_mgr
+            .repo
+            .get_visa_metadata_by_id(visa.issuer_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.path, Some(vec![src, mid, dst]));
+    }
+
+    /// create_visa with a multihop route marks every path node (including the intermediary) pending.
+    #[tokio::test]
+    async fn test_create_visa_multihop_marks_all_path_nodes_pending() {
+        let asm = make_multihop_assembly().await;
+        let src: IpAddr = MH_SRC.parse().unwrap();
+        let mid: IpAddr = MH_MID.parse().unwrap();
+        let dst: IpAddr = MH_DST.parse().unwrap();
+        let pdesc = PacketDesc::new_tcp(MH_SRC, MH_DST, 12345, 80).unwrap();
+        let hit = Hit::new_no_signal(0, Direction::Forward);
+        let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
+
+        let visa = asm
+            .visa_mgr
+            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
+            .await
+            .unwrap();
+
+        let visa_id = visa.issuer_id;
+        let pending_src = asm.visa_mgr.get_pending_visas_for_node(&src).await.unwrap();
+        let pending_mid = asm.visa_mgr.get_pending_visas_for_node(&mid).await.unwrap();
+        let pending_dst = asm.visa_mgr.get_pending_visas_for_node(&dst).await.unwrap();
+
+        assert_eq!(
+            pending_src.len(),
+            1,
+            "requesting node (src) must be pending"
+        );
+        assert_eq!(pending_mid.len(), 1, "intermediary (mid) must be pending");
+        assert_eq!(pending_dst.len(), 1, "egress node (dst) must be pending");
+        // All three pending entries refer to the same visa.
+        assert!(pending_src.iter().any(|v| v.issuer_id == visa_id));
+        assert!(pending_mid.iter().any(|v| v.issuer_id == visa_id));
+        assert!(pending_dst.iter().any(|v| v.issuer_id == visa_id));
+    }
+
+    /// Actualizing a multihop visa for the ingress node sets fwd_pep to the next hop.
+    #[tokio::test]
+    async fn test_create_visa_multihop_actualize_ingress_sets_fwd_pep() {
+        let asm = make_multihop_assembly().await;
+        let src: IpAddr = MH_SRC.parse().unwrap();
+        let mid: IpAddr = MH_MID.parse().unwrap();
+        let dst: IpAddr = MH_DST.parse().unwrap();
+        let pdesc = PacketDesc::new_tcp(MH_SRC, MH_DST, 12345, 80).unwrap();
+        let hit = Hit::new_no_signal(0, Direction::Forward);
+        let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
+
+        let visa = asm
+            .visa_mgr
+            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
+            .await
+            .unwrap();
+
+        let actualized = asm
+            .visa_mgr
+            .actualize_visa_for_target_node(visa, &src, Direction::Forward)
+            .await
+            .unwrap();
+
+        let fwd_pep = actualized
+            .fwd_pep
+            .expect("ingress node must have a forwarding PEP on a multihop visa");
+        assert_eq!(
+            fwd_pep.next_hop, mid,
+            "ingress fwd_pep must point to the intermediary"
+        );
+        assert!(
+            actualized.dock_pep.is_some(),
+            "ingress node retains the dock PEP"
+        );
+        // The egress node dst is not the target here, so this just confirms the visa
+        // was created for the right endpoints.
+        let _ = dst;
     }
 }

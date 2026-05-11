@@ -255,6 +255,8 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         },
     };
 
+    // When the evaluator does not care about the route, we use the "best" route.
+    // And if there is no route at all then we don't bother evaluating.
     let Some(default_route) = asm.topo_mgr.get_best_route(&node_addr_a, &node_addr_b) else {
         info!(target: VREQ,
             "visa request from {:?} denied: no route between {:?} and {:?}",
@@ -276,9 +278,6 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         }
     };
 
-    // TODO: drop eval context?
-    // Do I need eval context in the residual evaluator? I do unless we copied relevant policy out of it.
-
     match decision {
         PartialEvalResult::Deny(FinalDeny::NoMatch(message)) => {
             info!(target: VREQ,
@@ -288,7 +287,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             Ok(VisaDecision::Deny(DenyCode::NoMatch))
         }
         PartialEvalResult::AllowWithoutRoute(hits) => {
-            visa_from_allow(&asm, job, &hits, &policy, default_route).await
+            visa_from_allow(&asm, job, &hits, &policy, Some(default_route)).await
         }
         PartialEvalResult::Deny(FinalDeny::Deny(_hits)) => {
             info!(target: VREQ,
@@ -306,7 +305,7 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
             match residual_evaluator.eval_routes(&routes, &asm.topo_mgr) {
                 // TODO: Note that when we get a match using routes, the route it returned in the hit.
                 Ok(FinalEvalResult::Allow(hits)) => {
-                    visa_from_allow(&asm, job, &hits, &policy, default_route).await
+                    visa_from_allow(&asm, job, &hits, &policy, None).await
                 }
                 Ok(FinalEvalResult::Deny(_hits)) => {
                     info!(target: VREQ,
@@ -363,12 +362,18 @@ fn fabricate_aaa_actor(anon_addr: &IpAddr, expiration: SystemTime) -> Actor {
 
 /// Given that we have an ALLOW decision, pass the hist list in here and we will pick the first
 /// hit and create a visa based on it.
+///
+/// If the hit has a route, we use that, otherwise we use the default route passed in. If there
+/// is no default route and no route in the hit the create fails.
+///
+/// `hits` - Positive hits from the evaluator. We choose the first one.
+/// `default_route` - A default route for the visa, only used if there is no route on the first hit.
 async fn visa_from_allow(
     asm: &Assembly,
     job: &VisaRequestJob,
     hits: &[Hit],
     policy: &Policy,
-    default_route: Route,
+    default_route: Option<Route>,
 ) -> Result<VisaDecision, ServiceError> {
     debug_assert!(!hits.is_empty(), "allow decision with no hits"); // should never happen.
     let policy_version = policy.get_version().unwrap_or(0);
@@ -380,7 +385,11 @@ async fn visa_from_allow(
 
     let allowed_route: Route = match hits[0].route.as_ref() {
         Some(route) => route.clone(),
-        None => default_route,
+        None => default_route.ok_or_else(|| {
+            ServiceError::Internal(
+                "policy allowed visa but no route in hit and no default route".into(),
+            )
+        })?,
     };
 
     let visa = asm
@@ -390,6 +399,7 @@ async fn visa_from_allow(
             &job.requesting_node,
             &job.packet_desc,
             &hits[0],
+            &allowed_route,
             zpl,
             policy_version,
         )
@@ -560,7 +570,7 @@ mod tests {
     use libeval::attribute::ROLE_ADAPTER;
     use libeval::eval_result::Direction;
     use libeval::policy::Policy;
-    use libeval::route::{LinkId, RouteKind};
+    use libeval::route::LinkId;
     use std::time::{Duration, SystemTime};
     use zpr::policy_types::{JoinPolicy, PFlags, Scope, Service, ServiceType};
     use zpr::write_to::WriteTo;
@@ -646,13 +656,9 @@ mod tests {
 
         let hits = vec![Hit::new_no_signal(0, Direction::Forward)];
         let policy = Policy::new_empty();
-        let route = Route {
-            kind: RouteKind::Multihop,
-            links: vec![],
-            cost: 0,
-        };
+        let route = Route::new_direct(requesting_node.into());
 
-        let result = visa_from_allow(&asm, &job, &hits, &policy, route).await;
+        let result = visa_from_allow(&asm, &job, &hits, &policy, Some(route)).await;
         assert!(matches!(result, Ok(VisaDecision::Allow(_, _))));
     }
 
