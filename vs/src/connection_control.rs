@@ -25,7 +25,7 @@ use std::usize;
 use tracing::{debug, error, info, warn};
 
 use libeval::actor::{Actor, Role};
-use libeval::attribute::{Attribute, ROLE_NODE, key};
+use libeval::attribute::{Attribute, key};
 use libeval::eval::EvalContext;
 use libeval::policy::Policy;
 
@@ -146,7 +146,6 @@ impl ConnectionControl {
         authd_claims.push(Attribute::builder(key::SUBSTRATE_ADDR).value(remote.to_string()));
 
         let mut unauthd_claims: Vec<Attribute> = Vec::new();
-        unauthd_claims.push(Attribute::builder(key::ROLE).value(ROLE_NODE));
         unauthd_claims.push(Attribute::builder(key::ZPR_ADDR).value(node_req_addr.to_string()));
         unauthd_claims.push(Attribute::builder(key::CN).value(cn.to_string()));
 
@@ -169,6 +168,7 @@ impl ConnectionControl {
             .authenticate_zpr_entity_rsa(asm, &ss_blob, unauthd_claims, authd_claims, 0)
             .await?;
 
+        // We only let nodes in here.
         if !node_actor.is_node() {
             info!(target: CC, "connection not approved for cn {}: not a node", cn);
             return Err(ServiceError::AuthenticationFailed("not authorized".into()));
