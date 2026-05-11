@@ -314,6 +314,8 @@ impl Router {
 
     /// "Best" route is defined as the route with the lowest cost. If there is a tie, one is picked arbitrarily.
     /// These routes are cached and only updated when topology changes.
+    ///
+    /// Note `addr_a` and `addr_b` are NODE addresses (not adapters).
     pub fn get_best_route(&self, addr_a: &IpAddr, addr_b: &IpAddr) -> Option<Route> {
         let a: NodeId = addr_a.into();
         let b: NodeId = addr_b.into();

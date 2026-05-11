@@ -113,12 +113,18 @@ impl TopologyMgr {
         self.router.remove_node(addr)
     }
 
+    /// Find optimal route between the nodes.
+    /// Note that `a` and `b` must be node addresses.
     pub fn get_best_route(&self, a: &IpAddr, b: &IpAddr) -> Option<Route> {
         self.router.get_best_route(a, b)
     }
+
+    /// Find all routes between the nodes.
+    /// Note that `a` and `b` must be node addresses.
     pub fn get_routes(&self, a: &IpAddr, b: &IpAddr, hint: Option<&RouteHint>) -> Vec<Route> {
         self.router.get_routes(a, b, hint)
     }
+
     pub fn route_to_path(
         &self,
         route: &Route,

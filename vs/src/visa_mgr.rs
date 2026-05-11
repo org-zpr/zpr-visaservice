@@ -380,11 +380,7 @@ impl VisaMgr {
 
         let path: Option<Vec<IpAddr>> = if matches!(route.kind, libeval::route::RouteKind::Multihop)
         {
-            let starting_node = if hit.direction == Direction::Forward {
-                NodeId(pdesc.five_tuple.source_addr)
-            } else {
-                NodeId(pdesc.five_tuple.dest_addr)
-            };
+            let starting_node = NodeId(*requesting_node);
             let node_id_path = asm.topo_mgr.route_to_path(route, &starting_node)?;
             Some(node_id_path.into_iter().map(|id| id.into()).collect())
         } else {
@@ -961,9 +957,19 @@ mod tests {
         let src: IpAddr = MH_SRC.parse().unwrap();
         let mid: IpAddr = MH_MID.parse().unwrap();
         let dst: IpAddr = MH_DST.parse().unwrap();
-        let pdesc = PacketDesc::new_tcp(MH_SRC, MH_DST, 12345, 80).unwrap();
+
+        let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
+        let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
+
+        let pdesc = PacketDesc::new_tcp(
+            &src_adapter.to_string(),
+            &dst_adapter.to_string(),
+            12345,
+            80,
+        )
+        .unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
-        let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
+        let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap(); // route between the nodes
 
         let visa = asm
             .visa_mgr
@@ -987,7 +993,15 @@ mod tests {
         let src: IpAddr = MH_SRC.parse().unwrap();
         let mid: IpAddr = MH_MID.parse().unwrap();
         let dst: IpAddr = MH_DST.parse().unwrap();
-        let pdesc = PacketDesc::new_tcp(MH_SRC, MH_DST, 12345, 80).unwrap();
+        let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
+        let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
+        let pdesc = PacketDesc::new_tcp(
+            &src_adapter.to_string(),
+            &dst_adapter.to_string(),
+            12345,
+            80,
+        )
+        .unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
 
@@ -1022,7 +1036,15 @@ mod tests {
         let src: IpAddr = MH_SRC.parse().unwrap();
         let mid: IpAddr = MH_MID.parse().unwrap();
         let dst: IpAddr = MH_DST.parse().unwrap();
-        let pdesc = PacketDesc::new_tcp(MH_SRC, MH_DST, 12345, 80).unwrap();
+        let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
+        let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
+        let pdesc = PacketDesc::new_tcp(
+            &src_adapter.to_string(),
+            &dst_adapter.to_string(),
+            12345,
+            80,
+        )
+        .unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
 
