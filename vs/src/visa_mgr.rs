@@ -381,7 +381,14 @@ impl VisaMgr {
         let path: Option<Vec<IpAddr>> = if matches!(route.kind, libeval::route::RouteKind::Multihop)
         {
             let starting_node = NodeId(*requesting_node);
-            let node_id_path = asm.topo_mgr.route_to_path(route, &starting_node)?;
+            let mut node_id_path = asm.topo_mgr.route_to_path(route, &starting_node)?;
+            // Normalize to canonical forward order (ingress→…→egress) so that
+            // actualize_visa_for_target_node applies direction logic correctly.
+            // A reverse hit starts traversal from the forward-egress node, so reversing
+            // restores forward orientation.
+            if hit.direction == Direction::Reverse {
+                node_id_path.reverse();
+            }
             Some(node_id_path.into_iter().map(|id| id.into()).collect())
         } else {
             None
@@ -1027,6 +1034,60 @@ mod tests {
         assert!(pending_src.iter().any(|v| v.issuer_id == visa_id));
         assert!(pending_mid.iter().any(|v| v.issuer_id == visa_id));
         assert!(pending_dst.iter().any(|v| v.issuer_id == visa_id));
+    }
+
+    /// For a reverse multihop visa the requesting node is the reverse-direction ingress and
+    /// must receive fwd_pep pointing to the next hop toward the forward source.
+    ///
+    /// The bug: create_visa always passes requesting_node as starting_node to route_to_path,
+    /// so for a reverse hit where requesting_node == forward-egress (dst) the stored path is
+    /// [dst, mid, src].  actualize_visa_for_target_node then sees path.first()==dst with
+    /// Direction::Reverse → VCtx::Egress → no fwd_pep.  The fix is to reverse the stored
+    /// path for reverse hits so it is always in canonical forward order [src, mid, dst].
+    #[tokio::test]
+    async fn test_create_visa_reverse_multihop_requesting_node_gets_fwd_pep() {
+        let asm = make_multihop_assembly().await;
+        let src: IpAddr = MH_SRC.parse().unwrap();
+        let mid: IpAddr = MH_MID.parse().unwrap();
+        let dst: IpAddr = MH_DST.parse().unwrap();
+        let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
+        let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
+
+        // Reverse packet: dst is the sender, src is the destination.
+        let pdesc = PacketDesc::new_tcp(
+            &dst_adapter.to_string(),
+            &src_adapter.to_string(),
+            54321,
+            80,
+        )
+        .unwrap();
+        let hit = Hit::new_no_signal(0, Direction::Reverse);
+        let route = asm.topo_mgr.get_best_route(&dst, &src).unwrap();
+
+        let visa = asm
+            .visa_mgr
+            .create_visa(&asm, &dst, &pdesc, &hit, &route, "", 0)
+            .await
+            .unwrap();
+
+        // dst is the ingress for reverse traffic; it must get fwd_pep pointing to mid.
+        let actualized = asm
+            .visa_mgr
+            .actualize_visa_for_target_node(visa, &dst, Direction::Reverse)
+            .await
+            .unwrap();
+
+        let fwd_pep = actualized
+            .fwd_pep
+            .expect("reverse ingress node (dst) must have fwd_pep on a multihop visa");
+        assert_eq!(
+            fwd_pep.next_hop, mid,
+            "reverse ingress fwd_pep must point to the intermediary"
+        );
+        assert!(
+            actualized.dock_pep.is_some(),
+            "reverse ingress node retains dock_pep"
+        );
     }
 
     /// Actualizing a multihop visa for the ingress node sets fwd_pep to the next hop.
