@@ -70,8 +70,8 @@ enum ActorRole {
 struct ProtocolDetails {
     /// Human readable protocol name, e.g. "TCP", "UDP", "ICMP"
     protocol: String,
-    source_port: u16,
-    dest_port: u16,
+    source_port: Option<u16>,
+    dest_port: Option<u16>,
 }
 
 /// Blocking start of the admin server.
@@ -325,14 +325,14 @@ async fn get_visa(
                         }
                     },
                     source_addr: if let Some(ref dock_pep) = visa.dock_pep {
-                        dock_pep.source_addr.to_string()
+                        Some(dock_pep.source_addr.to_string())
                     } else {
-                        "".to_string()
+                        None
                     },
                     dest_addr: if let Some(ref dock_pep) = visa.dock_pep {
-                        dock_pep.dest_addr.to_string()
+                        Some(dock_pep.dest_addr.to_string())
                     } else {
-                        "".to_string()
+                        None
                     },
                     source_port: proto_deets.source_port,
                     dest_port: proto_deets.dest_port,
@@ -354,18 +354,26 @@ fn protocol_details_for_visa(visa: &Visa) -> ProtocolDetails {
     if visa.dock_pep.is_none() {
         return ProtocolDetails {
             protocol: "N/A".to_string(),
-            source_port: 0,
-            dest_port: 0,
+            source_port: None,
+            dest_port: None,
         };
     }
     let (proto_name, source_port, dest_port) = match &visa.dock_pep.as_ref().unwrap().pep {
         DockPepType::ICMP(icmp_pep) => (
             "ICMP".to_string(),
-            icmp_pep.icmp_type as u16,
-            icmp_pep.icmp_code as u16,
+            Some(icmp_pep.icmp_type as u16),
+            Some(icmp_pep.icmp_code as u16),
         ),
-        DockPepType::UDP(tu_pep) => ("UDP".to_string(), tu_pep.source_port, tu_pep.dest_port),
-        DockPepType::TCP(tu_pep) => ("TCP".to_string(), tu_pep.source_port, tu_pep.dest_port),
+        DockPepType::UDP(tu_pep) => (
+            "UDP".to_string(),
+            Some(tu_pep.source_port),
+            Some(tu_pep.dest_port),
+        ),
+        DockPepType::TCP(tu_pep) => (
+            "TCP".to_string(),
+            Some(tu_pep.source_port),
+            Some(tu_pep.dest_port),
+        ),
     };
 
     ProtocolDetails {

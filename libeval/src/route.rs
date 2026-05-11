@@ -31,8 +31,9 @@ pub struct Route {
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub IpAddr);
 
+/// Link IDs are strings assigned by the compiler.
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
-pub struct LinkId(pub String); // TODO: use IpAddr ?
+pub struct LinkId(pub String);
 
 #[derive(Debug, Serialize, Clone)]
 pub enum RouteKind {

@@ -135,9 +135,7 @@ impl Policy {
         let link_attrs = if let Some(ref peerings) = peerings {
             let mut table: HashMap<String, Vec<AttrExp>> = HashMap::new();
             for p in peerings {
-                if !p.attributes.is_empty() {
-                    table.insert(p.link_id.clone(), p.attributes.clone());
-                }
+                table.insert(p.link_id.clone(), p.attributes.clone());
             }
             Some(table)
         } else {
@@ -255,13 +253,16 @@ impl Policy {
     }
 
     /// Pass the node ZPR address to get the list of peers (if any).
-    pub fn get_peers_for_node(&self, node_zpr_addr: &IpAddr) -> Option<&Vec<Peer>> {
-        self.peer_table.as_ref()?.get(node_zpr_addr)
+    pub fn get_peers_for_node(&self, node_zpr_addr: &IpAddr) -> Option<&[Peer]> {
+        self.peer_table
+            .as_ref()?
+            .get(node_zpr_addr)
+            .map(|v| v.as_slice())
     }
 
     /// A link may have attributes on it, this returns them.
-    pub fn get_link_attrs(&self, link_id: &str) -> Option<&Vec<AttrExp>> {
-        self.link_attrs.as_ref()?.get(link_id)
+    pub fn get_link_attrs(&self, link_id: &str) -> Option<&[AttrExp]> {
+        self.link_attrs.as_ref()?.get(link_id).map(|v| v.as_slice())
     }
 }
 
@@ -619,9 +620,9 @@ mod test {
     }
 
     #[test]
-    /// get_link_attrs returns None for a link that exists but has no attributes, because
-    /// the link_attrs table only stores entries for peerings with non-empty attribute lists.
-    fn test_get_link_attrs_link_with_no_attrs_returns_none() {
+    /// get_link_attrs returns Some(&[]) for a known link that has no attributes, distinguishing
+    /// it from an unknown link ID which returns None.
+    fn test_get_link_attrs_link_with_no_attrs_returns_empty_slice() {
         let peering = make_peering_full(
             ip("fd5a:5052::1"),
             "10.0.0.1",
@@ -631,7 +632,8 @@ mod test {
             vec![],
         );
         let policy = policy_with_peerings(&[peering]);
-        assert!(policy.get_link_attrs("link-bare").is_none());
+        assert_eq!(policy.get_link_attrs("link-bare"), Some(&[] as &[AttrExp]));
+        assert!(policy.get_link_attrs("no-such-link").is_none());
     }
 
     #[test]
