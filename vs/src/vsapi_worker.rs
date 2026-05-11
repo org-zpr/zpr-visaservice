@@ -481,18 +481,7 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         let req_cn = vs_connect_request.get_cn()?.to_string()?;
         let req_type = vs_connect_request.get_ctype()?;
 
-        /* TODO are there any needed params for an Open call?
-        let parsed_params = match params_from_connect_request(&vs_connect_request, 4) {
-            Ok(p) => p,
-            Err(e) => {
-                return self.ok_with_open_error(
-                    results,
-                    vsapi::ErrorCode::ParamError,
-                    &format!("failed to parse connect params: {}", e),
-                );
-            }
-        };
-        */
+        // TODO: are there any needed params for an Open call?
 
         // The node should be using its real ZPR address already authenticated/granted during
         // authorize_conenct.

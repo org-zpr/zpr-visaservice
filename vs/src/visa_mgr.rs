@@ -248,18 +248,7 @@ impl VisaMgr {
         self.create_visa_for_packet(asm, pkt_data, node_addr).await
     }
 
-    /// TODO: Update this to create a chain of visas or at any rate to set up the visa installation chain.
-    /// Or maybe this can return route info and we can do something useful with it.
-    /// That is better but we must be sure that the PATH visas are derived from this one.
-    /// We need to store PATH in our mgr/state. The actual PEP info in the delivered visa
-    /// has to be based on PATH.
-    ///
-    /// So the visa created should have no FwdPep and should have everything else
-    /// filed in and by of type 'full'.
-    ///
-    /// The actual visa delivered needs to be computed based on the route.
-    ///
-    /// `requesting_node_addr` - The visa is created as if this node has requested it.
+    /// TODO: Update this to create a chain of visas or at any rate to set up the visa installation chain.    /// `requesting_node_addr` - The visa is created as if this node has requested it.
     ///
     /// The returned visa is a full visa (TODO: return route info).
     /// The visa needs to be crunched through PATH to determine what is sent to `requesting_node_addr` node.
@@ -271,21 +260,11 @@ impl VisaMgr {
     ) -> Result<Visa, ServiceError> {
         // This will end up calling into `create_visa` which means we get a route
         // and state will have been updated if any visas need to be sent to nodes.
-        // We should have already stored the route too (TODO).
         //
         // When it comes time to actually deliver a visa to a node
         // we can use the PATH to create correct visa contents. The visa stored in state
         // by ID is the FULL visa.
         //
-        // So we need centralized code somewhere that can do something like:
-        //
-        //      get_visa_for_node_on_path(visa_id, node_addr) -> "actualized visa"
-        //        - get full visa from store.
-        //        - get path from store.
-        //        - see where node_addr is on path, then
-        //        - populate a visa struct to send with FwdPep and other fields set up properly.
-        //
-
         match request_visa_wait_response(
             &asm,
             requesting_node_addr,
