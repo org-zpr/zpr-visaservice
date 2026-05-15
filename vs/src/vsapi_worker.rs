@@ -1170,6 +1170,48 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
         res_builder.set_ok(());
         Ok(())
     }
+
+    async fn visa_ids_request(
+        self: Rc<Self>,
+        _req: vsapi::v_s_handle::VisaIdsRequestParams,
+        mut res: vsapi::v_s_handle::VisaIdsRequestResults,
+    ) -> Result<(), capnp::Error> {
+        debug!(target: API, "visa_ids_request from {:?}", self.node.get_cn());
+
+        let requestor_addr = self
+            .node
+            .get_zpr_addr()
+            .expect("programming error - node must have an address");
+        self.update_last_seen_time(requestor_addr).await;
+
+        let installed_visas_res = self
+            .asm
+            .visa_mgr
+            .get_installed_visa_ids_for_node(requestor_addr)
+            .await;
+
+        let res_builder = res.get().init_res();
+
+        match installed_visas_res {
+            Ok(installed_visas) => {
+                let mut ok_builder = res_builder.initn_ok(installed_visas.len() as u32);
+
+                for (i, id) in installed_visas.iter().enumerate() {
+                    ok_builder.set(i as u32, *id);
+                }
+            }
+            Err(_) => {
+                let mut err_builder = res_builder.init_error();
+                write_error(
+                    &mut err_builder,
+                    vsapi::ErrorCode::Internal,
+                    "failed to retrieve visa ids",
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Parse no more than `limit` params out of the connect request.
