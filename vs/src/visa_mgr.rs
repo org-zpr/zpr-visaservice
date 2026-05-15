@@ -15,7 +15,8 @@ use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 use libeval::eval_result::{Direction, Hit};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
-    CommFlag, DockPep, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa, VsapiFiveTuple,
+    CommFlag, DockPep, DockPepType, EndpointT, IcmpPep, KeySet, PacketDesc, TcpUdpPep, Visa,
+    VisaType, VsapiFiveTuple,
 };
 
 use tracing::info;
@@ -84,10 +85,12 @@ impl VisaMgr {
             .get_visas_for_node_by_state(node_addr, db::NodeVisaState::Installed)
             .await?
         {
-            if &visa.source_addr == &ft.source_addr && &visa.dest_addr == &ft.dest_addr {
+            if &visa.dock_pep.as_ref().unwrap().source_addr == &ft.source_addr
+                && &visa.dock_pep.as_ref().unwrap().dest_addr == &ft.dest_addr
+            {
                 // Is from VS -> NODE, check for VSS port match.
-                match &visa.dock_pep {
-                    DockPep::TCP(tpep) => {
+                match &visa.clone().dock_pep.unwrap().pep {
+                    DockPepType::TCP(tpep) => {
                         if tpep.dest_port == ft.dest_port && tpep.source_port == ft.source_port {
                             // Found it
                             return Ok(Some(visa));
@@ -189,17 +192,19 @@ impl VisaMgr {
         };
 
         let pep = match pdesc.five_tuple.l4_protocol {
-            ip_proto::TCP => DockPep::TCP(TcpUdpPep::new(
+            ip_proto::TCP => DockPepType::TCP(TcpUdpPep::new(
                 source_port,
                 dest_port,
                 ep_from_dir(&hit.direction),
             )),
-            ip_proto::UDP => DockPep::UDP(TcpUdpPep::new(
+            ip_proto::UDP => DockPepType::UDP(TcpUdpPep::new(
                 source_port,
                 dest_port,
                 ep_from_dir(&hit.direction),
             )),
-            ip_proto::IPV6_ICMP => DockPep::ICMP(IcmpPep::new(source_port as u8, dest_port as u8)),
+            ip_proto::IPV6_ICMP => {
+                DockPepType::ICMP(IcmpPep::new(source_port as u8, dest_port as u8))
+            }
 
             _ => unreachable!(), // already handled above
         };
@@ -216,15 +221,21 @@ impl VisaMgr {
             metadata.signal_msgs.push(sig.message.clone());
         }
 
+        let dock_pep = DockPep {
+            source_addr: pdesc.five_tuple.source_addr.clone(),
+            dest_addr: pdesc.five_tuple.dest_addr.clone(),
+            session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
+            pep,
+        };
+
         let visa = Visa {
             issuer_id: visa_id,
             config: 0,
             expires: expiration_time,
-            source_addr: pdesc.five_tuple.source_addr.clone(),
-            dest_addr: pdesc.five_tuple.dest_addr.clone(),
-            dock_pep: pep,
+            visa_type: VisaType::Full,
+            dock_pep: Some(dock_pep),
+            fwd_pep: None,
             cons: None,
-            session_key: KeySet::new("secret".as_bytes(), "secret".as_bytes()),
         };
 
         self.repo
@@ -360,6 +371,13 @@ impl VisaMgr {
                 Err(e) => Err(ServiceError::from(e)),
             },
             Err(StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(ServiceError::from(e)),
+        }
+    }
+
+    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Visa, ServiceError> {
+        match self.repo.get_visa_by_id(visa_id).await {
+            Ok(visa) => Ok(visa),
             Err(e) => Err(ServiceError::from(e)),
         }
     }
