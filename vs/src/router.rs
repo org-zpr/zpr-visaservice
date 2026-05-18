@@ -246,7 +246,16 @@ impl Router {
         starting_node: &NodeId,
     ) -> Result<Vec<NodeId>, TopologyError> {
         match &route.kind {
-            RouteKind::DirectSameNode { node_id: _ } => Ok(vec![starting_node.clone()]),
+            RouteKind::DirectSameNode { node_id: nid } => {
+                // For sanity, make sure that the node_id embedded in the RouteKind matches our starting node.
+                if nid != starting_node {
+                    return Err(TopologyError::NodeNotFound(format!(
+                        "route_to_path: starting node {:?} does not match direct-route node {:?}",
+                        starting_node, nid
+                    )));
+                }
+                Ok(vec![starting_node.clone()])
+            }
             RouteKind::Multihop => {
                 let inner = self.inner.read().unwrap();
                 let mut path = vec![starting_node.clone()];
