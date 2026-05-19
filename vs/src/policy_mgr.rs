@@ -155,7 +155,7 @@ fn get_link_cost(attrs: &[Attribute], default_cost: u32) -> u32 {
                 .get_single_value()
                 .ok()
                 .and_then(|s| s.parse::<i32>().ok())
-                .unwrap_or(DEFAULT_LINK_COST as i32);
+                .unwrap_or(default_cost as i32);
             return if value > 0 {
                 value as u32
             } else {
