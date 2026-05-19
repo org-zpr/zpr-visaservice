@@ -234,12 +234,8 @@ impl VisaMgr {
     ) -> Result<Visa, ServiceError> {
         // TODO: We may have this visa on hand already, if so return it and do not re-generate.
 
-        let pkt_data = PacketDesc::new_tcp_with_addr(
-            asm.config.get_vs_addr(),
-            *node_addr,
-            0,
-            vss_port,
-        )?;
+        let pkt_data =
+            PacketDesc::new_tcp_with_addr(asm.config.get_vs_addr(), *node_addr, 0, vss_port)?;
 
         // TODO: This call to return a FULL visa plus Route info.
         // then we need to do some work.
@@ -945,13 +941,7 @@ mod tests {
         let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
         let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
 
-        let pdesc = PacketDesc::new_tcp_with_addr(
-            src_adapter,
-            dst_adapter,
-            12345,
-            80,
-        )
-        .unwrap();
+        let pdesc = PacketDesc::new_tcp_with_addr(src_adapter, dst_adapter, 12345, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap(); // route between the nodes
 
@@ -979,13 +969,7 @@ mod tests {
         let dst: IpAddr = MH_DST.parse().unwrap();
         let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
         let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
-        let pdesc = PacketDesc::new_tcp_with_addr(
-            src_adapter,
-            dst_adapter,
-            12345,
-            80,
-        )
-        .unwrap();
+        let pdesc = PacketDesc::new_tcp_with_addr(src_adapter, dst_adapter, 12345, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
 
@@ -1031,13 +1015,7 @@ mod tests {
         let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
 
         // Reverse packet: dst is the sender, src is the destination.
-        let pdesc = PacketDesc::new_tcp_with_addr(
-            dst_adapter,
-            src_adapter,
-            54321,
-            80,
-        )
-        .unwrap();
+        let pdesc = PacketDesc::new_tcp_with_addr(dst_adapter, src_adapter, 54321, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Reverse);
         let route = asm.topo_mgr.get_best_route(&dst, &src).unwrap();
 
@@ -1076,13 +1054,7 @@ mod tests {
         let dst: IpAddr = MH_DST.parse().unwrap();
         let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
         let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
-        let pdesc = PacketDesc::new_tcp_with_addr(
-            src_adapter,
-            dst_adapter,
-            12345,
-            80,
-        )
-        .unwrap();
+        let pdesc = PacketDesc::new_tcp_with_addr(src_adapter, dst_adapter, 12345, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
 
