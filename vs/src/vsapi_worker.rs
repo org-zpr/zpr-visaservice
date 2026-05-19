@@ -1316,7 +1316,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                 .as_str(),
             );
 
-            return Ok(())
+            return Ok(());
         }
 
         // Have to know what visas the node is actually allowed to know about
