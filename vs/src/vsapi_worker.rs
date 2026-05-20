@@ -1355,11 +1355,13 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                             {
                                 Ok(v) => visas.push(v),
                                 Err(_) => {
-                                    debug!(target: API, "Node requested visa {id} but not found")
+                                    debug!(target: API, "Node {requestor_addr} requested visa {id} but actualization failed")
                                 }
                             };
                         }
-                        _ => debug!(target: API, "Node requested visa {id} but not found"),
+                        _ => {
+                            debug!(target: API, "Node {requestor_addr} requested visa {id} but not found")
+                        }
                     }
                 }
 
