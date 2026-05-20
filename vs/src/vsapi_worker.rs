@@ -1338,12 +1338,28 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
                     .filter(|id| installed_set.contains(id))
                     .collect();
 
-                // Create vec of visas
+                // Create vec of actualized visas
                 let mut visas = Vec::new();
                 for id in filtered_ids.iter() {
-                    match self.asm.visa_mgr.get_visa_by_id(*id).await {
-                        Ok(visa) => visas.push(visa),
-                        Err(_) => (),
+                    match self.asm.visa_mgr.get_visa_with_metadata_by_id(*id).await {
+                        Ok(Some(visa_with_metadata)) => {
+                            match self
+                                .asm
+                                .visa_mgr
+                                .actualize_visa_for_target_node(
+                                    visa_with_metadata.visa,
+                                    requestor_addr,
+                                    visa_with_metadata.metadata.direction,
+                                )
+                                .await
+                            {
+                                Ok(v) => visas.push(v),
+                                Err(_) => {
+                                    debug!(target: API, "Node requested visa {id} but not found")
+                                }
+                            };
+                        }
+                        _ => debug!(target: API, "Node requested visa {id} but not found"),
                     }
                 }
 

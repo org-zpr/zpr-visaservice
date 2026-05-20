@@ -538,13 +538,6 @@ impl VisaMgr {
             Err(e) => Err(ServiceError::from(e)),
         }
     }
-
-    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Visa, ServiceError> {
-        match self.repo.get_visa_by_id(visa_id).await {
-            Ok(visa) => Ok(visa),
-            Err(e) => Err(ServiceError::from(e)),
-        }
-    }
 }
 
 fn ep_from_dir(dir: &Direction) -> EndpointT {
