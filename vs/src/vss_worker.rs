@@ -35,50 +35,59 @@ const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// Minimum (and initial) timeout for a ping RPC call.
 const PING_MIN_TIMEOUT: Duration = Duration::from_secs(1);
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct VssState {
     last_configure: Option<Instant>,
-    last_set_services: Option<Instant>,
-    last_set_topology: Option<Instant>,
-    last_services_update: Instant,
-    last_topology_update: Instant,
+    services_state: AgedState,
+    topology_state: AgedState,
 }
 
 impl VssState {
-    fn default() -> Self {
-        VssState {
-            last_configure: None,
-            last_set_services: None,
-            last_set_topology: None,
-            last_services_update: Instant::now(),
-            last_topology_update: Instant::now(),
-        }
+    fn mark_configured(&mut self) {
+        self.last_configure = Some(Instant::now());
     }
-
     fn needs_set_services(&self) -> bool {
-        self.last_set_services.is_none()
-            || self.last_services_update > self.last_set_services.unwrap()
+        self.services_state.needs_sync()
     }
-
+    fn mark_services_updated(&mut self) {
+        self.services_state.last_update = Instant::now();
+    }
     fn needs_set_topology(&self) -> bool {
-        self.last_set_topology.is_none()
-            || self.last_topology_update > self.last_set_topology.unwrap()
+        self.topology_state.needs_sync()
+    }
+    fn mark_topology_updated(&mut self) {
+        self.topology_state.last_update = Instant::now();
+    }
+    fn mark_services_syncd(&mut self) {
+        self.services_state.mark_syncd();
+    }
+    fn mark_topology_syncd(&mut self) {
+        self.topology_state.mark_syncd();
     }
 }
 
-/// Wrap a Cap'n Proto RPC future with a timeout, mapping errors.
-async fn rpc_with_timeout<F, T>(
-    name: &'static str,
-    duration: Duration,
-    fut: F,
-) -> Result<T, VssSyncError>
-where
-    F: Future<Output = Result<T, capnp::Error>>,
-{
-    match tokio::time::timeout(duration, fut).await {
-        Ok(Ok(result)) => Ok(result),
-        Ok(Err(capnp_err)) => Err(capnp_err.into()),
-        Err(_elapsed) => Err(VssSyncError::Timeout(name.to_string())),
+#[derive(Debug)]
+struct AgedState {
+    last_update: Instant,
+    last_sync: Instant,
+}
+
+impl AgedState {
+    fn needs_sync(&self) -> bool {
+        self.last_sync < self.last_update
+    }
+
+    fn mark_syncd(&mut self) {
+        self.last_sync = Instant::now();
+    }
+}
+
+impl Default for AgedState {
+    fn default() -> Self {
+        Self {
+            last_update: Instant::now(),
+            last_sync: Instant::now(),
+        }
     }
 }
 
@@ -148,8 +157,7 @@ pub async fn vss_worker_loop(
     };
 
     info!(target: VSS, "now connected to VSS at {}", node_addr);
-
-    do_vss_initialization(&mut state, &asm, &node_addr.ip(), &vss_handle).await;
+    do_housekeeping(&mut state, &asm, &node_addr.ip(), &vss_handle).await;
 
     let ping_timeout = tokio::time::sleep(config::VSS_PING_INTERVAL);
     tokio::pin!(ping_timeout);
@@ -271,26 +279,6 @@ async fn do_housekeeping(
     // TODO: Check for pending visas and revocations. And if found, send them.
 }
 
-/// When the vss worker starts up the node expects a couple of calls immediately.
-///
-/// 1. `configure()` to set the params (only AAA prefix for now).
-/// 2. `setServices()` to tell node about the available auth services.
-///
-/// And, if the node is supposed to have peers, we call:
-///
-/// 3. `setTopology()` to tell node about its links.
-///
-async fn do_vss_initialization(
-    state: &mut VssState,
-    asm: &Arc<Assembly>,
-    node_addr: &IpAddr,
-    vss_handle: &v1::v_s_s_handle::Client,
-) {
-    send_configure(state, asm, node_addr, vss_handle).await;
-    send_services(state, asm, node_addr, vss_handle).await;
-    send_topology(state, asm, node_addr, vss_handle).await;
-}
-
 async fn send_configure(
     state: &mut VssState,
     asm: &Arc<Assembly>,
@@ -331,7 +319,7 @@ async fn send_services(
                 asm.counters.incr(CounterType::VssErrors);
             } else {
                 debug!(target: VSS, "initial auth services list sent to VSS at {}", node_addr);
-                state.last_set_services = Some(Instant::now());
+                state.mark_services_syncd();
             }
         }
         Err(e) => {
@@ -357,7 +345,7 @@ async fn send_topology(
         asm.counters.incr(CounterType::VssErrors);
     } else {
         debug!(target: VSS, "initial topology sent to VSS at {}", node_addr);
-        state.last_set_topology = Some(Instant::now());
+        state.mark_topology_syncd();
     }
 }
 
@@ -367,27 +355,15 @@ async fn do_set_services(
 ) -> Result<(), VssSyncError> {
     let mut req = vss_handle.set_services_request();
     let req_builder = req.get();
-
     let mut svc_list_builder = req_builder.init_svcs(services.len() as u32);
     for (i, svc) in services.iter().enumerate() {
         let mut svc_builder = svc_list_builder.reborrow().get(i as u32);
         svc.write_to(&mut svc_builder);
     }
-
     let set_response_rdr =
         rpc_with_timeout("set-services", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
-
     let set_response_ok_or_err = set_response_rdr.get()?;
-
-    match set_response_ok_or_err.get_res().unwrap().which().unwrap() {
-        v1::ok_or_error::Which::Ok(_) => (),
-        v1::ok_or_error::Which::Error(err_rdr) => {
-            let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
-            return Err(VssSyncError::from(api_err));
-        }
-    }
-
-    Ok(())
+    check_ok_or_error(set_response_ok_or_err.get_res().unwrap())
 }
 
 async fn do_configure(
@@ -396,30 +372,15 @@ async fn do_configure(
 ) -> Result<(), VssSyncError> {
     let mut req = vss_handle.configure_request();
     let req_builder = req.get();
-
     let mut params_builder = req_builder.init_params(params.len() as u32);
     for (i, param) in params.iter().enumerate() {
         let mut param_builder = params_builder.reborrow().get(i as u32);
         param.write_to(&mut param_builder);
     }
-
     let configure_response_rdr =
         rpc_with_timeout("configure", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
-
     let configure_response_ok_or_err = configure_response_rdr.get()?;
-
-    match configure_response_ok_or_err
-        .get_res()
-        .unwrap()
-        .which()
-        .unwrap()
-    {
-        v1::ok_or_error::Which::Ok(_) => Ok(()),
-        v1::ok_or_error::Which::Error(err_rdr) => {
-            let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
-            Err(VssSyncError::from(api_err))
-        }
-    }
+    check_ok_or_error(configure_response_ok_or_err.get_res().unwrap())
 }
 
 /// Pass an empty slice to indicate no peers.
@@ -436,19 +397,10 @@ async fn do_set_topology(
         let mut peer_builder = peer_list_builder.reborrow().get(i as u32);
         peer.write_to(&mut peer_builder);
     }
-
     let set_response_rdr =
         rpc_with_timeout("set-topology", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
-
     let set_response_ok_or_err = set_response_rdr.get()?;
-
-    match set_response_ok_or_err.get_res().unwrap().which().unwrap() {
-        v1::ok_or_error::Which::Ok(_) => Ok(()),
-        v1::ok_or_error::Which::Error(err_rdr) => {
-            let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
-            Err(VssSyncError::from(api_err))
-        }
-    }
+    check_ok_or_error(set_response_ok_or_err.get_res().unwrap())
 }
 
 /// Peers from policy may include hostnames. Here we run any hostnames through a
@@ -464,7 +416,6 @@ async fn peers_to_links(peers: &[Peer]) -> Vec<Link> {
                     addr: sock_addr.ip(),
                     port: sock_addr.port(),
                 };
-                //resolved.insert(&peer.link_id, sa);
                 let link = Link {
                     link_id: peer.link_id.clone(),
                     role: LinkRole::Active, // only "active" support at the moment.
@@ -560,4 +511,31 @@ fn tls_connect() -> TlsConnector {
         .with_no_client_auth();
 
     TlsConnector::from(Arc::new(cfg))
+}
+
+/// Wrap a Cap'n Proto RPC future with a timeout, mapping errors.
+async fn rpc_with_timeout<F, T>(
+    name: &'static str,
+    duration: Duration,
+    fut: F,
+) -> Result<T, VssSyncError>
+where
+    F: Future<Output = Result<T, capnp::Error>>,
+{
+    match tokio::time::timeout(duration, fut).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(capnp_err)) => Err(capnp_err.into()),
+        Err(_elapsed) => Err(VssSyncError::Timeout(name.to_string())),
+    }
+}
+
+/// Map a Cap'n Proto ok-or-error reader to a `Result`, converting API errors.
+fn check_ok_or_error(r: v1::ok_or_error::Reader<'_>) -> Result<(), VssSyncError> {
+    match r.which().unwrap() {
+        v1::ok_or_error::Which::Ok(_) => Ok(()),
+        v1::ok_or_error::Which::Error(err_rdr) => {
+            let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
+            Err(VssSyncError::from(api_err))
+        }
+    }
 }
