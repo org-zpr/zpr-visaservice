@@ -43,24 +43,34 @@ struct VssState {
 }
 
 impl VssState {
+    /// Indicates that the initial configuration call was performed.
     fn mark_configured(&mut self) {
         self.last_configure = Some(Instant::now());
     }
+
     fn needs_set_services(&self) -> bool {
         self.services_state.needs_sync()
     }
+
     fn mark_services_updated(&mut self) {
         self.services_state.last_update = Instant::now();
     }
-    fn needs_set_topology(&self) -> bool {
-        self.topology_state.needs_sync()
-    }
-    fn mark_topology_updated(&mut self) {
-        self.topology_state.last_update = Instant::now();
-    }
+
+    /// Indicates we have sent the services list across.
     fn mark_services_syncd(&mut self) {
         self.services_state.mark_syncd();
     }
+
+    fn needs_set_topology(&self) -> bool {
+        self.topology_state.needs_sync()
+    }
+
+    /// If topology effecting this node has been updated, indicate that here.
+    fn mark_topology_updated(&mut self) {
+        self.topology_state.last_update = Instant::now();
+    }
+
+    /// Indicates we have sent the topology information across.
     fn mark_topology_syncd(&mut self) {
         self.topology_state.mark_syncd();
     }
@@ -147,13 +157,14 @@ pub async fn vss_worker_loop(
                             }
                         }
                         VssCmd::SetServices(services, resp_tx) => {
-                            if let Err(e) = resp_tx.send(do_set_services(&vss_handle, services).await) {
+                            state.mark_services_updated();
+                            if let Err(e) = resp_tx.send(vss_do_set_services(&vss_handle, services).await) {
                                 error!(target: VSS, "failed to send response for set-services command: {:?}", e);
                                 asm.counters.incr(CounterType::VssErrors);
                             }
                         }
                         VssCmd::Configure(params, resp_tx) => {
-                            if let Err(e) = resp_tx.send(do_configure(&vss_handle, params).await) {
+                            if let Err(e) = resp_tx.send(vss_do_configure(&vss_handle, params).await) {
                                 error!(target: VSS, "failed to send response for configure command: {:?}", e);
                                 asm.counters.incr(CounterType::VssErrors);
                             }
@@ -289,10 +300,10 @@ async fn send_configure(
         aaa_net.to_string(),
     )];
     debug!(target: VSS, "sending configure to VSS at {node_addr}");
-    match do_configure(vss_handle, params).await {
+    match vss_do_configure(vss_handle, params).await {
         Ok(_) => {
             debug!(target: VSS, "{node_addr} configured successfully");
-            state.last_configure = Some(Instant::now());
+            state.mark_configured();
         }
         Err(e) => {
             warn!(target: VSS, "failed to configure VSS at {node_addr}: {e}");
@@ -310,7 +321,7 @@ async fn send_services(
     match asm.actor_mgr.get_auth_services_list(asm.clone()).await {
         Ok(services) => {
             debug!(target: VSS, "sending initial auth services list to VSS at {}", node_addr);
-            if let Err(e) = do_set_services(&vss_handle, services).await {
+            if let Err(e) = vss_do_set_services(&vss_handle, services).await {
                 error!(target: VSS, "failed to send initial auth services list to VSS at {}: {}", node_addr, e);
                 asm.counters.incr(CounterType::VssErrors);
             } else {
@@ -336,7 +347,7 @@ async fn send_topology(
     drop(cpol);
 
     debug!(target: VSS, "sending initial topology to VSS at {}", node_addr);
-    if let Err(e) = do_set_topology(vss_handle, &links).await {
+    if let Err(e) = vss_do_set_topology(vss_handle, &links).await {
         error!(target: VSS, "failed to send initial topology to VSS at {}: {}", node_addr, e);
         asm.counters.incr(CounterType::VssErrors);
     } else {
@@ -345,90 +356,37 @@ async fn send_topology(
     }
 }
 
-async fn do_set_services(
-    vss_handle: &v1::v_s_s_handle::Client,
-    services: Vec<ServiceDescriptor>,
-) -> Result<(), VssSyncError> {
-    let mut req = vss_handle.set_services_request();
-    let req_builder = req.get();
-    let mut svc_list_builder = req_builder.init_svcs(services.len() as u32);
-    for (i, svc) in services.iter().enumerate() {
-        let mut svc_builder = svc_list_builder.reborrow().get(i as u32);
-        svc.write_to(&mut svc_builder);
-    }
-    let set_response_rdr =
-        rpc_with_timeout("set-services", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
-    let set_response_ok_or_err = set_response_rdr.get()?;
-    check_ok_or_error(set_response_ok_or_err.get_res().unwrap())
-}
-
-async fn do_configure(
-    vss_handle: &v1::v_s_s_handle::Client,
-    params: Vec<Param>,
-) -> Result<(), VssSyncError> {
-    let mut req = vss_handle.configure_request();
-    let req_builder = req.get();
-    let mut params_builder = req_builder.init_params(params.len() as u32);
-    for (i, param) in params.iter().enumerate() {
-        let mut param_builder = params_builder.reborrow().get(i as u32);
-        param.write_to(&mut param_builder);
-    }
-    let configure_response_rdr =
-        rpc_with_timeout("configure", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
-    let configure_response_ok_or_err = configure_response_rdr.get()?;
-    check_ok_or_error(configure_response_ok_or_err.get_res().unwrap())
-}
-
-/// Pass an empty slice to indicate no peers.
-///
-async fn do_set_topology(
-    vss_handle: &v1::v_s_s_handle::Client,
-    peers: &[Link],
-) -> Result<(), VssSyncError> {
-    let mut req = vss_handle.set_topology_request();
-    let req_builder = req.get();
-    let mut peer_list_builder = req_builder.init_links(peers.len() as u32);
-
-    for (i, peer) in peers.iter().enumerate() {
-        let mut peer_builder = peer_list_builder.reborrow().get(i as u32);
-        peer.write_to(&mut peer_builder);
-    }
-    let set_response_rdr =
-        rpc_with_timeout("set-topology", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
-    let set_response_ok_or_err = set_response_rdr.get()?;
-    check_ok_or_error(set_response_ok_or_err.get_res().unwrap())
-}
-
 /// Peers from policy may include hostnames. Here we run any hostnames through a
 /// DNS lookup and create concrete `Link` objects with IP addresses. If any hostname fails
 /// to resolve we just skip that peer and log an error.
 async fn peers_to_links(peers: &[Peer]) -> Vec<Link> {
-    let mut links = Vec::new();
+    // Attempt to parallelize the DNS lookups.
+    let futs = peers
+        .iter()
+        .map(|peer| async move { (peer, resolve_netaddr(&peer.remote_substrate).await) });
 
-    for peer in peers {
-        match resolve_netaddr(&peer.remote_substrate).await {
-            Ok(sock_addr) => {
-                let sa: SockAddr = SockAddr {
+    futures::future::join_all(futs)
+        .await
+        .into_iter()
+        .filter_map(|(peer, result)| match result {
+            Ok(sock_addr) => Some(Link {
+                link_id: peer.link_id.clone(),
+                role: LinkRole::Active, // only "active" support at the moment.
+                peer: SockAddr {
                     addr: sock_addr.ip(),
                     port: sock_addr.port(),
-                };
-                let link = Link {
-                    link_id: peer.link_id.clone(),
-                    role: LinkRole::Active, // only "active" support at the moment.
-                    peer: sa,
-                };
-                links.push(link);
-            }
+                },
+            }),
             Err(e) => {
                 error!(target: VSS, "failed to resolve address for peer {}: {}, skipping peer in topology", peer.link_id, e);
-                continue;
+                None
             }
-        }
-    }
-
-    links
+        })
+        .collect()
 }
 
+/// If the passed `NetAddr` contains a hostname, perform a DNS lookup to resolve it to an IP address.
+/// Otherwise this quickly just returns a SocketAddr.
 async fn resolve_netaddr(naddr: &NetAddr) -> Result<SocketAddr, ResolverError> {
     match &naddr.host {
         NetworkHost::Ip(ip_addr) => Ok(SocketAddr::new(ip_addr.clone(), naddr.port)),
@@ -534,4 +492,58 @@ fn check_ok_or_error(r: v1::ok_or_error::Reader<'_>) -> Result<(), VssSyncError>
             Err(VssSyncError::from(api_err))
         }
     }
+}
+
+async fn vss_do_set_services(
+    vss_handle: &v1::v_s_s_handle::Client,
+    services: Vec<ServiceDescriptor>,
+) -> Result<(), VssSyncError> {
+    let mut req = vss_handle.set_services_request();
+    let req_builder = req.get();
+    let mut svc_list_builder = req_builder.init_svcs(services.len() as u32);
+    for (i, svc) in services.iter().enumerate() {
+        let mut svc_builder = svc_list_builder.reborrow().get(i as u32);
+        svc.write_to(&mut svc_builder);
+    }
+    let set_response_rdr =
+        rpc_with_timeout("set-services", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
+    let set_response_ok_or_err = set_response_rdr.get()?;
+    check_ok_or_error(set_response_ok_or_err.get_res().unwrap())
+}
+
+async fn vss_do_configure(
+    vss_handle: &v1::v_s_s_handle::Client,
+    params: Vec<Param>,
+) -> Result<(), VssSyncError> {
+    let mut req = vss_handle.configure_request();
+    let req_builder = req.get();
+    let mut params_builder = req_builder.init_params(params.len() as u32);
+    for (i, param) in params.iter().enumerate() {
+        let mut param_builder = params_builder.reborrow().get(i as u32);
+        param.write_to(&mut param_builder);
+    }
+    let configure_response_rdr =
+        rpc_with_timeout("configure", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
+    let configure_response_ok_or_err = configure_response_rdr.get()?;
+    check_ok_or_error(configure_response_ok_or_err.get_res().unwrap())
+}
+
+/// Pass an empty slice to indicate no peers.
+///
+async fn vss_do_set_topology(
+    vss_handle: &v1::v_s_s_handle::Client,
+    peers: &[Link],
+) -> Result<(), VssSyncError> {
+    let mut req = vss_handle.set_topology_request();
+    let req_builder = req.get();
+    let mut peer_list_builder = req_builder.init_links(peers.len() as u32);
+
+    for (i, peer) in peers.iter().enumerate() {
+        let mut peer_builder = peer_list_builder.reborrow().get(i as u32);
+        peer.write_to(&mut peer_builder);
+    }
+    let set_response_rdr =
+        rpc_with_timeout("set-topology", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
+    let set_response_ok_or_err = set_response_rdr.get()?;
+    check_ok_or_error(set_response_ok_or_err.get_res().unwrap())
 }
