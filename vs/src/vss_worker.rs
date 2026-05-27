@@ -100,63 +100,17 @@ pub async fn vss_worker_loop(
     // Open connect to VSS.
     info!(target: VSS, "connecting to VSS at {}", node_addr);
 
-    let mut state = VssState::default();
-
-    let sock = match tokio::net::TcpStream::connect(node_addr).await {
-        Ok(sock) => sock,
+    let vss_handle = match vss_connect(node_addr).await {
+        Ok(h) => h,
         Err(e) => {
             error!(target: VSS, "failed to connect to VSS at {}: {}", node_addr, e);
             asm.counters.incr(CounterType::VssErrors);
-            return; // TODO: How to signal manager?
-        }
-    };
-
-    let connector = tls_connect();
-    let tls = connector
-        .connect(node_addr.ip().into(), sock)
-        .await
-        .unwrap();
-    let (reader, writer) = tokio::io::split(tls);
-
-    let network = capnp_rpc::twoparty::VatNetwork::new(
-        tokio::io::BufReader::new(reader).compat(),
-        tokio::io::BufWriter::new(writer).compat_write(),
-        capnp_rpc::rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::new(),
-    );
-
-    let mut rpc_system = capnp_rpc::RpcSystem::new(Box::new(network), None);
-
-    let vss_service: v1::visa_support_service::Client =
-        rpc_system.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server);
-
-    tokio::task::spawn_local(rpc_system);
-
-    let req = vss_service.connect_request();
-
-    let handle_result_rdr =
-        match rpc_with_timeout("connect", DEFAULT_RPC_TIMEOUT, req.send().promise).await {
-            Ok(req_resp) => req_resp,
-            Err(e) => {
-                error!(target: VSS, "VSS connect request failed: {}", e);
-                asm.counters.incr(CounterType::VssErrors);
-                return; // TODO: Signal manager?
-            }
-        };
-
-    let handle_result_ok_or_error = handle_result_rdr.get().unwrap().get_resp().unwrap();
-
-    let vss_handle: v1::v_s_s_handle::Client = match handle_result_ok_or_error.which().unwrap() {
-        v1::result::Which::Ok(vss_handle_obj) => vss_handle_obj.unwrap(),
-        v1::result::Which::Error(err_obj) => {
-            let err_obj = err_obj.unwrap();
-            error!(target: VSS, "VSS connect error: code={:?} msg={:?}", err_obj.get_code(), err_obj.get_message());
-            asm.counters.incr(CounterType::VssErrors);
-            return; // TODO: Signal manager?
+            return;
         }
     };
 
     info!(target: VSS, "now connected to VSS at {}", node_addr);
+    let mut state = VssState::default();
     do_housekeeping(&mut state, &asm, &node_addr.ip(), &vss_handle).await;
 
     let ping_timeout = tokio::time::sleep(config::VSS_PING_INTERVAL);
@@ -256,6 +210,48 @@ pub async fn vss_worker_loop(
                     return;
                 }
             }
+        }
+    }
+}
+
+/// Perform TCP connect, TLS handshake, Cap'n Proto RPC bootstrap, and the initial
+/// connect RPC, returning a ready-to-use VSS handle client.
+async fn vss_connect(node_addr: SocketAddr) -> Result<v1::v_s_s_handle::Client, VssSyncError> {
+    let sock = tokio::net::TcpStream::connect(node_addr)
+        .await
+        .map_err(|e| VssSyncError::Internal(format!("TCP connect: {e}")))?;
+
+    let tls = tls_connect()
+        .connect(node_addr.ip().into(), sock)
+        .await
+        .map_err(|e| VssSyncError::Internal(format!("TLS handshake: {e}")))?;
+
+    let (reader, writer) = tokio::io::split(tls);
+    let network = capnp_rpc::twoparty::VatNetwork::new(
+        tokio::io::BufReader::new(reader).compat(),
+        tokio::io::BufWriter::new(writer).compat_write(),
+        capnp_rpc::rpc_twoparty_capnp::Side::Client,
+        capnp::message::ReaderOptions::new(),
+    );
+    let mut rpc_system = capnp_rpc::RpcSystem::new(Box::new(network), None);
+    let vss_service: v1::visa_support_service::Client =
+        rpc_system.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server);
+    tokio::task::spawn_local(rpc_system);
+
+    let req = vss_service.connect_request();
+    let handle_result_rdr =
+        rpc_with_timeout("connect", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
+
+    let handle_result_ok_or_error = handle_result_rdr.get()?.get_resp()?;
+    match handle_result_ok_or_error.which().unwrap() {
+        v1::result::Which::Ok(vss_handle_obj) => Ok(vss_handle_obj.unwrap()),
+        v1::result::Which::Error(err_obj) => {
+            let err_obj = err_obj.unwrap();
+            Err(VssSyncError::Internal(format!(
+                "VSS rejected connect: code={:?} msg={:?}",
+                err_obj.get_code(),
+                err_obj.get_message(),
+            )))
         }
     }
 }
