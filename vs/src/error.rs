@@ -150,6 +150,15 @@ pub enum TopologyError {
     LinkNotFound(String),
 }
 
+#[derive(Debug, Error)]
+pub enum ResolverError {
+    #[error("no addresses found for {0}")]
+    NoAddresses(String),
+
+    #[error("i/o error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 impl From<ApiResponseError> for VssSyncError {
     fn from(err: ApiResponseError) -> Self {
         VssSyncError::ApiResponse(err.code, err.message, err.retry_in)

@@ -33,7 +33,9 @@ mod topology_mgr;
 mod visa_mgr;
 mod visareq_worker;
 mod vsapi_worker;
+mod vss;
 mod vss_mgr;
+mod vss_worker;
 
 #[cfg(test)]
 mod test_helpers;
