@@ -79,16 +79,16 @@ impl VssState {
 #[derive(Debug)]
 struct AgedState {
     last_update: Instant,
-    last_sync: Instant,
+    last_sync: Option<Instant>,
 }
 
 impl AgedState {
     fn needs_sync(&self) -> bool {
-        self.last_sync < self.last_update
+        self.last_sync.is_none() || self.last_sync.as_ref().unwrap() < &self.last_update
     }
 
     fn mark_syncd(&mut self) {
-        self.last_sync = Instant::now();
+        self.last_sync = Some(Instant::now());
     }
 }
 
@@ -96,7 +96,7 @@ impl Default for AgedState {
     fn default() -> Self {
         Self {
             last_update: Instant::now(),
-            last_sync: Instant::now(),
+            last_sync: None,
         }
     }
 }
