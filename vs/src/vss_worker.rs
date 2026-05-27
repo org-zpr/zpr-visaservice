@@ -547,3 +547,81 @@ async fn vss_do_set_topology(
     let set_response_ok_or_err = set_response_rdr.get()?;
     check_ok_or_error(set_response_ok_or_err.get_res().unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libeval::policy::Peer;
+    use std::net::IpAddr;
+    use zpr::policy_types::{NetAddr, NetworkHost};
+    use zpr::vsapi_types::LinkRole;
+
+    fn ip_peer(link_id: &str, ip: IpAddr, port: u16) -> Peer {
+        Peer {
+            link_id: link_id.to_string(),
+            remote_zpr_addr: "fd5a:5052::1".parse().unwrap(),
+            remote_substrate: NetAddr {
+                host: NetworkHost::Ip(ip),
+                port,
+            },
+        }
+    }
+
+    /// Empty peer slice produces an empty link list.
+    #[tokio::test]
+    async fn test_peers_to_links_empty() {
+        let links = peers_to_links(&[]).await;
+        assert!(links.is_empty());
+    }
+
+    /// A single IP peer maps to a single Link with the correct fields.
+    #[tokio::test]
+    async fn test_peers_to_links_single_ip() {
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let peer = ip_peer("link-a", ip, 4000);
+
+        let links = peers_to_links(&[peer]).await;
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].link_id, "link-a");
+        assert_eq!(links[0].role, LinkRole::Active);
+        assert_eq!(links[0].peer.addr, ip);
+        assert_eq!(links[0].peer.port, 4000);
+    }
+
+    /// Multiple IP peers produce one Link each, in the same order.
+    #[tokio::test]
+    async fn test_peers_to_links_multiple_ips() {
+        let ip_a: IpAddr = "192.0.2.1".parse().unwrap();
+        let ip_b: IpAddr = "192.0.2.2".parse().unwrap();
+        let peers = [ip_peer("link-a", ip_a, 4000), ip_peer("link-b", ip_b, 5000)];
+
+        let links = peers_to_links(&peers).await;
+
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].link_id, "link-a");
+        assert_eq!(links[0].peer.addr, ip_a);
+        assert_eq!(links[1].link_id, "link-b");
+        assert_eq!(links[1].peer.addr, ip_b);
+    }
+
+    /// A peer with an unresolvable hostname is silently dropped; valid IP peers survive.
+    #[tokio::test]
+    async fn test_peers_to_links_bad_hostname_skipped() {
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let good = ip_peer("link-good", ip, 4000);
+        let bad = Peer {
+            link_id: "link-bad".to_string(),
+            remote_zpr_addr: "fd5a:5052::2".parse().unwrap(),
+            remote_substrate: NetAddr {
+                host: NetworkHost::Hostname("this.hostname.does.not.exist.invalid".to_string()),
+                port: 4000,
+            },
+        };
+
+        let links = peers_to_links(&[good, bad]).await;
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].link_id, "link-good");
+    }
+}
