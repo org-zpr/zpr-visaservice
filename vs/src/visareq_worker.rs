@@ -29,7 +29,7 @@ use futures::future::{FutureExt, join_all};
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
 use libeval::eval::EvalContext;
-use libeval::eval_result::{Direction, FinalDeny, FinalEvalResult, Hit, PartialEvalResult};
+use libeval::eval_result::{FinalDeny, FinalEvalResult, Hit, PartialEvalResult};
 use libeval::policy::Policy;
 use libeval::route::Route;
 
@@ -412,12 +412,12 @@ async fn visa_from_allow(
     let direction = hits[0].direction;
     let asm_bg = asm.clone();
     tokio::spawn(async move {
-        distribute_visa_on_path(asm_bg, visawmd, req_node, direction).await;
+        distribute_visa_on_path(asm_bg, visawmd, req_node).await;
     });
 
     let visa = asm
         .visa_mgr
-        .actualize_visa_for_target_node(visa_for_requester, &job.requesting_node, direction)
+        .actualize_visa_for_target_node(visa_for_requester, &job.requesting_node)
         .await?;
 
     Ok(VisaDecision::Allow(visa, allowed_route))
@@ -434,7 +434,6 @@ async fn distribute_visa_on_path(
     asm: Arc<Assembly>,
     visa_with_metadata: VisaWithMetadata,
     requesting_node: IpAddr,
-    direction: Direction,
 ) {
     let issuer_id = visa_with_metadata.visa.issuer_id;
 
@@ -454,7 +453,7 @@ async fn distribute_visa_on_path(
             async move {
                 match asm
                     .visa_mgr
-                    .actualize_visa_for_target_node(onpath_visa, &node_addr, direction)
+                    .actualize_visa_for_target_node(onpath_visa, &node_addr)
                     .await
                 {
                     Ok(onpath_visa) => {

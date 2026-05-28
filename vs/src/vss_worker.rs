@@ -43,6 +43,10 @@ struct VssState {
 }
 
 impl VssState {
+    fn needs_configure(&self) -> bool {
+        self.last_configure.is_none()
+    }
+
     /// Indicates that the initial configuration call was performed.
     fn mark_configured(&mut self) {
         self.last_configure = Some(Instant::now());
@@ -139,7 +143,7 @@ pub async fn vss_worker_loop(
                             break;
                         }
                         VssCmd::PushVisas(visas, resp_tx) => {
-                            if let Err(e) = resp_tx.send(vss_do_push_visas(&vss_handle, visas).await) {
+                            if let Err(e) = resp_tx.send(vss_do_push_visas(&vss_handle, &visas).await) {
                                 error!(target: VSS, "failed to send response for push-visas command: {:?}", e);
                                 asm.counters.incr(CounterType::VssErrors);
                             }
@@ -273,7 +277,7 @@ async fn do_housekeeping(
     node_addr: &IpAddr,
     vss_handle: &v1::v_s_s_handle::Client,
 ) {
-    if state.last_configure.is_none() {
+    if state.needs_configure() {
         send_configure(state, asm, node_addr, vss_handle).await;
     }
     if state.needs_set_services() {
@@ -283,7 +287,38 @@ async fn do_housekeeping(
         send_topology(state, asm, node_addr, vss_handle).await;
     }
 
-    // TODO: Check for pending visas and revocations. And if found, send them.
+    // Now we check for any pending visas for this node.
+    match asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
+        Ok(pending_visas) => {
+            let mut actualized = Vec::new();
+
+            for visa in pending_visas {
+                let issuer_id = visa.issuer_id;
+                match asm
+                    .visa_mgr
+                    .actualize_visa_for_target_node(visa, node_addr)
+                    .await
+                {
+                    Ok(a_visa) => actualized.push(a_visa),
+                    Err(e) => {
+                        error!(target: VSS, "failed to actualize pending visa {issuer_id} for node {}: {}", node_addr, e);
+                    }
+                }
+            }
+
+            if let Err(e) = vss_do_push_visas(vss_handle, &actualized).await {
+                error!(target: VSS, "failed to push pending visas to node {}: {}", node_addr, e);
+            } else {
+                debug!(target: VSS, "successfully pushed {} pending visas to node {}", actualized.len(), node_addr);
+            }
+        }
+        Err(e) => {
+            warn!(target: VSS, "failed to get pending visas for node {}: {}", node_addr, e);
+        }
+    }
+
+    // TODO: Check for pending visa revocations.
+    // TODO: Check for pending authentication revocations.
 }
 
 async fn send_configure(
@@ -498,7 +533,7 @@ fn check_ok_or_error(r: v1::ok_or_error::Reader<'_>) -> Result<(), VssSyncError>
 /// Treats zero visas processed as an error.
 async fn vss_do_push_visas(
     vss_handle: &v1::v_s_s_handle::Client,
-    visas: Vec<Visa>,
+    visas: &[Visa],
 ) -> Result<usize, VssSyncError> {
     let mut req = vss_handle.push_visa_op_request();
     let req_builder = req.get();
