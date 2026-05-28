@@ -15,7 +15,7 @@ use tracing::{debug, error, info, trace, warn};
 use zpr::policy_types::{NetAddr, NetworkHost};
 use zpr::vsapi::v1;
 use zpr::vsapi_types::{
-    ApiResponseError, Link, LinkRole, Param, ServiceDescriptor, SockAddr, pname,
+    ApiResponseError, Link, LinkRole, Param, ServiceDescriptor, SockAddr, Visa, pname,
 };
 use zpr::write_to::WriteTo;
 
@@ -138,8 +138,8 @@ pub async fn vss_worker_loop(
                             info!(target: VSS, "stop called on VSS worker for {}", node_addr);
                             break;
                         }
-                        VssCmd::PushVisas(_visas, resp_tx) => {
-                            if let Err(e) = resp_tx.send(Err(VssSyncError::Internal("push-visas not implemented".to_string()))) {
+                        VssCmd::PushVisas(visas, resp_tx) => {
+                            if let Err(e) = resp_tx.send(vss_do_push_visas(&vss_handle, visas).await) {
                                 error!(target: VSS, "failed to send response for push-visas command: {:?}", e);
                                 asm.counters.incr(CounterType::VssErrors);
                             }
@@ -491,6 +491,47 @@ fn check_ok_or_error(r: v1::ok_or_error::Reader<'_>) -> Result<(), VssSyncError>
             let api_err = ApiResponseError::try_from(err_rdr.unwrap())?;
             Err(VssSyncError::from(api_err))
         }
+    }
+}
+
+/// Performt he VSS push_visas call, returns the number of visas positively ack'd by node.
+/// Treats zero visas processed as an error.
+async fn vss_do_push_visas(
+    vss_handle: &v1::v_s_s_handle::Client,
+    visas: Vec<Visa>,
+) -> Result<usize, VssSyncError> {
+    let mut req = vss_handle.push_visa_op_request();
+    let req_builder = req.get();
+    let mut ops_list_builder = req_builder.init_ops(visas.len() as u32);
+
+    // A VisaOp is either a Grant or a Revoke; these are all GRANTs here.
+    for (i, visa) in visas.iter().enumerate() {
+        let op_builder = ops_list_builder.reborrow().get(i as u32);
+        let mut grant_builder = op_builder.init_grant();
+        visa.write_to(&mut grant_builder);
+    }
+
+    let push_response_rdr =
+        rpc_with_timeout("push-visas", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
+
+    // Response is an Ack struct (TODO: Add this to the vsapi types in zpr-common)
+    let ack_response = push_response_rdr.get()?.get_ack()?;
+    if ack_response.get_ok() {
+        // At least one visa was processed. In this case we return the number processed and
+        // log the error (if any).
+        let processed = ack_response.get_processed() as usize;
+        if processed < visas.len() {
+            let err_rdr = ack_response.get_error()?;
+            let err_obj = ApiResponseError::try_from(err_rdr)?;
+            error!(target: VSS, "push-visas partially succeeded: {} of {} processed, error code={:?} msg={}",
+            processed, visas.len(), err_obj.code, err_obj.message);
+        }
+        return Ok(processed);
+    } else {
+        // No visas were processed.  Return error or zero ?? Not sure.
+        let err_rdr = ack_response.get_error()?;
+        let err_obj = ApiResponseError::try_from(err_rdr)?;
+        return Err(err_obj.into());
     }
 }
 
