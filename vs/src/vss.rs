@@ -13,6 +13,7 @@ pub type VssSetServicesResponse = Result<(), VssSyncError>;
 pub type VssConfigureResponse = Result<(), VssSyncError>;
 
 // Each API call is expressed as a message using this enum.
+#[allow(dead_code)]
 pub enum VssCmd {
     Stop(),
     PushVisas(Vec<Visa>, oneshot::Sender<VssPushResponse>),

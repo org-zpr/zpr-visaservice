@@ -163,7 +163,6 @@ impl VisaMgr {
         // Start with any visas that may already be pending.
         if let Ok(pendings) = self.get_pending_visas_for_node(node_addr).await {
             for v in pendings {
-                let md = self.repo.get_visa_metadata_by_id(v.issuer_id).await?;
                 let av = self.actualize_visa_for_target_node(v, node_addr).await?;
                 visas.push(av);
             }
@@ -551,6 +550,7 @@ impl VisaMgr {
 
     /// Get just the visa metadata using the visa ID.
     /// Returns None if not found.
+    #[allow(dead_code)]
     pub async fn get_visa_metadata_by_id(
         &self,
         visa_id: u64,

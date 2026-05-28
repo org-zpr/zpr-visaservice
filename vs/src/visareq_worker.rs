@@ -409,7 +409,6 @@ async fn visa_from_allow(
     // Clone the visa for the requesting node before moving visawmd into the background task.
     let visa_for_requester = visawmd.visa.clone();
     let req_node = job.requesting_node;
-    let direction = hits[0].direction;
     let asm_bg = asm.clone();
     tokio::spawn(async move {
         distribute_visa_on_path(asm_bg, visawmd, req_node).await;
@@ -419,7 +418,6 @@ async fn visa_from_allow(
         .visa_mgr
         .actualize_visa_for_target_node(visa_for_requester, &job.requesting_node)
         .await?;
-
     Ok(VisaDecision::Allow(visa, allowed_route))
 }
 

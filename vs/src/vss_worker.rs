@@ -65,11 +65,14 @@ impl VssState {
         self.services_state.mark_syncd();
     }
 
+    /// TODO: This is not yet tracking policy changes. So only returns TRUE first time it is created.
     fn needs_set_topology(&self) -> bool {
         self.topology_state.needs_sync()
     }
 
     /// If topology effecting this node has been updated, indicate that here.
+    /// TODO: Not used yet.
+    #[allow(dead_code)]
     fn mark_topology_updated(&mut self) {
         self.topology_state.last_update = Instant::now();
     }
@@ -277,21 +280,34 @@ async fn do_housekeeping(
     node_addr: &IpAddr,
     vss_handle: &v1::v_s_s_handle::Client,
 ) {
+    // Currently these three items are all onoly part of intiial VSS connection.
+    // Once they are sent, they are not sent again.
     if state.needs_configure() {
         send_configure(state, asm, node_addr, vss_handle).await;
     }
     if state.needs_set_services() {
-        send_services(state, asm, node_addr, vss_handle).await;
+        send_auth_services(state, asm, node_addr, vss_handle).await;
     }
     if state.needs_set_topology() {
         send_topology(state, asm, node_addr, vss_handle).await;
     }
 
-    // Now we check for any pending visas for this node.
+    send_pending_visas(asm, node_addr, vss_handle).await;
+
+    // TODO: Check for pending visa revocations.
+    // TODO: Check for pending authentication revocations.
+}
+
+/// If there are pending visas for this node, use VSS api to send them over.
+/// Update DB state if we are successful.
+async fn send_pending_visas(
+    asm: &Assembly,
+    node_addr: &IpAddr,
+    vss_handle: &v1::v_s_s_handle::Client,
+) {
     match asm.visa_mgr.get_pending_visas_for_node(node_addr).await {
         Ok(pending_visas) => {
             let mut actualized = Vec::new();
-
             for visa in pending_visas {
                 let issuer_id = visa.issuer_id;
                 match asm
@@ -305,20 +321,41 @@ async fn do_housekeeping(
                     }
                 }
             }
+            if !actualized.is_empty() {
+                match vss_do_push_visas(vss_handle, &actualized).await {
+                    Ok(processed) => {
+                        // Update our state for the processed visas.
+                        // TODO: Need to consider that housekeeping will run frequently, possibly bombarding
+                        // nodes that for some reason are not accepting visas. Not sure correct solution yet.
+                        for (i, pushed) in actualized.iter().enumerate() {
+                            if i >= processed {
+                                break;
+                            }
+                            if let Err(e) = asm
+                                .visa_mgr
+                                .visa_installed(pushed.issuer_id, &node_addr)
+                                .await
+                            {
+                                // TODO: Means it will be attempt to be installed next housekeeping run.
+                                warn!(target: VSS,
+                                    "error marking visa {} as installed for node {node_addr}: {e}", pushed.issuer_id
+                                );
+                            }
+                        }
 
-            if let Err(e) = vss_do_push_visas(vss_handle, &actualized).await {
-                error!(target: VSS, "failed to push pending visas to node {}: {}", node_addr, e);
-            } else {
-                debug!(target: VSS, "successfully pushed {} pending visas to node {}", actualized.len(), node_addr);
+                        debug!(target: VSS, "successfully pushed {} pending visas to node {}", actualized.len(), node_addr);
+                    }
+                    Err(e) => {
+                        error!(target: VSS, "failed to push {} pending visas to node {}: {}", actualized.len(), node_addr, e);
+                        return;
+                    }
+                }
             }
         }
         Err(e) => {
             warn!(target: VSS, "failed to get pending visas for node {}: {}", node_addr, e);
         }
     }
-
-    // TODO: Check for pending visa revocations.
-    // TODO: Check for pending authentication revocations.
 }
 
 async fn send_configure(
@@ -347,7 +384,7 @@ async fn send_configure(
     }
 }
 
-async fn send_services(
+async fn send_auth_services(
     state: &mut VssState,
     asm: &Arc<Assembly>,
     node_addr: &IpAddr,
