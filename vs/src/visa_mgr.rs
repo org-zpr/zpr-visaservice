@@ -7,6 +7,7 @@ use tracing::{debug, error, warn};
 use crate::assembly::Assembly;
 use crate::config;
 use crate::db;
+use crate::db::VisaMetadata;
 use crate::error::{ServiceError, StoreError};
 use crate::logging::targets::VISA;
 use crate::packet::make_fivetuple_tcp;
@@ -36,6 +37,12 @@ enum VCtx {
     Ingress,
     Intermediary,
     Egress,
+}
+
+impl VisaWithMetadata {
+    pub fn new(visa: Visa, metadata: db::VisaMetadata) -> Self {
+        VisaWithMetadata { visa, metadata }
+    }
 }
 
 impl VisaMgr {
@@ -293,7 +300,7 @@ impl VisaMgr {
         route: &Route,
         source_zpl: impl Into<String>,
         policy_version: u64,
-    ) -> Result<Visa, ServiceError> {
+    ) -> Result<VisaWithMetadata, ServiceError> {
         let expiration_time = std::time::SystemTime::now()
             .checked_add(config::DEFAULT_VISA_EXPIRATION)
             .ok_or_else(|| {
@@ -397,11 +404,11 @@ impl VisaMgr {
 
         // The store also updates the visa state along the path.
         self.repo
-            .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
+            .store_visa(&visa, metadata.clone(), db::NodeVisaState::PendingInstall)
             .await?;
 
         info!("created visa {visa_id}");
-        Ok(visa)
+        Ok(VisaWithMetadata::new(visa, metadata))
     }
 
     pub async fn get_pending_visas_for_node(
@@ -528,6 +535,19 @@ impl VisaMgr {
                 Err(StoreError::NotFound(_)) => Ok(None),
                 Err(e) => Err(ServiceError::from(e)),
             },
+            Err(StoreError::NotFound(_)) => Ok(None),
+            Err(e) => Err(ServiceError::from(e)),
+        }
+    }
+
+    /// Get just the visa metadata using the visa ID.
+    /// Returns None if not found.
+    pub async fn get_visa_metadata_by_id(
+        &self,
+        visa_id: u64,
+    ) -> Result<Option<VisaMetadata>, ServiceError> {
+        match self.repo.get_visa_metadata_by_id(visa_id).await {
+            Ok(md) => Ok(Some(md)),
             Err(StoreError::NotFound(_)) => Ok(None),
             Err(e) => Err(ServiceError::from(e)),
         }
@@ -945,7 +965,7 @@ mod tests {
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap(); // route between the nodes
 
-        let visa = asm
+        let visawmd = asm
             .visa_mgr
             .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
             .await
@@ -954,7 +974,7 @@ mod tests {
         let metadata = asm
             .visa_mgr
             .repo
-            .get_visa_metadata_by_id(visa.issuer_id)
+            .get_visa_metadata_by_id(visawmd.visa.issuer_id)
             .await
             .unwrap();
         assert_eq!(metadata.path, Some(vec![src, mid, dst]));
@@ -973,13 +993,13 @@ mod tests {
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
 
-        let visa = asm
+        let visawmd = asm
             .visa_mgr
             .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
             .await
             .unwrap();
 
-        let visa_id = visa.issuer_id;
+        let visa_id = visawmd.visa.issuer_id;
         let pending_src = asm.visa_mgr.get_pending_visas_for_node(&src).await.unwrap();
         let pending_mid = asm.visa_mgr.get_pending_visas_for_node(&mid).await.unwrap();
         let pending_dst = asm.visa_mgr.get_pending_visas_for_node(&dst).await.unwrap();
@@ -1019,7 +1039,7 @@ mod tests {
         let hit = Hit::new_no_signal(0, Direction::Reverse);
         let route = asm.topo_mgr.get_best_route(&dst, &src).unwrap();
 
-        let visa = asm
+        let visawmd = asm
             .visa_mgr
             .create_visa(&asm, &dst, &pdesc, &hit, &route, "", 0)
             .await
@@ -1028,7 +1048,7 @@ mod tests {
         // dst is the ingress for reverse traffic; it must get fwd_pep pointing to mid.
         let actualized = asm
             .visa_mgr
-            .actualize_visa_for_target_node(visa, &dst, Direction::Reverse)
+            .actualize_visa_for_target_node(visawmd.visa.clone(), &dst, Direction::Reverse)
             .await
             .unwrap();
 
@@ -1058,7 +1078,7 @@ mod tests {
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
 
-        let visa = asm
+        let visawmd = asm
             .visa_mgr
             .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
             .await
@@ -1066,7 +1086,7 @@ mod tests {
 
         let actualized = asm
             .visa_mgr
-            .actualize_visa_for_target_node(visa, &src, Direction::Forward)
+            .actualize_visa_for_target_node(visawmd.visa.clone(), &src, Direction::Forward)
             .await
             .unwrap();
 
