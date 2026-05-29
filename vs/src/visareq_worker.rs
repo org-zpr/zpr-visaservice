@@ -828,6 +828,7 @@ mod tests {
         asm_inner
             .policy_mgr
             .update_policy(make_policy_with_auth_service("svc:auth"))
+            .await
             .unwrap();
 
         let asm = Arc::new(asm_inner);
@@ -890,6 +891,7 @@ mod tests {
         asm_inner
             .policy_mgr
             .update_policy(make_policy_with_auth_service("svc:auth"))
+            .await
             .unwrap();
 
         let asm = Arc::new(asm_inner);
@@ -963,6 +965,7 @@ mod tests {
 
         asm.policy_mgr
             .update_policy(make_policy_with_auth_service("svc:auth"))
+            .await
             .unwrap();
 
         Arc::new(asm)

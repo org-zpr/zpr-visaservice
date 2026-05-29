@@ -63,6 +63,9 @@ pub enum ServiceError {
 
     #[error("topology error: {0}")]
     Topology(#[from] TopologyError),
+
+    #[error("resolver error: {0}")]
+    Resolver(#[from] ResolverError),
 }
 
 #[derive(Debug, Error)]

@@ -12,19 +12,14 @@ use tokio_rustls::TlsConnector;
 use tokio_util::compat::*;
 use tracing::{debug, error, info, trace, warn};
 
-use zpr::policy_types::{NetAddr, NetworkHost};
 use zpr::vsapi::v1;
-use zpr::vsapi_types::{
-    ApiResponseError, Link, LinkRole, Param, ServiceDescriptor, SockAddr, Visa, pname,
-};
+use zpr::vsapi_types::{ApiResponseError, Link, Param, ServiceDescriptor, Visa, pname};
 use zpr::write_to::WriteTo;
-
-use libeval::policy::Peer;
 
 use crate::assembly::Assembly;
 use crate::config;
 use crate::counters::CounterType;
-use crate::error::{ResolverError, VssSyncError};
+use crate::error::VssSyncError;
 use crate::logging::targets::VSS;
 use crate::net_mgr;
 use crate::vss::VssCmd;
@@ -414,8 +409,7 @@ async fn send_topology(
     vss_handle: &v1::v_s_s_handle::Client,
 ) {
     let cpol = asm.policy_mgr.get_current();
-    let peers = cpol.get_peers_for_node(node_addr);
-    let links = peers_to_links(peers.unwrap_or(&[])).await;
+    let links = asm.policy_mgr.resolved_links_for_node(node_addr);
     drop(cpol);
 
     debug!(target: VSS, "sending initial topology to VSS at {}", node_addr);
@@ -425,49 +419,6 @@ async fn send_topology(
     } else {
         debug!(target: VSS, "initial topology sent to VSS at {}", node_addr);
         state.mark_topology_syncd();
-    }
-}
-
-/// Peers from policy may include hostnames. Here we run any hostnames through a
-/// DNS lookup and create concrete `Link` objects with IP addresses. If any hostname fails
-/// to resolve we just skip that peer and log an error.
-async fn peers_to_links(peers: &[Peer]) -> Vec<Link> {
-    // Attempt to parallelize the DNS lookups.
-    let futs = peers
-        .iter()
-        .map(|peer| async move { (peer, resolve_netaddr(&peer.remote_substrate).await) });
-
-    futures::future::join_all(futs)
-        .await
-        .into_iter()
-        .filter_map(|(peer, result)| match result {
-            Ok(sock_addr) => Some(Link {
-                link_id: peer.link_id.clone(),
-                role: LinkRole::Active, // only "active" support at the moment.
-                peer: SockAddr {
-                    addr: sock_addr.ip(),
-                    port: sock_addr.port(),
-                },
-            }),
-            Err(e) => {
-                error!(target: VSS, "failed to resolve address for peer {}: {}, skipping peer in topology", peer.link_id, e);
-                None
-            }
-        })
-        .collect()
-}
-
-/// If the passed `NetAddr` contains a hostname, perform a DNS lookup to resolve it to an IP address.
-/// Otherwise this quickly just returns a SocketAddr.
-async fn resolve_netaddr(naddr: &NetAddr) -> Result<SocketAddr, ResolverError> {
-    match &naddr.host {
-        NetworkHost::Ip(ip_addr) => Ok(SocketAddr::new(ip_addr.clone(), naddr.port)),
-        NetworkHost::Hostname(hostname) => {
-            let mut addrs = tokio::net::lookup_host((hostname.as_str(), naddr.port)).await?;
-            addrs
-                .next()
-                .ok_or_else(|| ResolverError::NoAddresses(hostname.clone()))
-        }
     }
 }
 
@@ -659,82 +610,4 @@ async fn vss_do_set_topology(
         rpc_with_timeout("set-topology", DEFAULT_RPC_TIMEOUT, req.send().promise).await?;
     let set_response_ok_or_err = set_response_rdr.get()?;
     check_ok_or_error(set_response_ok_or_err.get_res().unwrap())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use libeval::policy::Peer;
-    use std::net::IpAddr;
-    use zpr::policy_types::{NetAddr, NetworkHost};
-    use zpr::vsapi_types::LinkRole;
-
-    fn ip_peer(link_id: &str, ip: IpAddr, port: u16) -> Peer {
-        Peer {
-            link_id: link_id.to_string(),
-            remote_zpr_addr: "fd5a:5052::1".parse().unwrap(),
-            remote_substrate: NetAddr {
-                host: NetworkHost::Ip(ip),
-                port,
-            },
-        }
-    }
-
-    /// Empty peer slice produces an empty link list.
-    #[tokio::test]
-    async fn test_peers_to_links_empty() {
-        let links = peers_to_links(&[]).await;
-        assert!(links.is_empty());
-    }
-
-    /// A single IP peer maps to a single Link with the correct fields.
-    #[tokio::test]
-    async fn test_peers_to_links_single_ip() {
-        let ip: IpAddr = "192.0.2.1".parse().unwrap();
-        let peer = ip_peer("link-a", ip, 4000);
-
-        let links = peers_to_links(&[peer]).await;
-
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].link_id, "link-a");
-        assert_eq!(links[0].role, LinkRole::Active);
-        assert_eq!(links[0].peer.addr, ip);
-        assert_eq!(links[0].peer.port, 4000);
-    }
-
-    /// Multiple IP peers produce one Link each, in the same order.
-    #[tokio::test]
-    async fn test_peers_to_links_multiple_ips() {
-        let ip_a: IpAddr = "192.0.2.1".parse().unwrap();
-        let ip_b: IpAddr = "192.0.2.2".parse().unwrap();
-        let peers = [ip_peer("link-a", ip_a, 4000), ip_peer("link-b", ip_b, 5000)];
-
-        let links = peers_to_links(&peers).await;
-
-        assert_eq!(links.len(), 2);
-        assert_eq!(links[0].link_id, "link-a");
-        assert_eq!(links[0].peer.addr, ip_a);
-        assert_eq!(links[1].link_id, "link-b");
-        assert_eq!(links[1].peer.addr, ip_b);
-    }
-
-    /// A peer with an unresolvable hostname is silently dropped; valid IP peers survive.
-    #[tokio::test]
-    async fn test_peers_to_links_bad_hostname_skipped() {
-        let ip: IpAddr = "192.0.2.1".parse().unwrap();
-        let good = ip_peer("link-good", ip, 4000);
-        let bad = Peer {
-            link_id: "link-bad".to_string(),
-            remote_zpr_addr: "fd5a:5052::2".parse().unwrap(),
-            remote_substrate: NetAddr {
-                host: NetworkHost::Hostname("this.hostname.does.not.exist.invalid".to_string()),
-                port: 4000,
-            },
-        };
-
-        let links = peers_to_links(&[good, bad]).await;
-
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].link_id, "link-good");
-    }
 }
