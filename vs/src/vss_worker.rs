@@ -408,9 +408,7 @@ async fn send_topology(
     node_addr: &IpAddr,
     vss_handle: &v1::v_s_s_handle::Client,
 ) {
-    let cpol = asm.policy_mgr.get_current();
     let links = asm.policy_mgr.resolved_links_for_node(node_addr);
-    drop(cpol);
 
     debug!(target: VSS, "sending initial topology to VSS at {}", node_addr);
     if let Err(e) = vss_do_set_topology(vss_handle, &links).await {

@@ -41,19 +41,19 @@ const LINK_COST_ATTR_KEY: &str = "link.zpr.cost";
 /// The default and the minimum.
 const DEFAULT_LINK_COST: u32 = 1;
 
+/// Combined policy and resolved topology — swapped atomically as a unit.
+struct PolicyState {
+    policy: Arc<Policy>,
+    links_by_node: HashMap<IpAddr, Vec<Link>>,
+}
+
 #[allow(dead_code)]
 pub struct PolicyMgr {
-    inner: ArcSwap<Policy>,
-    resolved_topology: ArcSwap<ResolvedTopology>,
+    state: ArcSwap<PolicyState>,
     repo: db::PolicyRepo,
     /// Serializes concurrent policy updates; reads remain lock-free via ArcSwap.
     update_lock: tokio::sync::Mutex<()>,
     resolver: PolicyResolver,
-}
-
-struct ResolvedTopology {
-    vinst: u64,
-    links_by_node: HashMap<IpAddr, Vec<Link>>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,23 +96,29 @@ impl PolicyMgr {
 
         let presolver = PolicyResolver::new(resolver);
 
-        let resolved = presolver.resolve_topology(&policy).await?;
+        let links_by_node = presolver.resolve_topology(&policy).await?;
         let _db_updated = repo.set_current_policy(&policy, false).await?;
 
         debug!(target: MAIN, "policy manager initialized successfully");
         Ok(PolicyMgr {
-            inner: ArcSwap::from_pointee(policy),
-            resolved_topology: ArcSwap::from_pointee(resolved),
+            state: ArcSwap::from_pointee(PolicyState {
+                policy: Arc::new(policy),
+                links_by_node,
+            }),
             repo,
             update_lock: tokio::sync::Mutex::new(()),
             resolver: presolver,
         })
     }
 
-    /// Create a new policy manager, initializing it with the current policy in the database. If there is no
-    /// policy in the database, this will return an error.
+    /// Create a new policy manager, initializing it with the current policy in
+    /// the database. If there is no policy in the database, this will return an
+    /// error.  This will also run DNS on the policy so if there are any DNS
+    /// issues with the peer hostnames (or if DNS is required and is not
+    /// working) this will fail.
     ///
-    /// If the policy contains hostnames and DNS is not working, this returns an error.
+    /// If the policy contains hostnames and DNS is not working, this returns an
+    /// error.
     pub async fn new_from_state(
         repo: db::PolicyRepo,
         resolver: Arc<dyn DnsResolver>,
@@ -125,20 +131,16 @@ impl PolicyMgr {
 
         let presolver = PolicyResolver::new(resolver);
 
-        // TODO: dump the resolved stuff into state too.
-        let resolved = presolver.resolve_topology(&policy).await?;
+        let links_by_node = presolver.resolve_topology(&policy).await?;
         Ok(PolicyMgr {
-            inner: ArcSwap::from_pointee(policy),
-            resolved_topology: ArcSwap::from_pointee(resolved),
+            state: ArcSwap::from_pointee(PolicyState {
+                policy: Arc::new(policy),
+                links_by_node,
+            }),
             repo,
             update_lock: tokio::sync::Mutex::new(()),
             resolver: presolver,
         })
-    }
-
-    /// Callers should drop the policy as quickly as possible to avoid missing a policy update.
-    pub fn get_current(&self) -> Arc<Policy> {
-        self.inner.load_full()
     }
 
     /// Update the current policy.  The new policy will be assigned a new version instance number (vinst)
@@ -151,20 +153,38 @@ impl PolicyMgr {
         let _guard = self.update_lock.lock().await;
 
         let mut new_policy = new_policy;
-        new_policy.set_vinst(self.inner.load().vinst() + 1);
+        new_policy.set_vinst(self.state.load().policy.vinst() + 1);
 
-        let resolved = self.resolver.resolve_topology(&new_policy).await?;
+        let links_by_node = self.resolver.resolve_topology(&new_policy).await?;
 
-        self.resolved_topology.store(Arc::new(resolved));
-        self.inner.store(Arc::new(new_policy));
+        self.state.store(Arc::new(PolicyState {
+            policy: Arc::new(new_policy),
+            links_by_node,
+        }));
         Ok(())
     }
 
-    /// When policy is updated, all the peer tables have their DNS names resolved and cached
-    /// here along with the policy.
+    /// Callers should drop the policy as quickly as possible to avoid missing a policy update.
+    ///
+    /// Currently there is no way to get a consistent view of policy AND the node resolution cache.
+    /// If we find we need that we can add a snapshot mechanism.
+    pub fn get_current(&self) -> Arc<Policy> {
+        self.state.load().policy.clone()
+    }
+
+    /// When policy is updated, all the peer tables have their DNS names resolved and cached.
+    /// Use this to get the links specified by policy for a node.
+    ///
+    /// Currently there is no way to get a consistent view of policy AND the node resolution cache.
+    /// If we find we need that we can add a snapshot mechanism.
+    ///
     pub fn resolved_links_for_node(&self, node: &IpAddr) -> Vec<Link> {
-        let topo = self.resolved_topology.load_full();
-        topo.links_by_node.get(node).cloned().unwrap_or_default()
+        self.state
+            .load()
+            .links_by_node
+            .get(node)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Consult policy to get a description of the link between `node_a` and `node_b`.
@@ -208,7 +228,10 @@ impl PolicyResolver {
         PolicyResolver { resolver }
     }
 
-    async fn resolve_topology(&self, policy: &Policy) -> Result<ResolvedTopology, ResolverError> {
+    async fn resolve_topology(
+        &self,
+        policy: &Policy,
+    ) -> Result<HashMap<IpAddr, Vec<Link>>, ResolverError> {
         let mut links_by_node: HashMap<IpAddr, Vec<Link>> = HashMap::new();
         for node_addr in policy.all_peered_nodes() {
             if let Some(peers) = policy.get_peers_for_node(&node_addr) {
@@ -216,10 +239,7 @@ impl PolicyResolver {
                 links_by_node.insert(node_addr, links);
             }
         }
-        Ok(ResolvedTopology {
-            vinst: policy.vinst(),
-            links_by_node,
-        })
+        Ok(links_by_node)
     }
 
     /// Peers from policy may include hostnames. Here we run any hostnames through a
