@@ -12,6 +12,7 @@
 //! accessible by concurrent threads.
 
 use arc_swap::ArcSwap;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -27,6 +28,13 @@ use crate::db;
 use crate::error::{ResolverError, ServiceError, TopologyError};
 use crate::logging::targets::MAIN;
 
+/// Abstracts DNS hostname resolution so it can be swapped out in tests.
+#[async_trait]
+pub trait DnsResolver: Send + Sync {
+    /// Resolve `host` to a `SocketAddr` on the given `port`.
+    async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, ResolverError>;
+}
+
 // TODO: move to libeval::attribute::key
 const LINK_COST_ATTR_KEY: &str = "link.zpr.cost";
 
@@ -40,6 +48,7 @@ pub struct PolicyMgr {
     repo: db::PolicyRepo,
     /// Serializes concurrent policy updates; reads remain lock-free via ArcSwap.
     update_lock: tokio::sync::Mutex<()>,
+    resolver: PolicyResolver,
 }
 
 struct ResolvedTopology {
@@ -52,6 +61,19 @@ pub struct LinkDescription {
     pub link_id: String,
     pub attrs: Vec<Attribute>,
     pub cost: u32,
+}
+
+/// Production resolver that uses the OS/system resolver via `tokio::net::lookup_host`.
+pub struct SystemResolver;
+
+#[async_trait]
+impl DnsResolver for SystemResolver {
+    async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, ResolverError> {
+        let mut addrs = tokio::net::lookup_host((host, port)).await?;
+        addrs
+            .next()
+            .ok_or_else(|| ResolverError::NoAddresses(host.to_string()))
+    }
 }
 
 impl PolicyMgr {
@@ -67,11 +89,14 @@ impl PolicyMgr {
     pub async fn new_with_initial_policy(
         mut policy: Policy,
         repo: db::PolicyRepo,
+        resolver: Arc<dyn DnsResolver>,
     ) -> Result<Self, ServiceError> {
         debug!(target: MAIN, "initializing policy manager");
         policy.set_vinst(1);
 
-        let resolved = resolve_topology(&policy).await?;
+        let presolver = PolicyResolver::new(resolver);
+
+        let resolved = presolver.resolve_topology(&policy).await?;
         let _db_updated = repo.set_current_policy(&policy, false).await?;
 
         debug!(target: MAIN, "policy manager initialized successfully");
@@ -80,6 +105,7 @@ impl PolicyMgr {
             resolved_topology: ArcSwap::from_pointee(resolved),
             repo,
             update_lock: tokio::sync::Mutex::new(()),
+            resolver: presolver,
         })
     }
 
@@ -87,20 +113,26 @@ impl PolicyMgr {
     /// policy in the database, this will return an error.
     ///
     /// If the policy contains hostnames and DNS is not working, this returns an error.
-    pub async fn new_from_state(repo: db::PolicyRepo) -> Result<Self, ServiceError> {
+    pub async fn new_from_state(
+        repo: db::PolicyRepo,
+        resolver: Arc<dyn DnsResolver>,
+    ) -> Result<Self, ServiceError> {
         debug!(target: MAIN, "initializing policy manager from state");
         let policy = repo.get_current_policy().await?;
         info!(target: MAIN, "loaded policy from state version:{}, created:{}", policy.get_version().unwrap_or(0),
             policy.get_created().unwrap_or("unknown").to_string());
         debug!(target: MAIN, "policy manager initialized successfully");
 
+        let presolver = PolicyResolver::new(resolver);
+
         // TODO: dump the resolved stuff into state too.
-        let resolved = resolve_topology(&policy).await?;
+        let resolved = presolver.resolve_topology(&policy).await?;
         Ok(PolicyMgr {
             inner: ArcSwap::from_pointee(policy),
             resolved_topology: ArcSwap::from_pointee(resolved),
             repo,
             update_lock: tokio::sync::Mutex::new(()),
+            resolver: presolver,
         })
     }
 
@@ -121,7 +153,7 @@ impl PolicyMgr {
         let mut new_policy = new_policy;
         new_policy.set_vinst(self.inner.load().vinst() + 1);
 
-        let resolved = resolve_topology(&new_policy).await?;
+        let resolved = self.resolver.resolve_topology(&new_policy).await?;
 
         self.resolved_topology.store(Arc::new(resolved));
         self.inner.store(Arc::new(new_policy));
@@ -167,56 +199,67 @@ impl PolicyMgr {
     }
 }
 
-async fn resolve_topology(policy: &Policy) -> Result<ResolvedTopology, ResolverError> {
-    let mut links_by_node: HashMap<IpAddr, Vec<Link>> = HashMap::new();
-    for node_addr in policy.all_peered_nodes() {
-        if let Some(peers) = policy.get_peers_for_node(&node_addr) {
-            let links = peers_to_links(peers).await?;
-            links_by_node.insert(node_addr, links);
-        }
-    }
-    Ok(ResolvedTopology {
-        vinst: policy.vinst(),
-        links_by_node,
-    })
+pub struct PolicyResolver {
+    resolver: Arc<dyn DnsResolver>,
 }
 
-/// Peers from policy may include hostnames. Here we run any hostnames through a
-/// DNS lookup and create concrete `Link` objects with IP addresses. Returns an error
-/// if any peer's address fails to resolve.
-async fn peers_to_links(peers: &[Peer]) -> Result<Vec<Link>, ResolverError> {
-    // Parallelize the DNS lookups then check for the first error.
-    let futs = peers
-        .iter()
-        .map(|peer| async move { (peer, resolve_netaddr(&peer.remote_substrate).await) });
+impl PolicyResolver {
+    pub fn new(resolver: Arc<dyn DnsResolver>) -> Self {
+        PolicyResolver { resolver }
+    }
 
-    futures::future::join_all(futs)
-        .await
-        .into_iter()
-        .map(|(peer, result)| {
-            result.map(|sock_addr| Link {
-                link_id: peer.link_id.clone(),
-                role: LinkRole::Active, // only "active" support at the moment.
-                peer: SockAddr {
-                    addr: sock_addr.ip(),
-                    port: sock_addr.port(),
-                },
-            })
+    async fn resolve_topology(&self, policy: &Policy) -> Result<ResolvedTopology, ResolverError> {
+        let mut links_by_node: HashMap<IpAddr, Vec<Link>> = HashMap::new();
+        for node_addr in policy.all_peered_nodes() {
+            if let Some(peers) = policy.get_peers_for_node(&node_addr) {
+                let links = self.peers_to_links(peers).await?;
+                links_by_node.insert(node_addr, links);
+            }
+        }
+        Ok(ResolvedTopology {
+            vinst: policy.vinst(),
+            links_by_node,
         })
-        .collect()
+    }
+
+    /// Peers from policy may include hostnames. Here we run any hostnames through a
+    /// DNS lookup and create concrete `Link` objects with IP addresses. Returns an error
+    /// if any peer's address fails to resolve.
+    async fn peers_to_links(&self, peers: &[Peer]) -> Result<Vec<Link>, ResolverError> {
+        // Parallelize the DNS lookups then check for the first error.
+        let futs = peers.iter().map(|peer| async move {
+            (
+                peer,
+                resolve_netaddr(&peer.remote_substrate, self.resolver.as_ref()).await,
+            )
+        });
+
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .map(|(peer, result)| {
+                result.map(|sock_addr| Link {
+                    link_id: peer.link_id.clone(),
+                    role: LinkRole::Active, // only "active" support at the moment.
+                    peer: SockAddr {
+                        addr: sock_addr.ip(),
+                        port: sock_addr.port(),
+                    },
+                })
+            })
+            .collect()
+    }
 }
 
 /// If the passed `NetAddr` contains a hostname, perform a DNS lookup to resolve it to an IP address.
 /// Otherwise this quickly just returns a SocketAddr.
-async fn resolve_netaddr(naddr: &NetAddr) -> Result<SocketAddr, ResolverError> {
+async fn resolve_netaddr(
+    naddr: &NetAddr,
+    resolver: &dyn DnsResolver,
+) -> Result<SocketAddr, ResolverError> {
     match &naddr.host {
-        NetworkHost::Ip(ip_addr) => Ok(SocketAddr::new(ip_addr.clone(), naddr.port)),
-        NetworkHost::Hostname(hostname) => {
-            let mut addrs = tokio::net::lookup_host((hostname.as_str(), naddr.port)).await?;
-            addrs
-                .next()
-                .ok_or_else(|| ResolverError::NoAddresses(hostname.clone()))
-        }
+        NetworkHost::Ip(ip_addr) => Ok(SocketAddr::new(*ip_addr, naddr.port)),
+        NetworkHost::Hostname(hostname) => resolver.resolve(hostname, naddr.port).await,
     }
 }
 
@@ -268,6 +311,7 @@ mod tests {
     use zpr::write_to::WriteTo;
 
     use crate::db::{FakeDb, PolicyRepo};
+    use crate::test_helpers::FakeResolver;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -300,7 +344,7 @@ mod tests {
     async fn make_policy_mgr(policy: Policy) -> PolicyMgr {
         let db = Arc::new(FakeDb::new());
         let repo = PolicyRepo::new(db);
-        PolicyMgr::new_with_initial_policy(policy, repo)
+        PolicyMgr::new_with_initial_policy(policy, repo, Arc::new(FakeResolver::ip_only()))
             .await
             .unwrap()
     }
@@ -452,7 +496,8 @@ mod tests {
     /// Empty peer slice produces an empty link list.
     #[tokio::test]
     async fn test_peers_to_links_empty() {
-        let links = peers_to_links(&[]).await.unwrap();
+        let presolver = PolicyResolver::new(Arc::new(FakeResolver::ip_only()));
+        let links = presolver.peers_to_links(&[]).await.unwrap();
         assert!(links.is_empty());
     }
 
@@ -461,8 +506,9 @@ mod tests {
     async fn test_peers_to_links_single_ip() {
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
         let peer = ip_peer("link-a", ip, 4000);
+        let presolver = PolicyResolver::new(Arc::new(FakeResolver::ip_only()));
 
-        let links = peers_to_links(&[peer]).await.unwrap();
+        let links = presolver.peers_to_links(&[peer]).await.unwrap();
 
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].link_id, "link-a");
@@ -477,8 +523,9 @@ mod tests {
         let ip_a: IpAddr = "192.0.2.1".parse().unwrap();
         let ip_b: IpAddr = "192.0.2.2".parse().unwrap();
         let peers = [ip_peer("link-a", ip_a, 4000), ip_peer("link-b", ip_b, 5000)];
+        let presolver = PolicyResolver::new(Arc::new(FakeResolver::ip_only()));
 
-        let links = peers_to_links(&peers).await.unwrap();
+        let links = presolver.peers_to_links(&peers).await.unwrap();
 
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].link_id, "link-a");
@@ -488,6 +535,7 @@ mod tests {
     }
 
     /// A peer with an unresolvable hostname causes peers_to_links to return an error.
+    /// FakeResolver has no entries, so any hostname lookup returns NoAddresses.
     #[tokio::test]
     async fn test_peers_to_links_bad_hostname_errors() {
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
@@ -496,13 +544,41 @@ mod tests {
             link_id: "link-bad".to_string(),
             remote_zpr_addr: "fd5a:5052::2".parse().unwrap(),
             remote_substrate: NetAddr {
-                host: NetworkHost::Hostname("this.hostname.does.not.exist.invalid".to_string()),
+                host: NetworkHost::Hostname("some.unresolvable.host".to_string()),
                 port: 4000,
             },
         };
+        let presolver = PolicyResolver::new(Arc::new(FakeResolver::ip_only()));
 
-        let result = peers_to_links(&[good, bad]).await;
+        let result = presolver.peers_to_links(&[good, bad]).await;
 
         assert!(result.is_err());
+    }
+
+    /// A hostname peer is resolved to the expected IP address via the FakeResolver.
+    #[tokio::test]
+    async fn test_peers_to_links_hostname_resolved() {
+        let resolved_ip: IpAddr = "192.0.2.99".parse().unwrap();
+        let peer = Peer {
+            link_id: "link-h".to_string(),
+            remote_zpr_addr: "fd5a:5052::10".parse().unwrap(),
+            remote_substrate: NetAddr {
+                host: NetworkHost::Hostname("peer.example.com".to_string()),
+                port: 5000,
+            },
+        };
+        let mut entries = HashMap::new();
+        entries.insert(
+            ("peer.example.com".to_string(), 5000),
+            SocketAddr::new(resolved_ip, 5000),
+        );
+        let presolver = PolicyResolver::new(Arc::new(FakeResolver::new(entries)));
+
+        let links = presolver.peers_to_links(&[peer]).await.unwrap();
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].link_id, "link-h");
+        assert_eq!(links[0].peer.addr, resolved_ip);
+        assert_eq!(links[0].peer.port, 5000);
     }
 }
