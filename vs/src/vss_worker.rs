@@ -103,7 +103,9 @@ impl Default for AgedState {
     }
 }
 
-// Run-loop for a thread that manages a VSS connection to a node.
+/// Run-loop for a thread that manages a VSS connection to a node.
+///
+/// `node_addr` is the nodes ZPR address and the socket that its VSS is listening on.
 pub async fn vss_worker_loop(
     asm: Arc<Assembly>,
     node_addr: SocketAddr,
