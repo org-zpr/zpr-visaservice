@@ -271,6 +271,14 @@ impl ActorMgr {
         }
     }
 
+    /// Returns only the CN for the actor at the given ZPR address, without loading the full actor.
+    pub async fn get_cn_by_zpr_addr(&self, zpra: &IpAddr) -> Result<String, ServiceError> {
+        match self.actor_db.get_cn_by_zpr_addr(zpra).await {
+            Ok(cn) => Ok(cn),
+            Err(e) => Err(ServiceError::from(e)),
+        }
+    }
+
     pub async fn get_actor_by_cn(&self, cn: &str) -> Result<Option<Actor>, ServiceError> {
         match self.actor_db.get_actor_by_cn(cn).await {
             Ok(actor) => Ok(Some(actor)),

@@ -43,8 +43,8 @@ use crate::logging::targets::ADMIN;
 
 use admin_api_types::{
     ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry,
-    ListEntry, NamedListEntry, NodeRecordBrief, PolicyBundle, Revokes, ServiceDescriptor,
-    VisaDescriptor,
+    ListEntry, NamedListEntry, NetworkDetails, NodeConnections, NodeRecordBrief, PolicyBundle,
+    Revokes, ServiceDescriptor, VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.
@@ -172,6 +172,7 @@ fn admin_app(state: SharedState) -> Router {
         .route("/admin/authrevoke/{capture}", post(add_revoke))
         .route("/admin/authrevoke/clear", post(clear_revokes))
         .route("/admin/authrevoke/{capture}", delete(remove_revoke))
+        .route("/admin/network", get(get_network))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
@@ -671,6 +672,52 @@ async fn add_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
 
     let le = ListEntry { id: 0 };
     (StatusCode::OK, Json(le)).into_response()
+}
+
+async fn get_network(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+) -> Result<Json<NetworkDetails>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    info!(target: ADMIN, "GET /admin/network");
+    let rstate = state.read().await;
+
+    let node_addrs = match rstate.asm.actor_mgr.list_node_addrs().await {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            error!(target: ADMIN, "Error {} getting node list", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let mut network: Vec<NodeConnections> = Vec::new();
+
+    for node_addr in node_addrs {
+        let node = match rstate.asm.actor_mgr.get_cn_by_zpr_addr(&node_addr).await {
+            Ok(cn) => cn,
+            Err(e) => {
+                error!(target: ADMIN, "error {} getting CN for node with addr {}", e, node_addr);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+
+        let mut connections: Vec<String> = Vec::new();
+        for peer_addr in rstate.asm.topo_mgr.get_peers(&node_addr) {
+            match rstate.asm.actor_mgr.get_cn_by_zpr_addr(&peer_addr).await {
+                Ok(cn) => connections.push(cn),
+                Err(e) => {
+                    error!(target: ADMIN, "error {} getting CN for peer with addr {}", e, peer_addr);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        }
+
+        network.push(NodeConnections { node, connections });
+    }
+
+    Ok(Json(NetworkDetails { network }))
 }
 
 fn to_api_attribute(attr: &Attribute) -> ApiAttribute {

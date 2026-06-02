@@ -513,6 +513,26 @@ impl ActorRepo {
         Ok(actor)
     }
 
+    /// Returns only the CN for the actor at the given ZPR address, without loading the full actor.
+    ///
+    /// Returns `StoreError::NotFound` if no actor exists for the address or the actor has no CN attribute.
+    pub async fn get_cn_by_zpr_addr(&self, zpra: &IpAddr) -> Result<String, StoreError> {
+        let base_key = actor_key_for(zpra);
+        let exists: bool = self.db.exists(&base_key).await?;
+        if !exists {
+            return Err(StoreError::NotFound(format!("actor not found: {}", zpra)));
+        }
+        let mut attrs = self.get_actor_attrs(zpra, &[key::CN]).await?;
+        if attrs.is_empty() {
+            return Err(StoreError::NotFound(format!("actor at {} has no CN", zpra)));
+        }
+        let cn_attr = attrs.remove(0);
+        match cn_attr.get_single_value() {
+            Ok(cn_val) => Ok(cn_val.to_string()),
+            Err(_) => Ok(cn_attr.get_value_as_string()),
+        }
+    }
+
     /// Look up actor by CN attribute. Uses our cache.
     ///
     /// ## Errors
