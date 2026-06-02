@@ -121,6 +121,20 @@ impl NodeRepo {
         Ok(())
     }
 
+    /// Get the last seen time for the node, if recorded.
+    pub async fn get_last_seen_time(
+        &self,
+        node_zpr_addr: &IpAddr,
+    ) -> Result<Option<SystemTime>, StoreError> {
+        let Some(ts_str) = self.db.get(&lastseen_key_for_node(node_zpr_addr)).await? else {
+            return Ok(None);
+        };
+        let dt = chrono::DateTime::parse_from_rfc3339(&ts_str).map_err(|e| {
+            StoreError::InvalidData(format!("failed to parse last-seen timestamp: {}", e))
+        })?;
+        Ok(Some(SystemTime::from(dt)))
+    }
+
     /// Add state that an adapter is connected to a node.
     pub async fn add_connected_adater(
         &self,

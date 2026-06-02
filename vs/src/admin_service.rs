@@ -498,6 +498,7 @@ async fn build_node_record_brief(
     let counters = asm.counters.clone();
     let actor_mgr = asm.actor_mgr.clone();
     let visa_mgr = &asm.visa_mgr;
+    let topo_mgr = &asm.topo_mgr;
 
     let zpr_addr = match actor.get_zpr_addr() {
         Some(addr) => addr,
@@ -505,6 +506,10 @@ async fn build_node_record_brief(
     };
     let pending_install = visa_mgr
         .get_num_pending_install_visas(zpr_addr)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let last_contact = actor_mgr
+        .get_node_last_seen(zpr_addr)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let visa_requests = counters
@@ -521,7 +526,15 @@ async fn build_node_record_brief(
         .get_adapter_cns_connected_to_node(zpr_addr)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    // TODO I don't think we have connected nodes yet, since we don't yet have multi-node
+    let mut links: Vec<String> = Vec::new();
+    for peer_addr in topo_mgr.get_peers(zpr_addr) {
+        match actor_mgr.get_cn_by_zpr_addr(&peer_addr).await {
+            Ok(cn) => links.push(cn),
+            Err(e) => {
+                warn!(target: ADMIN, "error {} getting CN for peer with addr {}", e, peer_addr);
+            }
+        }
+    }
     let visas = visa_mgr
         .get_installed_visa_ids_for_node(zpr_addr)
         .await
@@ -545,7 +558,7 @@ async fn build_node_record_brief(
 
     Ok(NodeRecordBrief {
         pending_install,
-        last_contact: None, // TODO don't think we currently store last contact
+        last_contact,
         visa_requests,
         connect_requests: 0, // TODO blocked on tracking calls to authorize_connect
         in_sync,
@@ -553,7 +566,7 @@ async fn build_node_record_brief(
         denied_vreqs,
         last_vreq,
         adapters,
-        links: Vec::new(), // TODO blocked on multi-node support
+        links,
         visas,
         visas_enqueued,
         pending_revocation,
@@ -708,8 +721,7 @@ async fn get_network(
             match rstate.asm.actor_mgr.get_cn_by_zpr_addr(&peer_addr).await {
                 Ok(cn) => connections.push(cn),
                 Err(e) => {
-                    error!(target: ADMIN, "error {} getting CN for peer with addr {}", e, peer_addr);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    warn!(target: ADMIN, "error {} getting CN for peer with addr {}", e, peer_addr);
                 }
             }
         }

@@ -178,6 +178,13 @@ impl ActorMgr {
         Ok(())
     }
 
+    pub async fn get_node_last_seen(
+        &self,
+        node_addr: &IpAddr,
+    ) -> Result<Option<SystemTime>, ServiceError> {
+        Ok(self.node_db.get_last_seen_time(node_addr).await?)
+    }
+
     /// Update vss socket for given node in the DB.
     pub async fn set_node_vss(
         &self,
