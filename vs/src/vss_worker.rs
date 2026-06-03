@@ -8,6 +8,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 use tokio_rustls::TlsConnector;
 use tokio_util::compat::*;
 use tracing::{debug, error, info, trace, warn};
@@ -56,8 +57,8 @@ impl VssState {
     }
 
     /// Indicates we have sent the services list across.
-    fn mark_services_syncd(&mut self) {
-        self.services_state.mark_syncd();
+    fn mark_services_synced(&mut self) {
+        self.services_state.mark_synced();
     }
 
     /// TODO: This is not yet tracking policy changes. So only returns TRUE first time it is created.
@@ -73,8 +74,8 @@ impl VssState {
     }
 
     /// Indicates we have sent the topology information across.
-    fn mark_topology_syncd(&mut self) {
-        self.topology_state.mark_syncd();
+    fn mark_topology_synced(&mut self) {
+        self.topology_state.mark_synced();
     }
 }
 
@@ -89,7 +90,7 @@ impl AgedState {
         self.last_sync.is_none() || self.last_sync.as_ref().unwrap() < &self.last_update
     }
 
-    fn mark_syncd(&mut self) {
+    fn mark_synced(&mut self) {
         self.last_sync = Some(Instant::now());
     }
 }
@@ -132,6 +133,7 @@ pub async fn vss_worker_loop(
     let mut ping_failures = 0;
 
     let mut heartbeat = tokio::time::interval(config::VSS_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -324,10 +326,7 @@ async fn send_pending_visas(
                         // Update our state for the processed visas.
                         // TODO: Need to consider that housekeeping will run frequently, possibly bombarding
                         // nodes that for some reason are not accepting visas. Not sure correct solution yet.
-                        for (i, pushed) in actualized.iter().enumerate() {
-                            if i >= processed {
-                                break;
-                            }
+                        for pushed in actualized.iter().take(processed) {
                             if let Err(e) = asm
                                 .visa_mgr
                                 .visa_installed(pushed.issuer_id, &node_addr)
@@ -395,7 +394,7 @@ async fn send_auth_services(
                 asm.counters.incr(CounterType::VssErrors);
             } else {
                 debug!(target: VSS, "initial auth services list sent to VSS at {}", node_addr);
-                state.mark_services_syncd();
+                state.mark_services_synced();
             }
         }
         Err(e) => {
@@ -418,7 +417,7 @@ async fn send_topology(
         asm.counters.incr(CounterType::VssErrors);
     } else {
         debug!(target: VSS, "initial topology sent to VSS at {}", node_addr);
-        state.mark_topology_syncd();
+        state.mark_topology_synced();
     }
 }
 

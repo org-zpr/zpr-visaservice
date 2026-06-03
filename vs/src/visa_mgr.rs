@@ -93,21 +93,16 @@ impl VisaMgr {
                 // We already know path is at least 2 so there is a forwarding instruction.
                 // We are ingress so we are at one end of the path, so next hop is trivial.
                 let next_hop = if path.first().unwrap() == target_node {
-                    path.get(1)
+                    path[1]
                 } else {
-                    path.get(path.len() - 2)
+                    path[path.len() - 2]
                 };
-                if let Some(next_hop) = next_hop {
-                    let fwd_pep = FwdPep {
-                        next_hop: *next_hop,
-                        style: FwdPepStyle::OneWay, // TODO: Not sure when to set this to symmetric.
-                    };
-                    visa.fwd_pep = Some(fwd_pep);
-                    return Ok(visa);
-                } else {
-                    error!(target: VISA, "error actualizing visa for ingress node {target_node} using context {vctx:?} on path {path:?}: no next_hop found");
-                    return Err(ServiceError::Internal(format!("failed to actualize visa")));
-                }
+                let fwd_pep = FwdPep {
+                    next_hop: next_hop,
+                    style: FwdPepStyle::OneWay, // TODO: Not sure when to set this to symmetric.
+                };
+                visa.fwd_pep = Some(fwd_pep);
+                return Ok(visa);
             }
             VCtx::Egress => {
                 // Just return the full visa.
@@ -583,12 +578,14 @@ fn to_forwarding_visa(mut visa: Visa, fwd_pep: FwdPep) -> Visa {
 /// Returns the adjacent node after `target_node` in `path`, stepping forward or backward
 /// according to the specified ingress node.
 ///
-/// `ingress_node` must be either the first or last node in the path.
+/// ### Panics
+/// - if `ingress_node` is not either the first or last node in the path.
 fn next_hop_in_path<'a>(
     path: &'a [IpAddr],
     target_node: &IpAddr,
     ingress_node: &IpAddr,
 ) -> Option<&'a IpAddr> {
+    assert!(path.first()? == ingress_node || path.last()? == ingress_node);
     let pos = path.iter().position(|n| n == target_node)?;
     if path.first()? == ingress_node {
         path.get(pos + 1)
@@ -626,6 +623,15 @@ mod tests {
     }
 
     #[test]
+    fn test_next_hop_one_elem() {
+        let n0 = "fd5a:5052::1".parse().unwrap();
+        let n1 = "fd5a:5052::2".parse().unwrap();
+        let path = vec![n0];
+        assert_eq!(next_hop_in_path(&path, &n0, &n0), None);
+        assert_eq!(next_hop_in_path(&path, &n1, &n0), None);
+    }
+
+    #[test]
     fn test_next_hop_two_elem() {
         let n0 = "fd5a:5052::1".parse().unwrap();
         let n1 = "fd5a:5052::2".parse().unwrap();
@@ -652,9 +658,6 @@ mod tests {
         assert_eq!(next_hop_in_path(&path, &n2, &n2), Some(&n1));
 
         assert_eq!(next_hop_in_path(&path, &unknown, &n2), None);
-        assert_eq!(next_hop_in_path(&path, &n0, &unknown), None);
-
-        assert_eq!(next_hop_in_path(&path, &n0, &n1), None);
     }
 
     #[tokio::test]
