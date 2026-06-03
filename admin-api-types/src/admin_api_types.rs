@@ -641,7 +641,7 @@ pub struct NodeConnections {
 impl fmt::Display for NetworkDetails {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.network.is_empty() {
-            println!("No network")
+            writeln!(f, "No network")?;
         }
         for node in &self.network {
             writeln!(

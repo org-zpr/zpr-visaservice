@@ -532,6 +532,7 @@ async fn build_node_record_brief(
             Ok(cn) => links.push(cn),
             Err(e) => {
                 warn!(target: ADMIN, "error {} getting CN for peer with addr {}", e, peer_addr);
+                links.push(format!("cn_missing:{}", peer_addr))
             }
         }
     }
@@ -722,6 +723,7 @@ async fn get_network(
                 Ok(cn) => connections.push(cn),
                 Err(e) => {
                     warn!(target: ADMIN, "error {} getting CN for peer with addr {}", e, peer_addr);
+                    connections.push(format!("cn_missing:{}", peer_addr))
                 }
             }
         }
@@ -1259,5 +1261,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_get_network_empty() {
+        // No nodes
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/network")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let details: NetworkDetails = serde_json::from_slice(&body).unwrap();
+        assert!(details.network.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_network_one_node_no_peers() {
+        // One node with no links
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+
+        let addr: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let actor = make_node_actor_defexp("fd5a:5052::10", "node-a", "[fd5a:5052::100]:1234");
+        asm.actor_mgr.add_node(&actor, false).await.unwrap();
+        asm.topo_mgr.add_node(addr).unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/network")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let details: NetworkDetails = serde_json::from_slice(&body).unwrap();
+        assert_eq!(details.network.len(), 1);
+        assert_eq!(details.network[0].node, "node-a");
+        assert!(details.network[0].connections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_network_two_nodes_linked() {
+        // Two nodes linked to each other
+        use libeval::route::LinkId;
+
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+
+        let addr_a: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let addr_b: IpAddr = "fd5a:5052::11".parse().unwrap();
+        let actor_a = make_node_actor_defexp("fd5a:5052::10", "node-a", "[fd5a:5052::100]:1234");
+        let actor_b = make_node_actor_defexp("fd5a:5052::11", "node-b", "[fd5a:5052::101]:1234");
+
+        asm.actor_mgr.add_node(&actor_a, false).await.unwrap();
+        asm.actor_mgr.add_node(&actor_b, false).await.unwrap();
+        asm.topo_mgr.add_node(addr_a).unwrap();
+        asm.topo_mgr.add_node(addr_b).unwrap();
+        asm.topo_mgr
+            .add_link(addr_a, addr_b, LinkId("link-ab".into()), vec![], 1)
+            .unwrap();
+
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/network")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let details: NetworkDetails = serde_json::from_slice(&body).unwrap();
+        assert_eq!(details.network.len(), 2);
+
+        let mut network = details.network;
+        network.sort_by(|a, b| a.node.cmp(&b.node));
+        assert_eq!(network[0].node, "node-a");
+        assert_eq!(network[0].connections, vec!["node-b".to_string()]);
+        assert_eq!(network[1].node, "node-b");
+        assert_eq!(network[1].connections, vec!["node-a".to_string()]);
     }
 }

@@ -848,4 +848,49 @@ mod test {
 
         assert_eq!(adapter_services, vec!["svc:three".to_string()]);
     }
+
+    #[tokio::test]
+    async fn test_get_cn_by_zpr_addr_returns_cn() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+        let actor = make_actor_defexp(&[
+            (key::ROLE, ROLE_NODE),
+            (key::CN, "my-node"),
+            (key::ZPR_ADDR, "fd5a:5052::10"),
+        ]);
+        repo.add_actor(&actor).await.unwrap();
+
+        let addr: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let cn = repo.get_cn_by_zpr_addr(&addr).await.unwrap();
+        assert_eq!(cn, "my-node");
+    }
+
+    #[tokio::test]
+    async fn test_get_cn_by_zpr_addr_not_found() {
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+
+        let addr: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let err = repo.get_cn_by_zpr_addr(&addr).await.unwrap_err();
+        assert!(matches!(err, StoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_cn_by_zpr_addr_matches_get_actor_get_cn() {
+        //  Both get_cn_by_zpr_addr and get_actor_by_zpr_addr().get_cn() must return the same CN.
+        let db = Arc::new(FakeDb::new());
+        let repo = ActorRepo::new(db);
+        let actor = make_actor_defexp(&[
+            (key::ROLE, ROLE_NODE),
+            (key::CN, "roundtrip-node"),
+            (key::ZPR_ADDR, "fd5a:5052::10"),
+        ]);
+        repo.add_actor(&actor).await.unwrap();
+
+        let addr: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let cn_direct = repo.get_cn_by_zpr_addr(&addr).await.unwrap();
+        let loaded = repo.get_actor_by_zpr_addr(&addr).await.unwrap();
+        let cn_via_actor = loaded.get_cn().unwrap();
+        assert_eq!(cn_direct, cn_via_actor);
+    }
 }
