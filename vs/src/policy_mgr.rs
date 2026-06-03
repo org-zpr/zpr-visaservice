@@ -234,9 +234,9 @@ impl PolicyResolver {
     ) -> Result<HashMap<IpAddr, Vec<Link>>, ResolverError> {
         let mut links_by_node: HashMap<IpAddr, Vec<Link>> = HashMap::new();
         for node_addr in policy.all_peered_nodes() {
-            if let Some(peers) = policy.get_peers_for_node(&node_addr) {
+            if let Some(peers) = policy.get_peers_for_node(node_addr) {
                 let links = self.peers_to_links(peers).await?;
-                links_by_node.insert(node_addr, links);
+                links_by_node.insert(*node_addr, links);
             }
         }
         Ok(links_by_node)

@@ -260,12 +260,9 @@ impl Policy {
             .map(|v| v.as_slice())
     }
 
-    /// Returns list of node addresses that have peers (or empty vec).
-    pub fn all_peered_nodes(&self) -> Vec<IpAddr> {
-        match &self.peer_table {
-            Some(table) => table.keys().copied().collect(),
-            None => Vec::new(),
-        }
+    /// Returns an iterator over node addresses that have peers (empty if none).
+    pub fn all_peered_nodes(&self) -> impl Iterator<Item = &IpAddr> + '_ {
+        self.peer_table.iter().flat_map(|table| table.keys())
     }
 
     /// A link may have attributes on it, this returns them.
