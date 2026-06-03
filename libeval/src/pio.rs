@@ -17,10 +17,43 @@ impl fmt::Display for Version {
     }
 }
 
+pub fn load_policy_from_container(
+    policy_container_bytes: &[u8],
+    min_version: &Version,
+) -> Result<Policy, PolicyError> {
+    let container_reader = capnp::serialize::read_message(
+        policy_container_bytes.reader(),
+        capnp::message::ReaderOptions::new(),
+    )?;
+
+    let container = container_reader.get_root::<policy_capnp::policy_container::Reader>()?;
+
+    // Version check: container compiler major version must be >= min_version.major
+
+    let comp_version = Version(
+        container.get_zplc_ver_major(),
+        container.get_zplc_ver_minor(),
+        container.get_zplc_ver_patch(),
+    );
+
+    check_version(&comp_version, &min_version)?;
+
+    if !container.has_policy() {
+        return Err(PolicyError::PolicyFileError(
+            "policy container missing policy data".to_string(),
+        ));
+    }
+
+    let policy_bytes = container.get_policy().unwrap();
+    let p = Policy::new_from_policy_bytes(Bytes::copy_from_slice(policy_bytes))?;
+    info!(target: PIO, "loaded policy created by compiler version {comp_version}");
+    Ok(p)
+}
+
 /// Load policy from file. Checks the version of the compiler against the passed
 /// minimum version.  This will not allow loading policies if the major version
 /// is not the same as specified in the minimum version.
-pub fn load_policy(fpath: &Path, min_version: Version) -> Result<Policy, PolicyError> {
+pub fn load_policy(fpath: &Path, min_version: &Version) -> Result<Policy, PolicyError> {
     let encoded = std::fs::read(fpath)?;
     let encoded_container_bytes = Bytes::from(encoded);
 
@@ -39,7 +72,7 @@ pub fn load_policy(fpath: &Path, min_version: Version) -> Result<Policy, PolicyE
         container.get_zplc_ver_patch(),
     );
 
-    check_version(&comp_version, &min_version)?;
+    check_version(&comp_version, min_version)?;
 
     if !container.has_policy() {
         return Err(PolicyError::PolicyFileError(

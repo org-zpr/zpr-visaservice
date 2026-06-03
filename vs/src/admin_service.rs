@@ -1,11 +1,7 @@
 //! HTTPS admin service implementation.
-
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-
-use libeval::attribute::{Attribute, ROLE_NODE, key};
-use tracing::{debug, error, info, warn};
 
 use axum::{
     Extension,
@@ -27,12 +23,14 @@ use tower_service::Service;
 
 use zpr::vsapi_types::{DockPepType, KeyFormat, KeySet, Visa};
 
+use libeval::attribute::{Attribute, ROLE_NODE, key};
 use rustls::ServerConfig;
 use rustls::pki_types::PrivateKeyDer;
 use serde::Deserialize;
 use std::time::SystemTime;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use tracing::{debug, error, info, warn};
 
 use crate::admin_apikeys::Permission;
 use crate::apikey::ApiKey;
@@ -40,6 +38,7 @@ use crate::assembly::Assembly;
 use crate::counters::CounterType;
 use crate::db::Role;
 use crate::logging::targets::ADMIN;
+use crate::policy_mgr::DEFAULT_POLICY_ID;
 
 use admin_api_types::{
     ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry,
@@ -223,44 +222,110 @@ fn two_elem_list() -> impl IntoResponse {
     (StatusCode::OK, Json(vec![le0, le1])).into_response()
 }
 
-async fn get_policies() -> impl IntoResponse {
+/// TODO: Placeholder - Only returnd ID(0) which is for the current policy.
+async fn get_policies(
+    Extension(perm): Extension<Permission>,
+) -> Result<Json<ListEntry>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
     debug!(target: ADMIN, "GET /admin/policies");
-    two_elem_list()
-}
-
-async fn get_policy(EPath(id): EPath<String>) -> impl IntoResponse {
-    debug!(target: ADMIN, "GET /admin/policies/{}", id);
-    let pb = PolicyBundle {
-        config_id: 0,
-        version: "v".to_string(),
-        format: "f".to_string(),
-        container: "c".to_string(),
+    let le = ListEntry {
+        id: DEFAULT_POLICY_ID,
     };
-
-    (StatusCode::OK, Json(pb)).into_response()
+    Ok(Json(le))
 }
 
-async fn get_curr_policy() -> impl IntoResponse {
+/// TODO: Handle multiple policis. Right now only accepts ID(0).
+async fn get_policy(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+    EPath(id): EPath<u64>,
+) -> Result<Json<PolicyBundle>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    debug!(target: ADMIN, "GET /admin/policies/{id}");
+    get_policy_by_id(&state.read().await.asm, id).await
+}
+
+async fn get_curr_policy(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+) -> Result<Json<PolicyBundle>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
     debug!(target: ADMIN, "GET /admin/policies/curr");
-    let pb = PolicyBundle {
-        config_id: 0,
-        version: "v".to_string(),
-        format: "f".to_string(),
-        container: "c".to_string(),
-    };
-
-    (StatusCode::OK, Json(pb)).into_response()
+    get_policy_by_id(&state.read().await.asm, DEFAULT_POLICY_ID).await
 }
 
-async fn install_policy(EJson(_body): EJson<PolicyBundle>) -> impl IntoResponse {
+/// Helper function used by [get_policy] and [get_curr_policy].
+async fn get_policy_by_id(asm: &Assembly, id: u64) -> Result<Json<PolicyBundle>, StatusCode> {
+    if id != DEFAULT_POLICY_ID {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let bundle = {
+        let pmgr = &asm.policy_mgr;
+        let current = pmgr.get_current();
+        if let Some(container_bytes) = pmgr.get_container_for_policy(current.vinst()) {
+            match PolicyBundle::new_from_policy_container(0, &container_bytes) {
+                Ok(pb) => pb,
+                Err(e) => {
+                    error!(target: ADMIN, "error creating policy bundle for policy {id}: {}", e);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        } else {
+            error!(target: ADMIN, "policy container not found for policy {id}");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    Ok(Json(bundle))
+}
+
+async fn install_policy(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+    EJson(body): EJson<PolicyBundle>,
+) -> Result<Json<ListEntry>, StatusCode> {
+    if !perm.can_write() {
+        return Err(StatusCode::FORBIDDEN);
+    }
     debug!(target: ADMIN, "POST /admin/policies");
-    let le = ListEntry { id: 0 };
-    (StatusCode::OK, Json(le)).into_response()
+
+    let container_bytes = body.decode().map_err(|e| {
+        error!(target: ADMIN, "error decoding policy bundle: {}", e);
+        StatusCode::BAD_REQUEST
+    })?;
+
+    let rstate = state.read().await;
+    match rstate
+        .asm
+        .policy_mgr
+        .update_policy_from_container_bytes(container_bytes)
+        .await
+    {
+        Ok(vinst) => debug!(target: ADMIN, "policy updated successfully, new vinst={vinst}"),
+        Err(e) => {
+            error!(target: ADMIN, "failed to update policy: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    drop(rstate);
+
+    // what do we use as the policy identifier?
+    // In the future maybe it will be possible to add policies to system without activating them.
+    // In delegating model we mave have several policies installed for different domains.
+    // For now we punt on this and just use identifier 0.
+    let le = ListEntry {
+        id: DEFAULT_POLICY_ID,
+    };
+    Ok(Json(le))
 }
 
 /// Returns a list of visa IDs in ListEntry structs or empty list.
-#[axum::debug_handler]
-//async fn get_visas(State(state): State<SharedState>) -> impl IntoResponse {
 async fn get_visas(
     Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,

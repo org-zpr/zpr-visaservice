@@ -30,6 +30,15 @@ pub const POLICY_MIN_COMPILER_MAJOR: u32 = 0;
 pub const POLICY_MIN_COMPILER_MINOR: u32 = 11;
 pub const POLICY_MIN_COMPILER_PATCH: u32 = 1;
 
+/// Minimum policy compiler version this build will load.
+pub fn policy_min_version() -> libeval::pio::Version {
+    libeval::pio::Version(
+        POLICY_MIN_COMPILER_MAJOR,
+        POLICY_MIN_COMPILER_MINOR,
+        POLICY_MIN_COMPILER_PATCH,
+    )
+}
+
 /// Default VSAPI port - must be in sync with compiler since it adds policy for that.
 pub const VSAPI_PORT: u16 = 5002;
 

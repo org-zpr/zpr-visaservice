@@ -13,17 +13,20 @@
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, info};
 
 use libeval::attribute::Attribute;
+use libeval::pio;
 use libeval::policy::{Peer, Policy};
 
 use zpr::policy_types::{NetAddr, NetworkHost};
 use zpr::vsapi_types::{Link, LinkRole, SockAddr};
 
+use crate::config;
 use crate::db;
 use crate::error::{ResolverError, ServiceError, TopologyError};
 use crate::logging::targets::MAIN;
@@ -34,6 +37,11 @@ pub trait DnsResolver: Send + Sync {
     /// Resolve `host` to a `SocketAddr` on the given `port`.
     async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, ResolverError>;
 }
+
+/// The identifier shared over the admin API of the current policy.
+/// This will be reworked in the future where we may have multiple policies, not all
+/// active, including policies for different domains.
+pub const DEFAULT_POLICY_ID: u64 = 0;
 
 // TODO: move to libeval::attribute::key
 const LINK_COST_ATTR_KEY: &str = "link.zpr.cost";
@@ -54,6 +62,7 @@ pub struct PolicyMgr {
     /// Serializes concurrent policy updates; reads remain lock-free via ArcSwap.
     update_lock: tokio::sync::Mutex<()>,
     resolver: PolicyResolver,
+    containers: DashMap<u64, Arc<[u8]>>, // vinst -> container_bytes, Arc for cheap clone (for admin API)
 }
 
 #[derive(Debug, Clone)]
@@ -87,28 +96,28 @@ impl PolicyMgr {
     /// [ResolverError] if any of the peerings fail to resolve.  We may revisit this
     /// later if we decide to eventually pass DNS names down to nodes.
     pub async fn new_with_initial_policy(
-        mut policy: Policy,
+        container_bytes: Vec<u8>,
         repo: db::PolicyRepo,
         resolver: Arc<dyn DnsResolver>,
     ) -> Result<Self, ServiceError> {
         debug!(target: MAIN, "initializing policy manager");
+
+        let mut policy =
+            pio::load_policy_from_container(&container_bytes, &config::policy_min_version())?;
         policy.set_vinst(1);
 
-        let presolver = PolicyResolver::new(resolver);
+        let resolver = PolicyResolver::new(resolver);
 
-        let links_by_node = presolver.resolve_topology(&policy).await?;
-        let _db_updated = repo.set_current_policy(&policy, false).await?;
+        // Resolve topology before persisting so a policy that cannot initialize is never
+        // stored as the current policy.
+        let state = Self::build_state(&resolver, policy).await?;
+        let _db_updated = repo.set_current_policy(&state.policy, false).await?;
+
+        let containers = DashMap::new();
+        containers.insert(state.policy.vinst(), Arc::from(container_bytes));
 
         debug!(target: MAIN, "policy manager initialized successfully");
-        Ok(PolicyMgr {
-            state: ArcSwap::from_pointee(PolicyState {
-                policy: Arc::new(policy),
-                links_by_node,
-            }),
-            repo,
-            update_lock: tokio::sync::Mutex::new(()),
-            resolver: presolver,
-        })
+        Ok(Self::from_state(state, repo, resolver, containers))
     }
 
     /// Create a new policy manager, initializing it with the current policy in
@@ -129,18 +138,55 @@ impl PolicyMgr {
             policy.get_created().unwrap_or("unknown").to_string());
         debug!(target: MAIN, "policy manager initialized successfully");
 
-        let presolver = PolicyResolver::new(resolver);
+        let resolver = PolicyResolver::new(resolver);
 
-        let links_by_node = presolver.resolve_topology(&policy).await?;
-        Ok(PolicyMgr {
-            state: ArcSwap::from_pointee(PolicyState {
-                policy: Arc::new(policy),
-                links_by_node,
-            }),
+        let state = Self::build_state(&resolver, policy).await?;
+        // TODO: Where's the container? Need to also check compiler version!
+        Ok(Self::from_state(state, repo, resolver, DashMap::new()))
+    }
+
+    /// This is the placeholder "update policy" function. It only replaces the current policy
+    /// with a new current policy.
+    pub async fn update_policy_from_container_bytes(
+        &self,
+        policy_continer_bytes: Vec<u8>,
+    ) -> Result<u64, ServiceError> {
+        let policy =
+            pio::load_policy_from_container(&policy_continer_bytes, &config::policy_min_version())?;
+        self.update_policy_internal(policy, policy_continer_bytes)
+            .await
+    }
+
+    /// Build the atomically-swapped policy state after resolving all policy topology.
+    ///
+    /// Intentionally performs only validation/state construction: it does not write the
+    /// DB, update the container cache, or store into `self.state`. This keeps failed
+    /// DNS/topology resolution from leaking partial policy state.
+    async fn build_state(
+        resolver: &PolicyResolver,
+        policy: Policy,
+    ) -> Result<PolicyState, ResolverError> {
+        let links_by_node = resolver.resolve_topology(&policy).await?;
+        Ok(PolicyState {
+            policy: Arc::new(policy),
+            links_by_node,
+        })
+    }
+
+    /// Assemble a PolicyMgr from already-built state and constructor-owned parts.
+    fn from_state(
+        state: PolicyState,
+        repo: db::PolicyRepo,
+        resolver: PolicyResolver,
+        containers: DashMap<u64, Arc<[u8]>>,
+    ) -> Self {
+        PolicyMgr {
+            state: ArcSwap::from_pointee(state),
             repo,
             update_lock: tokio::sync::Mutex::new(()),
-            resolver: presolver,
-        })
+            resolver,
+            containers,
+        }
     }
 
     /// Update the current policy.  The new policy will be assigned a new version instance number (vinst)
@@ -148,20 +194,29 @@ impl PolicyMgr {
     ///
     /// TODO: There is a lot of housekeeping that needs to happen around a policy update. None of that
     /// is implemented here. Right now this is just to support unit tests.
-    #[allow(dead_code)]
-    pub async fn update_policy(&self, new_policy: Policy) -> Result<(), ServiceError> {
+    ///
+    /// Returns the new `vinst` value.
+    async fn update_policy_internal(
+        &self,
+        new_policy: Policy,
+        new_policy_container: Vec<u8>,
+    ) -> Result<u64, ServiceError> {
         let _guard = self.update_lock.lock().await;
 
         let mut new_policy = new_policy;
         new_policy.set_vinst(self.state.load().policy.vinst() + 1);
 
-        let links_by_node = self.resolver.resolve_topology(&new_policy).await?;
+        let vinst = new_policy.vinst();
 
-        self.state.store(Arc::new(PolicyState {
-            policy: Arc::new(new_policy),
-            links_by_node,
-        }));
-        Ok(())
+        // Resolve topology before mutating the container cache or current state so a
+        // failed update leaves neither a non-current container nor a swapped-in state.
+        let state = Self::build_state(&self.resolver, new_policy).await?;
+
+        self.containers
+            .insert(vinst, Arc::from(new_policy_container));
+
+        self.state.store(Arc::new(state));
+        Ok(vinst)
     }
 
     /// Callers should drop the policy as quickly as possible to avoid missing a policy update.
@@ -170,6 +225,11 @@ impl PolicyMgr {
     /// If we find we need that we can add a snapshot mechanism.
     pub fn get_current(&self) -> Arc<Policy> {
         self.state.load().policy.clone()
+    }
+
+    /// When policy is installed we cache the container. Can be retrieved here.
+    pub fn get_container_for_policy(&self, vinst: u64) -> Option<Arc<[u8]>> {
+        self.containers.get(&vinst).map(|v| v.clone())
     }
 
     /// When policy is updated, all the peer tables have their DNS names resolved and cached.
@@ -324,7 +384,7 @@ fn get_link_cost(attrs: &[Attribute], default_cost: u32) -> u32 {
 mod tests {
     use super::*;
 
-    use bytes::Bytes;
+    use crate::test_helpers::make_container_bytes;
     use std::sync::Arc;
     use zpr::policy::v1 as policy_capnp;
     use zpr::policy_types::{AttrExp, AttrOp, NetAddr, Peering};
@@ -338,12 +398,12 @@ mod tests {
     }
 
     /// Build a minimal valid Policy with no topology.
-    fn policy_no_topology() -> Policy {
+    fn policy_no_topology() -> Vec<u8> {
         policy_with_peerings(&[])
     }
 
     /// Build a Policy containing the given peerings by encoding a capnp message in memory.
-    fn policy_with_peerings(peerings: &[Peering]) -> Policy {
+    fn policy_with_peerings(peerings: &[Peering]) -> Vec<u8> {
         let mut msg = capnp::message::Builder::new_default();
         {
             let mut policy = msg.init_root::<policy_capnp::policy::Builder>();
@@ -357,14 +417,19 @@ mod tests {
         }
         let mut bytes = Vec::new();
         capnp::serialize::write_message(&mut bytes, &msg).unwrap();
-        Policy::new_from_policy_bytes(Bytes::from(bytes)).unwrap()
+        make_container_bytes(
+            config::POLICY_MIN_COMPILER_MAJOR,
+            config::POLICY_MIN_COMPILER_MINOR,
+            config::POLICY_MIN_COMPILER_PATCH,
+            &bytes,
+        )
     }
 
     /// Create a PolicyMgr backed by a FakeDb with the given policy loaded.
-    async fn make_policy_mgr(policy: Policy) -> PolicyMgr {
+    async fn make_policy_mgr(container_bytes: Vec<u8>) -> PolicyMgr {
         let db = Arc::new(FakeDb::new());
         let repo = PolicyRepo::new(db);
-        PolicyMgr::new_with_initial_policy(policy, repo, Arc::new(FakeResolver::ip_only()))
+        PolicyMgr::new_with_initial_policy(container_bytes, repo, Arc::new(FakeResolver::ip_only()))
             .await
             .unwrap()
     }
@@ -379,6 +444,58 @@ mod tests {
             substrate_b: NetAddr::new_for_ip_or_host(&node_b.to_string(), 0),
             attributes: attrs,
         }
+    }
+
+    /// Build a Peering whose node_b substrate is an unresolvable hostname, so that
+    /// resolving topology with a no-entry FakeResolver fails.
+    fn make_peering_bad_host(node_a: IpAddr, node_b: IpAddr, link_id: &str) -> Peering {
+        Peering {
+            link_id: link_id.to_string(),
+            node_a,
+            substrate_a: NetAddr::new_for_ip_or_host(&node_a.to_string(), 0),
+            node_b,
+            substrate_b: NetAddr::new_for_ip_or_host("unresolvable.invalid", 5000),
+            attributes: vec![],
+        }
+    }
+
+    #[tokio::test]
+    /// A resolver failure during initial policy load must not persist the policy to the DB.
+    async fn test_initial_policy_resolver_failure_does_not_write_db() {
+        let db = Arc::new(FakeDb::new());
+        let peering = make_peering_bad_host(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1");
+
+        let result = PolicyMgr::new_with_initial_policy(
+            policy_with_peerings(&[peering]),
+            PolicyRepo::new(db.clone()),
+            Arc::new(FakeResolver::ip_only()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        // The DB must remain empty: a policy that cannot resolve is never persisted.
+        assert!(PolicyRepo::new(db).get_current_policy().await.is_err());
+    }
+
+    #[tokio::test]
+    /// A resolver failure during an update must leave the current state and container
+    /// cache unchanged (no stale container, no swapped-in state).
+    async fn test_update_resolver_failure_preserves_state() {
+        // Start from a valid no-topology policy (vinst 1).
+        let mgr = make_policy_mgr(policy_no_topology()).await;
+        assert_eq!(mgr.get_current().vinst(), 1);
+        assert!(mgr.get_container_for_policy(2).is_none());
+
+        // Attempt an update whose topology cannot be resolved.
+        let peering = make_peering_bad_host(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1");
+        let result = mgr
+            .update_policy_from_container_bytes(policy_with_peerings(&[peering]))
+            .await;
+
+        assert!(result.is_err());
+        // Current state untouched and the failed vinst-2 container was never cached.
+        assert_eq!(mgr.get_current().vinst(), 1);
+        assert!(mgr.get_container_for_policy(2).is_none());
     }
 
     #[tokio::test]
