@@ -268,18 +268,13 @@ async fn get_policy_by_id(asm: &Assembly, id: u64) -> Result<Json<PolicyBundle>,
 
     let bundle = {
         let pmgr = &asm.policy_mgr;
-        let current = pmgr.get_current();
-        if let Some(container_bytes) = pmgr.get_container_for_policy(current.vinst()) {
-            match PolicyBundle::new_from_policy_container(0, &container_bytes) {
-                Ok(pb) => pb,
-                Err(e) => {
-                    error!(target: ADMIN, "error creating policy bundle for policy {id}: {}", e);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
+        let container = pmgr.get_current_container();
+        match PolicyBundle::new_from_policy_container(0, container.as_bytes()) {
+            Ok(pb) => pb,
+            Err(e) => {
+                error!(target: ADMIN, "error creating policy bundle for policy {id}: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
-        } else {
-            error!(target: ADMIN, "policy container not found for policy {id}");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
     Ok(Json(bundle))

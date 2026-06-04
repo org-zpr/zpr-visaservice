@@ -22,6 +22,7 @@ mod db;
 mod db_worker;
 mod error;
 mod event_mgr;
+mod loaded_policy;
 mod logging;
 mod net_mgr;
 mod packet;

@@ -1,4 +1,4 @@
-//! The policy manage is conceived as the one true place where the running visa service
+//! The policy manager is conceived as the one true place where the running visa service
 //! can obtain the current policy.  Policy can be updated asynchronously by administrators.
 //! A policy update can have many ripple effects on the running visa serivce: visas may no
 //! longer be valid, connected actors may be forced to disconnect, services may be taken
@@ -13,14 +13,13 @@
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, info};
 
 use libeval::attribute::Attribute;
-use libeval::pio;
+use libeval::attribute::key;
 use libeval::policy::{Peer, Policy};
 
 use zpr::policy_types::{NetAddr, NetworkHost};
@@ -29,6 +28,7 @@ use zpr::vsapi_types::{Link, LinkRole, SockAddr};
 use crate::config;
 use crate::db;
 use crate::error::{ResolverError, ServiceError, TopologyError};
+use crate::loaded_policy::{LoadedPolicy, PolicyContainerBytes};
 use crate::logging::targets::MAIN;
 
 /// Abstracts DNS hostname resolution so it can be swapped out in tests.
@@ -38,20 +38,19 @@ pub trait DnsResolver: Send + Sync {
     async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, ResolverError>;
 }
 
-/// The identifier shared over the admin API of the current policy.
+/// The identifier of the "current policy" shared over the admin API.
 /// This will be reworked in the future where we may have multiple policies, not all
 /// active, including policies for different domains.
 pub const DEFAULT_POLICY_ID: u64 = 0;
 
-// TODO: move to libeval::attribute::key
-const LINK_COST_ATTR_KEY: &str = "link.zpr.cost";
-
 /// The default and the minimum.
 const DEFAULT_LINK_COST: u32 = 1;
 
-/// Combined policy and resolved topology — swapped atomically as a unit.
+/// Combined policy, source container, and resolved topology — swapped atomically
+/// as a unit so the three can never drift apart.
 struct PolicyState {
     policy: Arc<Policy>,
+    container: PolicyContainerBytes,
     links_by_node: HashMap<IpAddr, Vec<Link>>,
 }
 
@@ -62,7 +61,6 @@ pub struct PolicyMgr {
     /// Serializes concurrent policy updates; reads remain lock-free via ArcSwap.
     update_lock: tokio::sync::Mutex<()>,
     resolver: PolicyResolver,
-    containers: DashMap<u64, Arc<[u8]>>, // vinst -> container_bytes, Arc for cheap clone (for admin API)
 }
 
 #[derive(Debug, Clone)]
@@ -102,22 +100,24 @@ impl PolicyMgr {
     ) -> Result<Self, ServiceError> {
         debug!(target: MAIN, "initializing policy manager");
 
-        let mut policy =
-            pio::load_policy_from_container(&container_bytes, &config::policy_min_version())?;
-        policy.set_vinst(1);
+        // Decode and assign the initial vinst while the policy Arc
+        // is still uniquely held (before build_state clones it).
+        let mut loaded = LoadedPolicy::from_container(
+            PolicyContainerBytes::from(container_bytes),
+            &config::POLICY_MIN_VERSION,
+        )?;
+        loaded.set_vinst(1);
 
         let resolver = PolicyResolver::new(resolver);
 
         // Resolve topology before persisting so a policy that cannot initialize is never
-        // stored as the current policy.
-        let state = Self::build_state(&resolver, policy).await?;
-        let _db_updated = repo.set_current_policy(&state.policy, false).await?;
-
-        let containers = DashMap::new();
-        containers.insert(state.policy.vinst(), Arc::from(container_bytes));
+        // stored as the current policy. build_state borrows `loaded`, leaving it
+        // available for the post-resolution persist below.
+        let state = Self::build_state(&resolver, &loaded).await?;
+        let _db_updated = repo.set_current_policy(&loaded, false).await?;
 
         debug!(target: MAIN, "policy manager initialized successfully");
-        Ok(Self::from_state(state, repo, resolver, containers))
+        Ok(Self::from_state(state, repo, resolver))
     }
 
     /// Create a new policy manager, initializing it with the current policy in
@@ -133,87 +133,92 @@ impl PolicyMgr {
         resolver: Arc<dyn DnsResolver>,
     ) -> Result<Self, ServiceError> {
         debug!(target: MAIN, "initializing policy manager from state");
-        let policy = repo.get_current_policy().await?;
-        info!(target: MAIN, "loaded policy from state version:{}, created:{}", policy.get_version().unwrap_or(0),
-            policy.get_created().unwrap_or("unknown").to_string());
-        debug!(target: MAIN, "policy manager initialized successfully");
-
+        let loaded = repo
+            .get_current_loaded_policy(&config::POLICY_MIN_VERSION)
+            .await?;
+        {
+            let policy = loaded.policy();
+            info!(target: MAIN, "loaded policy from state version:{}, created:{}", policy.get_version().unwrap_or(0),
+                policy.get_created().unwrap_or("unknown").to_string());
+        }
         let resolver = PolicyResolver::new(resolver);
+        let state = Self::build_state(&resolver, &loaded).await?;
 
-        let state = Self::build_state(&resolver, policy).await?;
-        // TODO: Where's the container? Need to also check compiler version!
-        Ok(Self::from_state(state, repo, resolver, DashMap::new()))
+        debug!(target: MAIN, "policy manager initialized successfully");
+        Ok(Self::from_state(state, repo, resolver))
     }
 
     /// This is the placeholder "update policy" function. It only replaces the current policy
-    /// with a new current policy.
+    /// with a new current policy. Once the visa service is running this is how policy is
+    /// updated.
     pub async fn update_policy_from_container_bytes(
         &self,
-        policy_continer_bytes: Vec<u8>,
+        policy_container_bytes: Vec<u8>,
     ) -> Result<u64, ServiceError> {
-        let policy =
-            pio::load_policy_from_container(&policy_continer_bytes, &config::policy_min_version())?;
-        self.update_policy_internal(policy, policy_continer_bytes)
-            .await
+        let loaded = LoadedPolicy::from_container(
+            PolicyContainerBytes::from(policy_container_bytes),
+            &config::POLICY_MIN_VERSION,
+        )?;
+        self.update_policy_internal(loaded).await
     }
 
     /// Build the atomically-swapped policy state after resolving all policy topology.
     ///
     /// Intentionally performs only validation/state construction: it does not write the
-    /// DB, update the container cache, or store into `self.state`. This keeps failed
-    /// DNS/topology resolution from leaking partial policy state.
+    /// DB or store into `self.state`. This keeps failed DNS/topology resolution from
+    /// leaking partial policy state. Borrows `loaded` (cloning only the `Arc<Policy>`
+    /// and the `Bytes`-backed container — both refcount bumps) so the caller can still
+    /// persist it after resolution succeeds.
     async fn build_state(
         resolver: &PolicyResolver,
-        policy: Policy,
+        loaded: &LoadedPolicy,
     ) -> Result<PolicyState, ResolverError> {
+        let policy = loaded.policy();
         let links_by_node = resolver.resolve_topology(&policy).await?;
         Ok(PolicyState {
-            policy: Arc::new(policy),
+            policy,
+            container: loaded.container().clone(),
             links_by_node,
         })
     }
 
     /// Assemble a PolicyMgr from already-built state and constructor-owned parts.
-    fn from_state(
-        state: PolicyState,
-        repo: db::PolicyRepo,
-        resolver: PolicyResolver,
-        containers: DashMap<u64, Arc<[u8]>>,
-    ) -> Self {
+    fn from_state(state: PolicyState, repo: db::PolicyRepo, resolver: PolicyResolver) -> Self {
         PolicyMgr {
             state: ArcSwap::from_pointee(state),
             repo,
             update_lock: tokio::sync::Mutex::new(()),
             resolver,
-            containers,
         }
     }
 
-    /// Update the current policy.  The new policy will be assigned a new version instance number (vinst)
-    /// that is one greater than the current policy's vinst.
+    /// Update the current policy in state database and memory.  The new policy
+    /// will be assigned a new version instance number (vinst) that is one
+    /// greater than the current policy's vinst.
     ///
-    /// TODO: There is a lot of housekeeping that needs to happen around a policy update. None of that
-    /// is implemented here. Right now this is just to support unit tests.
+    /// TODO: There is a lot of housekeeping that needs to happen around a
+    /// policy update. None of that is implemented here. Right now this is just
+    /// to support unit tests.
     ///
     /// Returns the new `vinst` value.
-    async fn update_policy_internal(
-        &self,
-        new_policy: Policy,
-        new_policy_container: Vec<u8>,
-    ) -> Result<u64, ServiceError> {
+    ///
+    /// ### Errors
+    /// - `ResolverError` if the new policy's topology contains hostnames that
+    ///   fail to resolve.
+    /// - `StoreError` if there is a problem writing to the database.
+    ///
+    async fn update_policy_internal(&self, mut loaded: LoadedPolicy) -> Result<u64, ServiceError> {
         let _guard = self.update_lock.lock().await;
 
-        let mut new_policy = new_policy;
-        new_policy.set_vinst(self.state.load().policy.vinst() + 1);
+        // Assign the new vinst while the policy Arc is still uniquely held.
+        let vinst = self.state.load().policy.vinst() + 1;
+        loaded.set_vinst(vinst);
 
-        let vinst = new_policy.vinst();
-
-        // Resolve topology before mutating the container cache or current state so a
-        // failed update leaves neither a non-current container nor a swapped-in state.
-        let state = Self::build_state(&self.resolver, new_policy).await?;
-
-        self.containers
-            .insert(vinst, Arc::from(new_policy_container));
+        // Resolve topology before swapping in the new state so a failed update leaves
+        // the current policy, container, and topology untouched. The new policy,
+        // container, and links swap in together as one PolicyState.
+        let state = Self::build_state(&self.resolver, &loaded).await?;
+        let _db_updated = self.repo.set_current_policy(&loaded, false).await?;
 
         self.state.store(Arc::new(state));
         Ok(vinst)
@@ -227,9 +232,9 @@ impl PolicyMgr {
         self.state.load().policy.clone()
     }
 
-    /// When policy is installed we cache the container. Can be retrieved here.
-    pub fn get_container_for_policy(&self, vinst: u64) -> Option<Arc<[u8]>> {
-        self.containers.get(&vinst).map(|v| v.clone())
+    /// Get the source container bytes for the current policy (for the admin API).
+    pub fn get_current_container(&self) -> PolicyContainerBytes {
+        self.state.load().container.clone()
     }
 
     /// When policy is updated, all the peer tables have their DNS names resolved and cached.
@@ -363,7 +368,7 @@ fn get_attributes_for_link(policy: &Policy, link_id: &str) -> Vec<Attribute> {
 /// bin2 representation.
 fn get_link_cost(attrs: &[Attribute], default_cost: u32) -> u32 {
     for attr in attrs {
-        if attr.get_key() == LINK_COST_ATTR_KEY {
+        if attr.get_key() == key::LINK_COST {
             let value = attr
                 .get_single_value()
                 .ok()
@@ -474,17 +479,22 @@ mod tests {
 
         assert!(result.is_err());
         // The DB must remain empty: a policy that cannot resolve is never persisted.
-        assert!(PolicyRepo::new(db).get_current_policy().await.is_err());
+        assert!(
+            PolicyRepo::new(db)
+                .get_current_loaded_policy(&config::POLICY_MIN_VERSION)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
-    /// A resolver failure during an update must leave the current state and container
-    /// cache unchanged (no stale container, no swapped-in state).
+    /// A resolver failure during an update must leave the current policy, container,
+    /// and topology unchanged (no swapped-in state).
     async fn test_update_resolver_failure_preserves_state() {
         // Start from a valid no-topology policy (vinst 1).
-        let mgr = make_policy_mgr(policy_no_topology()).await;
+        let initial_container = policy_no_topology();
+        let mgr = make_policy_mgr(initial_container.clone()).await;
         assert_eq!(mgr.get_current().vinst(), 1);
-        assert!(mgr.get_container_for_policy(2).is_none());
 
         // Attempt an update whose topology cannot be resolved.
         let peering = make_peering_bad_host(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1");
@@ -493,9 +503,64 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        // Current state untouched and the failed vinst-2 container was never cached.
+        // Current state untouched: vinst stays 1 and the container is still the initial one.
         assert_eq!(mgr.get_current().vinst(), 1);
-        assert!(mgr.get_container_for_policy(2).is_none());
+        assert_eq!(
+            mgr.get_current_container().as_bytes(),
+            initial_container.as_slice()
+        );
+    }
+
+    #[tokio::test]
+    /// A successful update swaps the policy, topology, and container together.
+    async fn test_update_swaps_policy_topology_and_container() {
+        // Start from a no-topology policy (vinst 1).
+        let mgr = make_policy_mgr(policy_no_topology()).await;
+        assert_eq!(mgr.get_current().vinst(), 1);
+        assert!(mgr.resolved_links_for_node(&ip("fd5a:5052::1")).is_empty());
+
+        // Update to a policy with topology, all IP-addressed so it resolves.
+        let peering = make_peering(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1", vec![]);
+        let new_container = policy_with_peerings(&[peering]);
+        let vinst = mgr
+            .update_policy_from_container_bytes(new_container.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(vinst, 2);
+        assert_eq!(mgr.get_current().vinst(), 2);
+        // Topology swapped in: node now has a resolved link.
+        assert!(!mgr.resolved_links_for_node(&ip("fd5a:5052::1")).is_empty());
+        // Container swapped in and round-trips.
+        assert_eq!(
+            mgr.get_current_container().as_bytes(),
+            new_container.as_slice()
+        );
+    }
+
+    #[tokio::test]
+    /// PolicyContainerBytes round-trips through as_bytes, and LoadedPolicy decodes
+    /// a valid container while preserving the source bytes.
+    async fn test_policy_artifact_construction() {
+        let container_bytes = policy_no_topology();
+        let pcb = PolicyContainerBytes::from(container_bytes.clone());
+        assert_eq!(pcb.as_bytes(), container_bytes.as_slice());
+
+        let mut loaded = LoadedPolicy::from_container(pcb, &config::POLICY_MIN_VERSION).unwrap();
+        assert_eq!(loaded.container().as_bytes(), container_bytes.as_slice());
+
+        // set_vinst mutates the decoded policy but not the container bytes.
+        loaded.set_vinst(7);
+        assert_eq!(loaded.policy().vinst(), 7);
+        assert_eq!(loaded.container().as_bytes(), container_bytes.as_slice());
+    }
+
+    #[tokio::test]
+    /// LoadedPolicy::from_container rejects bytes that are not a valid container.
+    async fn test_loaded_policy_rejects_garbage() {
+        let pcb = PolicyContainerBytes::from(b"not a capnp container".to_vec());
+        let result = LoadedPolicy::from_container(pcb, &config::POLICY_MIN_VERSION);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -566,7 +631,7 @@ mod tests {
             ip("fd5a:5052::2"),
             "link-1",
             vec![AttrExp {
-                key: LINK_COST_ATTR_KEY.to_string(),
+                key: key::LINK_COST.to_string(),
                 op: AttrOp::Eq,
                 value: vec!["5".to_string()],
             }],
@@ -586,7 +651,7 @@ mod tests {
             ip("fd5a:5052::2"),
             "link-1",
             vec![AttrExp {
-                key: LINK_COST_ATTR_KEY.to_string(),
+                key: key::LINK_COST.to_string(),
                 op: AttrOp::Eq,
                 value: vec!["not-a-number".to_string()],
             }],

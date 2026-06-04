@@ -734,7 +734,7 @@ mod tests {
         let (_privkey, pubkey_der) = gen_rsa_test_keypair();
         let container_bytes = make_policy_with_bootstrap_key(cn, &pubkey_der);
 
-        pio::load_policy_from_container(&container_bytes, &config::policy_min_version())
+        pio::load_policy_from_container(&container_bytes, &config::POLICY_MIN_VERSION)
             .expect("should load policy from container bytes");
     }
 
