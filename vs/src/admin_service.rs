@@ -846,11 +846,17 @@ mod tests {
     /// Insert a readwrite test key into the assembly's key store and return the
     /// key string to use in the X-API-Key header.
     fn setup_test_api_key(asm: &Arc<Assembly>) -> String {
+        setup_test_api_key_with_perm(asm, Permission::ReadWrite)
+    }
+
+    /// Insert a test key with the given permission into the assembly's key store
+    /// and return the key string to use in the X-API-Key header.
+    fn setup_test_api_key_with_perm(asm: &Arc<Assembly>, permission: Permission) -> String {
         let secret_bytes: [u8; 32] = (0u8..32).collect::<Vec<_>>().try_into().unwrap();
         let apikey = ApiKey::new(0xaabbccdd, secret_bytes);
         let record = ApiKeyRecord {
             owner: "test".to_string(),
-            permission: Permission::ReadWrite,
+            permission,
             status: KeyStatus::Active,
             created: "2026-01-01".to_string(),
             secret_hash: apikey.secret_hash().unwrap(),
@@ -859,6 +865,233 @@ mod tests {
         asm.admin_api_keys
             .insert_for_test(apikey.key_id_hex(), record);
         apikey.to_key_string()
+    }
+
+    /// Build a valid `PolicyBundle` carrying a minimal policy (no topology, so the
+    /// FakeResolver in the test assembly resolves it cleanly) at the minimum
+    /// supported compiler version, for use as `install_policy` request input.
+    fn make_valid_policy_bundle() -> PolicyBundle {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy = msg.init_root::<zpr::policy::v1::policy::Builder>();
+            policy.set_created("2026-01-01T00:00:00Z");
+            policy.set_version(1);
+            policy.set_metadata("");
+        }
+        let mut inner = Vec::new();
+        capnp::serialize::write_message(&mut inner, &msg).unwrap();
+        let container = crate::test_helpers::make_container_bytes(
+            crate::config::POLICY_MIN_COMPILER_MAJOR,
+            crate::config::POLICY_MIN_COMPILER_MINOR,
+            crate::config::POLICY_MIN_COMPILER_PATCH,
+            &inner,
+        );
+        PolicyBundle::new_from_policy_container(0, &container).unwrap()
+    }
+
+    /// GET /admin/policies returns the single current policy id (0) with a read key.
+    #[tokio::test]
+    async fn test_get_policies_ok() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/policies")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: ListEntry = serde_json::from_slice(&body).unwrap();
+        assert_eq!(entry.id, DEFAULT_POLICY_ID);
+    }
+
+    /// GET /admin/policies/curr returns the current policy as a base64;zip PolicyBundle.
+    #[tokio::test]
+    async fn test_get_curr_policy_ok() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/policies/curr")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let bundle: PolicyBundle = serde_json::from_slice(&body).unwrap();
+        assert_eq!(bundle.config_id, DEFAULT_POLICY_ID);
+        assert!(bundle.format.starts_with("base64;zip;"));
+        assert!(!bundle.container.is_empty());
+    }
+
+    /// GET /admin/policies/0 returns the current policy bundle (id 0 is the default).
+    #[tokio::test]
+    async fn test_get_policy_by_id_zero_ok() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/policies/0")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let bundle: PolicyBundle = serde_json::from_slice(&body).unwrap();
+        assert!(bundle.format.starts_with("base64;zip;"));
+    }
+
+    /// GET /admin/policies/<non-zero> is rejected because only id 0 currently exists.
+    #[tokio::test]
+    async fn test_get_policy_not_found() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/policies/1")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// POST /admin/policies installs a valid bundle and the new policy is then
+    /// served by GET /admin/policies/curr.
+    #[tokio::test]
+    async fn test_install_policy_ok() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+
+        let bundle = make_valid_policy_bundle();
+        let body = serde_json::to_vec(&bundle).unwrap();
+
+        let app = admin_app(shared_state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/policies")
+                    .header("X-API-Key", &api_key)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: ListEntry = serde_json::from_slice(&body).unwrap();
+        assert_eq!(entry.id, DEFAULT_POLICY_ID);
+
+        // The installed policy should now be the current one.
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/policies/curr")
+                    .header("X-API-Key", &api_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let curr: PolicyBundle = serde_json::from_slice(&body).unwrap();
+        assert_eq!(curr.decode().unwrap(), bundle.decode().unwrap());
+    }
+
+    /// POST /admin/policies rejects a bundle whose container can't be decoded.
+    #[tokio::test]
+    async fn test_install_policy_bad_bundle() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key(&asm);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+
+        // Valid JSON shape, but an unsupported format makes decode() fail.
+        let bad = PolicyBundle {
+            config_id: 0,
+            version: String::new(),
+            format: "hex;zip;0.11.1".to_string(),
+            container: String::new(),
+        };
+        let body = serde_json::to_vec(&bad).unwrap();
+
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/policies")
+                    .header("X-API-Key", &api_key)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// POST /admin/policies is forbidden for a read-only key (no write permission).
+    #[tokio::test]
+    async fn test_install_policy_forbidden_without_write() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let api_key = setup_test_api_key_with_perm(&asm, Permission::Read);
+        let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
+
+        let bundle = make_valid_policy_bundle();
+        let body = serde_json::to_vec(&bundle).unwrap();
+
+        let app = admin_app(shared_state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/policies")
+                    .header("X-API-Key", &api_key)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
