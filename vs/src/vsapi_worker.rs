@@ -55,7 +55,7 @@ impl AuthenticateUndo {
 
     async fn undo(self, asm: &Assembly) {
         if let Some(addr) = self.added_node_to_router {
-            asm.topo_mgr.remove_node(&addr);
+            asm.topo_mgr.remove_node(&addr).await;
         }
         if let Some(addr) = self.actor_mgr_add_node {
             let _ = asm.actor_mgr.remove_node(&addr).await;
@@ -715,7 +715,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
                     "failed to clear node state",
                 );
             }
-            self.asm.topo_mgr.remove_node(&node_zpr_addr);
+            self.asm.topo_mgr.remove_node(&node_zpr_addr).await;
         }
 
         // The add_node call will clean up after ifself if it fails.
@@ -777,7 +777,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             Err(TopologyError::NodeExists(_)) => {
                 // Attempt to remove and re-add.
                 warn!(target: API, "node {:?} already exists in router, attempting to remove and re-add", &node_cn);
-                self.asm.topo_mgr.remove_node(&node_zpr_addr);
+                self.asm.topo_mgr.remove_node(&node_zpr_addr).await;
                 if let Err(e) = self.asm.topo_mgr.add_node(node_zpr_addr) {
                     // Failed to add the node to the router. We won't be able to route visas through this node.
                     // Best to just abort this connect.
@@ -1568,7 +1568,7 @@ mod tests {
                 asm.topo_mgr.add_node(addr).is_ok(),
                 "node should have been removed from router"
             );
-            asm.topo_mgr.remove_node(&addr);
+            asm.topo_mgr.remove_node(&addr).await;
 
             let actor_result = asm.actor_mgr.get_actor_by_zpr_addr(&addr).await.unwrap();
             assert!(
