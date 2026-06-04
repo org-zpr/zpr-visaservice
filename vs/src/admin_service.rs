@@ -37,6 +37,7 @@ use crate::apikey::ApiKey;
 use crate::assembly::Assembly;
 use crate::counters::CounterType;
 use crate::db::Role;
+use crate::event_mgr::VsEvent;
 use crate::logging::targets::ADMIN;
 use crate::policy_mgr::DEFAULT_POLICY_ID;
 
@@ -302,7 +303,14 @@ async fn install_policy(
         .update_policy_from_container_bytes(container_bytes)
         .await
     {
-        Ok(vinst) => debug!(target: ADMIN, "policy updated successfully, new vinst={vinst}"),
+        Ok(vinst) => {
+            info!(target: ADMIN, "policy updated successfully, new vinst={vinst}");
+            // fire event!
+            let evt = VsEvent::PolicyUpdated(vinst);
+            if let Err(e) = rstate.asm.event_mgr.record_event(evt).await {
+                warn!(target: ADMIN, "failed to record policy updated event: {}", e);
+            }
+        }
         Err(e) => {
             error!(target: ADMIN, "failed to update policy: {}", e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
