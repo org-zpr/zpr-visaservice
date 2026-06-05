@@ -223,7 +223,7 @@ fn two_elem_list() -> impl IntoResponse {
     (StatusCode::OK, Json(vec![le0, le1])).into_response()
 }
 
-/// TODO: Placeholder - Only returnd ID(0) which is for the current policy.
+/// TODO: Placeholder - Only returns ID(0) which is for the current policy.
 async fn get_policies(
     Extension(perm): Extension<Permission>,
 ) -> Result<Json<ListEntry>, StatusCode> {
@@ -237,7 +237,7 @@ async fn get_policies(
     Ok(Json(le))
 }
 
-/// TODO: Handle multiple policis. Right now only accepts ID(0).
+/// TODO: Handle multiple policies. Right now only accepts ID(0).
 async fn get_policy(
     Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
