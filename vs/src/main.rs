@@ -305,9 +305,8 @@ async fn main() -> std::process::ExitCode {
     // Rebuild the in-memory router topology from persisted state. This runs after
     // synchronize_state/refresh_state (above) has pruned expired nodes, so those nodes
     // are excluded from node_addrs and their persisted edges get GC'd during restore.
-    // Startup must load state completely or fail: we do NOT default a failed node-list
-    // or restore to an empty node set, because that could GC valid persisted edges when
-    // the DB is unhealthy. main() returns ExitCode, not Result, so we cannot use `?`.
+    // Startup must load state completely or fail -- if there is garbage in there the
+    // admin needs to startup again with clean state.
     let node_addrs = match asm.actor_mgr.list_node_addrs().await {
         Ok(addrs) => addrs,
         Err(e) => {

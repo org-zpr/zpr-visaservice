@@ -5,9 +5,8 @@
 //! write-through point that persists the node-link adjacency to state so the graph can
 //! be rebuilt on restart (see [TopologyMgr::restore_from_state]). Nodes themselves are
 //! persisted by `ActorMgr`/`NodeRepo`; only the edges (links) are persisted here.
-//! Resolves https://github.com/org-zpr/zpr-visaservice/issues/209.
 //!
-//! TODO: runtime policy updates must reconcile already-installed router links and
+//! TODO: Policy updates must reconcile already-installed router links and
 //! persisted topology edges (e.g. revoke links a new policy no longer describes). That
 //! is handled by a separate task; restore here only validates persisted edges against
 //! the policy in effect at startup.
@@ -65,8 +64,7 @@ impl TopologyMgr {
         Ok(())
     }
 
-    /// Roll back a node this call had just created (router node + actor node state +
-    /// actor record), mirroring the `AuthenticateUndo` cleanup. Used by the compensation
+    /// Roll back a node a call had just created. Used by the undo
     /// paths. Failures are logged rather than propagated so they do not mask the original
     /// error that triggered the rollback.
     async fn rollback_created_node(&self, actor_mgr: &ActorMgr, addr: &IpAddr) {
@@ -84,7 +82,7 @@ impl TopologyMgr {
     /// Also adds the node via the actor_manager if it is not already in the graph.
     ///
     /// On success the node-link edge is persisted to state. If persistence fails the
-    /// partial in-memory/actor state created here is compensated before returning the
+    /// partial in-memory/actor state created here is rolled back before returning the
     /// error, so we never report failure while leaving a router edge behind.
     pub async fn add_linked_node(
         &self,
@@ -152,7 +150,7 @@ impl TopologyMgr {
             }
         }
 
-        // Write-through: persist the edge. On failure, compensate the partial state we
+        // Write-through: persist the edge. On failure, clean up the partial state we
         // created here, but return the ORIGINAL persistence error — the rollback calls
         // log their own failures rather than masking it.
         if let Err(e) = self.persist_edge(connect_via, new_node_addr).await {

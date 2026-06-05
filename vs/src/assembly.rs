@@ -127,7 +127,7 @@ pub mod tests {
             net_mgr: Arc::new(NetMgr::new_v6().expect("failed to create NetMgr")),
             event_mgr: EventMgr::new(event_tx),
             admin_api_keys: Arc::new(ReloadableApiKeys::default()),
-            topo_mgr: TopologyMgr::new(LinkRepo::new(db_handle.clone())),
+            topo_mgr: TopologyMgr::new(LinkRepo::new(db_handle)),
         }
     }
 }
