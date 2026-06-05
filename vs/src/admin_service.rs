@@ -845,8 +845,12 @@ mod tests {
 
     /// Insert a readwrite test key into the assembly's key store and return the
     /// key string to use in the X-API-Key header.
-    fn setup_test_api_key(asm: &Arc<Assembly>) -> String {
+    fn setup_test_api_rw_key(asm: &Arc<Assembly>) -> String {
         setup_test_api_key_with_perm(asm, Permission::ReadWrite)
+    }
+
+    fn setup_test_api_r_key(asm: &Arc<Assembly>) -> String {
+        setup_test_api_key_with_perm(asm, Permission::Read)
     }
 
     /// Insert a test key with the given permission into the assembly's key store
@@ -893,7 +897,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_policies_ok() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -918,7 +922,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_curr_policy_ok() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -945,7 +949,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_policy_by_id_zero_ok() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -970,7 +974,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_policy_not_found() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -992,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn test_install_policy_ok() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_rw_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
 
         let bundle = make_valid_policy_bundle();
@@ -1040,7 +1044,7 @@ mod tests {
     #[tokio::test]
     async fn test_install_policy_bad_bundle() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_rw_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
 
         // Valid JSON shape, but an unsupported format makes decode() fail.
@@ -1072,7 +1076,7 @@ mod tests {
     #[tokio::test]
     async fn test_install_policy_forbidden_without_write() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key_with_perm(&asm, Permission::Read);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
 
         let bundle = make_valid_policy_bundle();
@@ -1097,7 +1101,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visas_no_visas() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -1122,7 +1126,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visas_one_visa() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -1166,7 +1170,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visas_three_visas() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
@@ -1228,7 +1232,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_no_actors() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -1253,7 +1257,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_one_actor() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let actor = make_node_actor_defexp("fd5a:5052::10", "node-1", "[fd5a:5052::100]:1234");
         asm.actor_mgr.add_node(&actor, false).await.unwrap();
 
@@ -1282,7 +1286,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_multiple_actors() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let actor0 = make_node_actor_defexp("fd5a:5052::11", "node-1", "[fd5a:5052::101]:1234");
         let actor1 = make_node_actor_defexp("fd5a:5052::12", "node-2", "[fd5a:5052::102]:1234");
         let actor2 = make_node_actor_defexp("fd5a:5052::13", "node-3", "[fd5a:5052::103]:1234");
@@ -1325,7 +1329,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_role_filter() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let node_actor = make_node_actor_defexp("fd5a:5052::20", "node-1", "[fd5a:5052::120]:1234");
         let adapter_actor = make_adapter_actor_defexp("fd5a:5052::21", "adapter-1");
 
@@ -1389,7 +1393,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visa_not_found() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
         let response = app
@@ -1409,7 +1413,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visa_fields_forward_no_signal() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -1465,7 +1469,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visa_direction_reverse() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -1505,7 +1509,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_visa_with_signal() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
 
         let node_addr: IpAddr = "fd5a:5052:90de::1".parse().unwrap();
         let pdesc =
@@ -1546,7 +1550,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_actors_invalid_role_filter() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
 
@@ -1568,7 +1572,7 @@ mod tests {
     async fn test_get_network_empty() {
         // No nodes
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
         let shared_state = Arc::new(tokio::sync::RwLock::new(AdminState::new(asm.clone())));
         let app = admin_app(shared_state);
 
@@ -1594,7 +1598,7 @@ mod tests {
     async fn test_get_network_one_node_no_peers() {
         // One node with no links
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
 
         let addr: IpAddr = "fd5a:5052::10".parse().unwrap();
         let actor = make_node_actor_defexp("fd5a:5052::10", "node-a", "[fd5a:5052::100]:1234");
@@ -1630,7 +1634,7 @@ mod tests {
         use libeval::route::LinkId;
 
         let asm = Arc::new(new_assembly_for_tests(None).await);
-        let api_key = setup_test_api_key(&asm);
+        let api_key = setup_test_api_r_key(&asm);
 
         let addr_a: IpAddr = "fd5a:5052::10".parse().unwrap();
         let addr_b: IpAddr = "fd5a:5052::11".parse().unwrap();
