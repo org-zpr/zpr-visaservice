@@ -26,7 +26,7 @@ use crate::error::ServiceError;
 use crate::event_mgr::VsEvent;
 use crate::logging::targets::API;
 use crate::net_mgr;
-use crate::topology_mgr::TopologyMgr;
+use crate::topology_mgr::{AddLinkedNodeError, TopologyMgr};
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 // During node authentication we keep track in here of what state we have
@@ -983,7 +983,12 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
             {
                 warn!(target: API, "failed to add connecting node {:?} to during authorize_connect: {}", actor.get_cn(), add_err);
 
-                if self.asm.net_mgr.is_managed_address(&actor_addr) {
+                // Only release the address if THIS call created the node. For a
+                // pre-existing node the address is still live in actor/router state, so
+                // releasing it would corrupt the allocator (see issue #209 bug 2).
+                if matches!(add_err, AddLinkedNodeError::NewNodeFailed(_))
+                    && self.asm.net_mgr.is_managed_address(&actor_addr)
+                {
                     if let Err(e) = self.asm.net_mgr.release_zpr_addr(actor_addr) {
                         warn!(target: API, "failed to release node address in error handler, actor={}: {}", actor_addr, e);
                     }

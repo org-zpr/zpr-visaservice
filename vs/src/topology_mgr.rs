@@ -31,6 +31,34 @@ pub struct TopologyMgr {
     link_repo: LinkRepo,
 }
 
+/// Special error returned by [TopologyMgr::add_linked_node] that records
+/// whether the failing call created the node. Callers (e.g.
+/// `authorize_connect`) use this to decide whether to release the actor's
+/// freshly allocated address: a pre-existing node's address is still live and
+/// must not be released.
+#[derive(Debug, thiserror::Error)]
+pub enum AddLinkedNodeError {
+    /// Failure while creating/persisting a brand-new node. The freshly allocated
+    /// address is owned by this attempt and the caller should release it.
+    #[error("new node failed: {0}")]
+    NewNodeFailed(ServiceError),
+    /// Failure while updating/repairing state for a node that already existed. The
+    /// node and its address remain live; the caller must NOT release the address.
+    #[error("existing node failed: {0}")]
+    ExistingNodeFailed(ServiceError),
+}
+
+impl AddLinkedNodeError {
+    /// Creates correct enum based on `preexisting` flag.
+    pub fn new(preexisting: bool, e: ServiceError) -> Self {
+        if preexisting {
+            AddLinkedNodeError::ExistingNodeFailed(e)
+        } else {
+            AddLinkedNodeError::NewNodeFailed(e)
+        }
+    }
+}
+
 impl TopologyMgr {
     pub fn new(link_repo: LinkRepo) -> Self {
         Self {
@@ -91,11 +119,7 @@ impl TopologyMgr {
         actor: &Actor,
         connect_via: &IpAddr,
         new_node_addr: &IpAddr,
-    ) -> Result<(), ServiceError> {
-        let link_desc = policy_mgr.describe_link(connect_via, new_node_addr)?;
-        // Kept for rollback: install_router_link consumes link_desc.
-        let link_id_for_rollback = link_desc.link_id.clone();
-
+    ) -> Result<(), AddLinkedNodeError> {
         // I think we need to add the node.
         // But I'm not sure that the actor-mgr needs to know about links.
         // It does know about tethers.  So maybe is should?  But the router has the
@@ -107,8 +131,18 @@ impl TopologyMgr {
         //
         // If a node is already connected to ZPR why does it need to authenticate again?
         // Well, it may not be allowed to make the link for one thing.
+        //
+        // Computed before describe_link so even an early policy failure is classified
+        // (new vs pre-existing node) for the caller's address-release decision.
         let peer_node_addrs = self.router.get_peers(new_node_addr);
         let preexisting_node = self.router.has_node(new_node_addr);
+
+        let link_desc = match policy_mgr.describe_link(connect_via, new_node_addr) {
+            Ok(d) => d,
+            Err(e) => return Err(AddLinkedNodeError::new(preexisting_node, e)),
+        };
+        // Kept for rollback: install_router_link consumes link_desc.
+        let link_id_for_rollback = link_desc.link_id.clone();
 
         // If the new node has peers and one is the 'connect_via' .... uh, that's odd.  Error out?
         // If the new node has peers and none are the 'connect_via', then we already know about
@@ -117,11 +151,13 @@ impl TopologyMgr {
 
         if !preexisting_node {
             // Brand new node. Add to router, add to actor_mgr.
-            self.router.add_node(new_node_addr.clone())?;
+            if let Err(e) = self.router.add_node(new_node_addr.clone()) {
+                return Err(AddLinkedNodeError::NewNodeFailed(e.into()));
+            }
             if let Err(e) = actor_mgr.add_node(actor, false).await {
                 warn!(target: TOPO, "failed to add node to actor_mgr: {}", e);
                 self.router.remove_node(new_node_addr);
-                return Err(e.into());
+                return Err(AddLinkedNodeError::NewNodeFailed(e.into()));
             };
         } else if peer_node_addrs.contains(connect_via) {
             // Already connected over this same link (e.g. a reconnect or re-auth).
@@ -130,7 +166,9 @@ impl TopologyMgr {
             warn!(target: TOPO, "try_add_node but node at addr {} is already connected to us via {}: FINE!", new_node_addr, connect_via);
             if let Err(e) = self.persist_edge(connect_via, new_node_addr).await {
                 warn!(target: TOPO, "failed to persist already-connected edge {} <-> {}: {}", connect_via, new_node_addr, e);
-                return Err(e);
+                // Pre-existing node: its address is still live, so this is not a
+                // new-node failure.
+                return Err(AddLinkedNodeError::ExistingNodeFailed(e));
             }
             return Ok(()); // Assume everything is just fine!
         }
@@ -146,13 +184,13 @@ impl TopologyMgr {
                 if !preexisting_node {
                     self.rollback_created_node(actor_mgr, new_node_addr).await;
                 }
-                return Err(e.into());
+                return Err(AddLinkedNodeError::new(preexisting_node, e.into()));
             }
         }
 
         // Write-through: persist the edge. On failure, clean up the partial state we
         // created here, but return the ORIGINAL persistence error — the rollback calls
-        // log their own failures rather than masking it.
+        // log their own failures.
         if let Err(e) = self.persist_edge(connect_via, new_node_addr).await {
             error!(target: TOPO, "failed to persist edge {} <-> {}: {}", connect_via, new_node_addr, e);
             if !preexisting_node {
@@ -162,7 +200,7 @@ impl TopologyMgr {
                 // Node pre-existed; remove only the link we just added.
                 self.router.remove_link(&link_id_for_rollback.into());
             }
-            return Err(e);
+            return Err(AddLinkedNodeError::new(preexisting_node, e));
         }
 
         Ok(())
@@ -463,7 +501,13 @@ mod tests {
         let result = topo
             .add_linked_node(&policy_mgr, &actor_mgr, &actor_b, &a, &b)
             .await;
-        assert!(result.is_err(), "persist failure must surface as an error");
+        // A brand-new node's failure must be reported as a new-node failure so the
+        // caller releases the freshly allocated address.
+        assert!(
+            matches!(result, Err(AddLinkedNodeError::NewNodeFailed(_))),
+            "new-node persist failure must be a NewNodeFailed error, got {:?}",
+            result
+        );
 
         // Compensation removed node `b` from the router (it can be re-added cleanly)...
         assert!(
@@ -474,6 +518,44 @@ mod tests {
         assert!(
             actor_mgr.get_actor_by_zpr_addr(&b).await.unwrap().is_none(),
             "node b should have been removed from the actor manager by compensation"
+        );
+    }
+
+    /// A persist failure while repairing a PRE-EXISTING node's edge is reported as an
+    /// existing-node failure and leaves the live node in place (issue #209 bug 2).
+    #[tokio::test]
+    async fn test_add_linked_node_preexisting_failure_is_existing_node_error() {
+        let db = Arc::new(FakeDb::new());
+        let a = ip("fd5a:5052::1");
+        let b = ip("fd5a:5052::2");
+        let policy_mgr = make_policy_mgr(db.clone(), a, b, "link-ab").await;
+        let actor_mgr = make_actor_mgr(db.clone());
+        let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
+
+        // Pre-create both nodes and the router link so `b` is already connected over `a`
+        // (the already-connected edge-repair path).
+        topo.add_node(a).unwrap();
+        topo.add_node(b).unwrap();
+        topo.add_link(a, b, LinkId("link-ab".into()), vec![], 1)
+            .unwrap();
+
+        // Poison the edges key so the repair persist fails.
+        db.set("topology:edges", "junk").await.unwrap();
+
+        let actor_b = make_node_actor_defexp(&b.to_string(), "node-b", "[fd5a:5052::100]:1234");
+        let result = topo
+            .add_linked_node(&policy_mgr, &actor_mgr, &actor_b, &a, &b)
+            .await;
+
+        assert!(
+            matches!(result, Err(AddLinkedNodeError::ExistingNodeFailed(_))),
+            "pre-existing node persist failure must be an ExistingNodeFailed error, got {:?}",
+            result
+        );
+        // The live node must not have been removed by the failed call.
+        assert!(
+            topo.add_node(b).is_err(),
+            "pre-existing node b must remain in the router after an existing-node failure"
         );
     }
 
