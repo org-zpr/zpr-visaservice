@@ -245,8 +245,18 @@ impl TopologyMgr {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add_node(&self, addr: IpAddr) -> Result<(), TopologyError> {
         self.router.add_node(addr)
+    }
+
+    /// Ensure a node exists in the router without disturbing links or persisted edges.
+    pub fn ensure_node(&self, addr: IpAddr) -> bool {
+        match self.router.add_node(addr) {
+            Ok(()) => true,
+            Err(TopologyError::NodeExists(_)) => false,
+            Err(e) => unreachable!("unexpected error adding node to router: {}", e),
+        }
     }
 
     #[allow(dead_code)]
@@ -512,6 +522,35 @@ mod tests {
         // The link is back: a and b are peers and a route exists.
         assert_eq!(topo.get_peers(&a), vec![b]);
         assert!(topo.get_best_route(&a, &b).is_some());
+    }
+
+    /// ensure_node preserves restored in-memory links and persisted edges on reconnect.
+    #[tokio::test]
+    async fn test_ensure_node_preserves_restored_links_on_reconnect() {
+        let db = Arc::new(FakeDb::new());
+        let a = ip("fd5a:5052::1");
+        let b = ip("fd5a:5052::2");
+        let policy_mgr = make_policy_mgr(db.clone(), a, b, "link-ab").await;
+
+        // Persist an edge directly, then restore into a fresh topology to simulate restart.
+        LinkRepo::new(db.clone()).add_edge(&a, &b).await.unwrap();
+        let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
+        topo.restore_from_state(&policy_mgr, &[a, b]).await.unwrap();
+        assert_eq!(topo.get_peers(&a), vec![b], "precondition: link restored");
+
+        let added = topo.ensure_node(b);
+
+        assert!(!added, "node was already present from restore");
+        assert_eq!(
+            topo.get_peers(&a),
+            vec![b],
+            "restored in-memory link must survive reconnect"
+        );
+        assert_eq!(
+            LinkRepo::new(db).list_edges().await.unwrap().len(),
+            1,
+            "persisted edge must survive reconnect"
+        );
     }
 
     /// A persisted edge the current policy no longer describes is skipped and GC'd.
