@@ -985,7 +985,7 @@ impl vsapi::v_s_handle::Server for VSHandleImpl {
 
                 // Only release the address if THIS call created the node. For a
                 // pre-existing node the address is still live in actor/router state, so
-                // releasing it would corrupt the allocator (see issue #209 bug 2).
+                // releasing it would corrupt the allocator.
                 if matches!(add_err, AddLinkedNodeError::NewNodeFailed(_))
                     && self.asm.net_mgr.is_managed_address(&actor_addr)
                 {

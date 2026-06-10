@@ -522,7 +522,7 @@ mod tests {
     }
 
     /// A persist failure while repairing a PRE-EXISTING node's edge is reported as an
-    /// existing-node failure and leaves the live node in place (issue #209 bug 2).
+    /// existing-node failure and leaves the live node in place.
     #[tokio::test]
     async fn test_add_linked_node_preexisting_failure_is_existing_node_error() {
         let db = Arc::new(FakeDb::new());
