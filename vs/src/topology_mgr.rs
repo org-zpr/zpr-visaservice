@@ -367,15 +367,14 @@ mod tests {
 
     use std::sync::Arc;
 
-    use bytes::Bytes;
-    use libeval::policy::Policy;
     use zpr::policy::v1 as policy_capnp;
     use zpr::policy_types::{NetAddr, Peering};
     use zpr::write_to::WriteTo;
 
+    use crate::config;
     use crate::counters::Counters;
     use crate::db::{ActorRepo, DbConnection, FakeDb, LinkRepo, NodeRepo, PolicyRepo};
-    use crate::test_helpers::{FakeResolver, make_node_actor_defexp};
+    use crate::test_helpers::{FakeResolver, make_container_bytes, make_node_actor_defexp};
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -383,7 +382,7 @@ mod tests {
 
     /// Build a Policy containing a single peering between `node_a` and `node_b`.
     /// Substrate addresses use the node IPs with port 0 so the IP-only resolver works.
-    fn policy_with_link(node_a: IpAddr, node_b: IpAddr, link_id: &str) -> Policy {
+    fn policy_with_link(node_a: IpAddr, node_b: IpAddr, link_id: &str) -> Vec<u8> {
         let peering = Peering {
             link_id: link_id.to_string(),
             node_a,
@@ -401,14 +400,22 @@ mod tests {
         }
         let mut bytes = Vec::new();
         capnp::serialize::write_message(&mut bytes, &msg).unwrap();
-        Policy::new_from_policy_bytes(Bytes::from(bytes)).unwrap()
+        // Policy::new_from_policy_bytes(Bytes::from(bytes)).unwrap()
+        bytes
     }
 
     /// Create a PolicyMgr over the given db preloaded with a single-link policy.
     async fn make_policy_mgr(db: Arc<FakeDb>, a: IpAddr, b: IpAddr, link_id: &str) -> PolicyMgr {
+        let pol_bytes = policy_with_link(a, b, link_id);
+
         let repo = PolicyRepo::new(db);
         PolicyMgr::new_with_initial_policy(
-            policy_with_link(a, b, link_id),
+            make_container_bytes(
+                config::POLICY_MIN_COMPILER_MAJOR,
+                config::POLICY_MIN_COMPILER_MINOR,
+                config::POLICY_MIN_COMPILER_PATCH,
+                &pol_bytes,
+            ),
             repo,
             Arc::new(FakeResolver::ip_only()),
         )
