@@ -5241,7 +5241,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[package]]
 name = "zpr"
 version = "0.18.1"
-source = "git+https://github.com/org-zpr/zpr-common.git?rev=c057c784a5ae9aa4300248d514881ff20b3d83d2#c057c784a5ae9aa4300248d514881ff20b3d83d2"
+source = "git+https://github.com/org-zpr/zpr-common.git?tag=v0.18.1#90dcac76eecad9abb6cd1d6cca667e14c1d98f6b"
 dependencies = [
  "base64",
  "bytes",
