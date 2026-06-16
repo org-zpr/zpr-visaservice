@@ -1,6 +1,7 @@
 //! Policy is kept together with its container. This does that.
 //!
 //! - [PolicyContainerBytes]: encoded Cap'n Proto `PolicyContainer` bytes.
+//!   See https://github.com/org-zpr/zpr-common/blob/main/src/policy_types/policy_bundle.rs
 //! - [LoadedPolicy]: a decoded [Policy] paired with the exact container bytes it
 //!   was decoded from, so the two can never drift apart.
 //!

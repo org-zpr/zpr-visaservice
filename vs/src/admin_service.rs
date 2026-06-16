@@ -21,6 +21,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
+use zpr::policy_types::PolicyBundle;
 use zpr::vsapi_types::{DockPepType, KeyFormat, KeySet, Visa};
 
 use libeval::attribute::{Attribute, ROLE_NODE, key};
@@ -43,8 +44,8 @@ use crate::policy_mgr::DEFAULT_POLICY_ID;
 
 use admin_api_types::{
     ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry,
-    ListEntry, NamedListEntry, NetworkDetails, NodeConnections, NodeRecordBrief, PolicyBundle,
-    Revokes, ServiceDescriptor, VisaDescriptor,
+    ListEntry, NamedListEntry, NetworkDetails, NodeConnections, NodeRecordBrief, Revokes,
+    ServiceDescriptor, VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.

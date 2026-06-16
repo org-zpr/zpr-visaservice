@@ -5,7 +5,9 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use admin_api_types::{ListEntry, PolicyBundle};
+use admin_api_types::ListEntry;
+
+use zpr::policy_types::PolicyBundle;
 
 use crate::vsclient::{RoleFilter, VsClient};
 
