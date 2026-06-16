@@ -1,10 +1,9 @@
 use std::fmt;
 use std::io::prelude::*;
 
-use zpr::policy::v1;
+use zpr::policy_types::PolicyContainerBytes;
 
 use base64::prelude::*;
-use bytes::Buf;
 use colored::Colorize;
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -35,21 +34,13 @@ impl PolicyBundle {
     /// - GZIP errors related to compression. (unlikely)
     pub fn new_from_policy_container(
         config_id: u64,
-        container_bytes: &[u8],
+        container_bytes: PolicyContainerBytes,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let container_reader = capnp::serialize::read_message(
-            container_bytes.reader(),
-            capnp::message::ReaderOptions::new(),
-        )?;
-        let container = container_reader.get_root::<v1::policy_container::Reader>()?;
-        let zplc_maj = container.get_zplc_ver_major();
-        let zplc_min = container.get_zplc_ver_minor();
-        let zplc_patch = container.get_zplc_ver_patch();
-        let compiler_version = format!("{}.{}.{}", zplc_maj, zplc_min, zplc_patch);
+        let compiler_version = container_bytes.get_compiler_info()?.to_string();
 
         // compress policy data with gzip
         let mut gz_w = GzEncoder::new(Vec::new(), Compression::default());
-        gz_w.write_all(container_bytes)?;
+        gz_w.write_all(container_bytes.as_bytes())?;
         let gz_bytes = gz_w.finish()?;
 
         // encode the compressed data as base64
@@ -98,10 +89,12 @@ impl PolicyBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use zpr::policy::v1;
 
     /// Build the Cap'n Proto encoded bytes of a `PolicyContainer` with the given
     /// compiler version and (arbitrary) policy payload, for use as test input.
-    fn make_container_bytes(maj: u32, min: u32, patch: u32, policy: &[u8]) -> Vec<u8> {
+    fn make_container_bytes(maj: u32, min: u32, patch: u32, policy: &[u8]) -> PolicyContainerBytes {
         let mut msg = capnp::message::Builder::new_default();
         {
             let mut container = msg.init_root::<v1::policy_container::Builder>();
@@ -113,7 +106,7 @@ mod tests {
         }
         let mut buf = Vec::new();
         capnp::serialize::write_message(&mut buf, &msg).unwrap();
-        buf
+        PolicyContainerBytes::from(buf)
     }
 
     /// new_from_policy_container should record the config id, an empty version,
@@ -121,7 +114,7 @@ mod tests {
     #[test]
     fn new_from_policy_container_sets_fields() {
         let container = make_container_bytes(1, 2, 3, b"some-policy");
-        let bundle = PolicyBundle::new_from_policy_container(42, &container).unwrap();
+        let bundle = PolicyBundle::new_from_policy_container(42, container).unwrap();
 
         assert_eq!(bundle.config_id, 42);
         assert_eq!(bundle.version, "");
@@ -133,8 +126,8 @@ mod tests {
     #[test]
     fn encode_decode_round_trips() {
         let container = make_container_bytes(0, 9, 17, b"round-trip-policy");
-        let bundle = PolicyBundle::new_from_policy_container(7, &container).unwrap();
-        let decoded = bundle.decode().unwrap();
+        let bundle = PolicyBundle::new_from_policy_container(7, container.clone()).unwrap();
+        let decoded = PolicyContainerBytes::from(bundle.decode().unwrap());
 
         assert_eq!(decoded, container);
     }
@@ -142,7 +135,10 @@ mod tests {
     /// new_from_policy_container should error on bytes that aren't a valid Cap'n Proto message.
     #[test]
     fn new_from_policy_container_rejects_garbage() {
-        let result = PolicyBundle::new_from_policy_container(0, b"not capnp");
+        let result = PolicyBundle::new_from_policy_container(
+            0,
+            PolicyContainerBytes::from(Bytes::copy_from_slice(b"not capnp")),
+        );
         assert!(result.is_err());
     }
 

@@ -140,7 +140,7 @@ impl Executor {
         let mut policy_buf = Vec::new();
         File::open(policy)?.read_to_end(&mut policy_buf)?;
 
-        match PolicyBundle::new_from_policy_container(0, &policy_buf) {
+        match PolicyBundle::new_from_policy_container(0, policy_buf.into()) {
             Ok(pb) => {
                 println!("{}", "sending policy container".magenta());
                 let entry: ListEntry = self.vs_cli.install_policy(&pb)?;
