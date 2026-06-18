@@ -6,10 +6,6 @@
 //! be rebuilt on restart (see [TopologyMgr::restore_from_state]). Nodes themselves are
 //! persisted by `ActorMgr`/`NodeRepo`; only the edges (links) are persisted here.
 //!
-//! TODO: Policy updates must reconcile already-installed router links and
-//! persisted topology edges (e.g. revoke links a new policy no longer describes). That
-//! is handled by a separate task; restore here only validates persisted edges against
-//! the policy in effect at startup.
 use std::collections::HashSet;
 use std::net::IpAddr;
 use tracing::{error, warn};
