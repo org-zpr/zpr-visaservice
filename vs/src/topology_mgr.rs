@@ -219,10 +219,10 @@ impl TopologyMgr {
         policy_mgr: &PolicyMgr,
         node_addrs: &[IpAddr],
     ) -> Result<(), ServiceError> {
-        // Rebuild nodes first (NodeExists is harmless if a node was already added).
+        // In this code path there should be no cases for errors from add_node.
         for addr in node_addrs {
             match self.router.add_node(addr.clone()) {
-                Ok(()) | Err(TopologyError::NodeExists(_)) => {}
+                Ok(()) => {}
                 Err(e) => return Err(e.into()),
             }
         }
