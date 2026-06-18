@@ -227,9 +227,6 @@ impl EvalContext {
 
         // Query to see if the authenticated claims match any join policies.
         let matching_jps = self.policy.match_join_policies(&query_claims);
-        if matching_jps.is_empty() {
-            return Err(EvalError::NoMatch);
-        }
         debug!(
             target: EVAL,
             "found {} matching join policies",
@@ -949,7 +946,7 @@ mod test {
     }
 
     #[test]
-    fn test_connect_fail() {
+    fn test_connect_allowed_even_with_no_allows() {
         setup();
         let pol = load_policy("basic.bin2");
         let ctx = EvalContext::new(Arc::new(pol));
@@ -966,8 +963,11 @@ mod test {
             Some(unauthenticated_claims.as_slice()),
             Duration::from_secs(1000),
         ) {
-            Err(_) => {}
-            Ok(actor) => panic!("expected connection approval to fail, got {:?}", actor),
+            Err(e) => panic!("expected connection approval to succeed, got {:?}", e),
+            Ok(actor) => {
+                assert!(!actor.is_node());
+                assert!(actor.has_attribute_value(key::ROLE, ROLE_ADAPTER));
+            }
         };
     }
 }
