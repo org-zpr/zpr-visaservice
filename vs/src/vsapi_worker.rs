@@ -787,7 +787,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         // Add the node to the router, preserving restored links if it already exists.
         if !undo.ensure_node_in_router_and_track_if_added(&self.asm.topo_mgr, node_zpr_addr) {
             // Node exists already.
-            warn!(target: API, "node {:?} already present in router on (re)connect; keeping existing node and links", &node_cn);
+            info!(target: API, "node {:?} already present in router on (re)connect; keeping existing node and links", &node_cn);
         }
 
         let evt = VsEvent::ActorJoins(node_zpr_addr);
