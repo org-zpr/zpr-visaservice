@@ -289,6 +289,9 @@ impl TopologyMgr {
     }
 
     /// Ensure a node exists in the router without disturbing links or persisted edges.
+    /// This calls [Router::add_node].
+    ///
+    /// Returns true if node was added. If node already exists, you get `false` back instead.
     pub fn ensure_node(&self, addr: IpAddr) -> bool {
         match self.router.add_node(addr) {
             Ok(()) => true,
