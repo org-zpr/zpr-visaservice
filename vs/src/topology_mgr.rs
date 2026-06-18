@@ -1,5 +1,5 @@
 //! Topology manager - maintains the graph of nodes and links, and provides pathfinding and route selection.
-//! Note that this topology as it exists. For toplogy as it is intended to be you need to look at policy.
+//! Note that this is topology as it exists. For toplogy as it is intended to be, you need to look at policy.
 //!
 //! The in-memory graph lives in [Router]. This manager owns a [LinkRepo] and is the
 //! write-through point that persists the node-link adjacency to state so the graph can
