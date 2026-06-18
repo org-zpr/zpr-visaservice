@@ -279,16 +279,20 @@ impl TopologyMgr {
         }
     }
 
+    /// Add a node to the router without disturbing links or persisted edges.
+    /// This calls [Router::add_node].
+    ///
+    /// Retruns an error if the node already exists.
     #[allow(dead_code)]
     pub fn add_node(&self, addr: IpAddr) -> Result<(), TopologyError> {
         self.router.add_node(addr)
     }
 
-    /// Ensure a node exists in the router without disturbing links or persisted edges.
+    /// Add a node to the router without disturbing links or persisted edges.
     /// This calls [Router::add_node].
     ///
     /// Returns true if node was added. If node already exists, you get `false` back instead.
-    pub fn ensure_node(&self, addr: IpAddr) -> bool {
+    pub fn add_node_if_not_exists(&self, addr: IpAddr) -> bool {
         match self.router.add_node(addr) {
             Ok(()) => true,
             Err(TopologyError::NodeExists(_)) => false,
@@ -612,7 +616,7 @@ mod tests {
         assert!(topo.get_best_route(&a, &b).is_some());
     }
 
-    /// ensure_node preserves restored in-memory links and persisted edges on reconnect.
+    /// add_node_if_not_exists preserves restored in-memory links and persisted edges on reconnect.
     #[tokio::test]
     async fn test_ensure_node_preserves_restored_links_on_reconnect() {
         let db = Arc::new(FakeDb::new());
@@ -626,7 +630,7 @@ mod tests {
         topo.restore_from_state(&policy_mgr, &[a, b]).await.unwrap();
         assert_eq!(topo.get_peers(&a), vec![b], "precondition: link restored");
 
-        let added = topo.ensure_node(b);
+        let added = topo.add_node_if_not_exists(b);
 
         assert!(!added, "node was already present from restore");
         assert_eq!(

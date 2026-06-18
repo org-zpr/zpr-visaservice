@@ -58,7 +58,7 @@ impl AuthenticateUndo {
         topo_mgr: &TopologyMgr,
         addr: IpAddr,
     ) -> bool {
-        let added_node_to_router = topo_mgr.ensure_node(addr);
+        let added_node_to_router = topo_mgr.add_node_if_not_exists(addr);
         if added_node_to_router {
             self.added_node_to_router = Some(addr);
         }
