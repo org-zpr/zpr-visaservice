@@ -241,7 +241,7 @@ impl TopologyMgr {
 
             // Edges are stored undirected, so try describing the link in either
             // direction before concluding the policy no longer describes it.
-            match Self::describe_link_either(policy_mgr, &a, &b) {
+            match Self::describe_policy_link_either(policy_mgr, &a, &b) {
                 Ok(link_desc) => match self.install_router_link(&a, &b, link_desc) {
                     Ok(()) | Err(TopologyError::LinkExists(_)) => {}
                     Err(e) => return Err(e.into()),
@@ -262,11 +262,11 @@ impl TopologyMgr {
         Ok(())
     }
 
-    /// Describe a link in either direction. Edges are stored undirected, so a stored
+    /// Describe a link defined in policy in either direction. Edges are stored undirected, so a stored
     /// `(a, b)` may correspond to a policy peering recorded as `b -> a`. Returns
     /// `LinkNotFound` only when neither direction matches; any other error from the
     /// first lookup is returned as-is.
-    fn describe_link_either(
+    fn describe_policy_link_either(
         policy_mgr: &PolicyMgr,
         a: &IpAddr,
         b: &IpAddr,
