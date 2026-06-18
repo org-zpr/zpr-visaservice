@@ -53,7 +53,7 @@ impl AuthenticateUndo {
     /// added it in our undo state.
     ///
     /// Returns `true` if the node was added. False if it already existed.
-    fn ensure_node_in_router_and_track_if_added(
+    fn add_node_to_router_and_track_if_added(
         &mut self,
         topo_mgr: &TopologyMgr,
         addr: IpAddr,
@@ -785,7 +785,7 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         }
 
         // Add the node to the router, preserving restored links if it already exists.
-        if !undo.ensure_node_in_router_and_track_if_added(&self.asm.topo_mgr, node_zpr_addr) {
+        if !undo.add_node_to_router_and_track_if_added(&self.asm.topo_mgr, node_zpr_addr) {
             // Node exists already.
             info!(target: API, "node {:?} already present in router on (re)connect; keeping existing node and links", &node_cn);
         }
@@ -1519,7 +1519,7 @@ mod tests {
 
             let mut undo = AuthenticateUndo::default();
             assert!(
-                undo.ensure_node_in_router_and_track_if_added(&asm.topo_mgr, addr),
+                undo.add_node_to_router_and_track_if_added(&asm.topo_mgr, addr),
                 "new router node should be reported as added"
             );
             undo.undo(&asm).await;
@@ -1532,14 +1532,14 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_ensure_node_in_router_does_not_undo_preexisting_node() {
+        async fn test_add_node_to_router_does_not_undo_preexisting_node() {
             let asm = Arc::new(new_assembly_for_tests(None).await);
             let addr: IpAddr = "fd5a:5052:90de:1::3".parse().unwrap();
 
             asm.topo_mgr.add_node(addr).unwrap();
 
             let mut undo = AuthenticateUndo::default();
-            let added = undo.ensure_node_in_router_and_track_if_added(&asm.topo_mgr, addr);
+            let added = undo.add_node_to_router_and_track_if_added(&asm.topo_mgr, addr);
 
             assert!(
                 !added,
@@ -1585,7 +1585,7 @@ mod tests {
             undo.took_zpr_addr(&addr);
             undo.added_node_to_actor_mgr(&addr);
             assert!(
-                undo.ensure_node_in_router_and_track_if_added(&asm.topo_mgr, addr),
+                undo.add_node_to_router_and_track_if_added(&asm.topo_mgr, addr),
                 "new router node should be reported as added"
             );
             undo.undo(&asm).await;

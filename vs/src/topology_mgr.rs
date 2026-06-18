@@ -221,10 +221,7 @@ impl TopologyMgr {
     ) -> Result<(), ServiceError> {
         // In this code path there should be no cases for errors from add_node.
         for addr in node_addrs {
-            match self.router.add_node(addr.clone()) {
-                Ok(()) => {}
-                Err(e) => return Err(e.into()),
-            }
+            self.router.add_node(addr.clone())?;
         }
 
         let known: HashSet<IpAddr> = node_addrs.iter().copied().collect();
@@ -618,7 +615,7 @@ mod tests {
 
     /// add_node_if_not_exists preserves restored in-memory links and persisted edges on reconnect.
     #[tokio::test]
-    async fn test_ensure_node_preserves_restored_links_on_reconnect() {
+    async fn test_add_node_if_not_exists_preserves_restored_links_on_reconnect() {
         let db = Arc::new(FakeDb::new());
         let a = ip("fd5a:5052::1");
         let b = ip("fd5a:5052::2");
