@@ -8,7 +8,7 @@
 //!
 use std::collections::HashSet;
 use std::net::IpAddr;
-use tracing::{error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::actor_mgr::ActorMgr;
 use crate::db::LinkRepo;
@@ -159,7 +159,7 @@ impl TopologyMgr {
             // Already connected over this same link (e.g. a reconnect or re-auth).
             // Persist the edge before returning, to repair the case where the router
             // has the edge but Redis missed it.
-            warn!(target: TOPO, "try_add_node but node at addr {} is already connected to us via {}: FINE!", new_node_addr, connect_via);
+            debug!(target: TOPO, "try_add_node but node at addr {} is already connected to us via {}: FINE!", new_node_addr, connect_via);
             if let Err(e) = self.persist_edge(connect_via, new_node_addr).await {
                 warn!(target: TOPO, "failed to persist already-connected edge {} <-> {}: {}", connect_via, new_node_addr, e);
                 // Pre-existing node: its address is still live, so this is not a
@@ -232,7 +232,7 @@ impl TopologyMgr {
         for (a, b) in self.link_repo.list_edges().await? {
             // GC edges whose endpoints are no longer known nodes.
             if !known.contains(&a) || !known.contains(&b) {
-                warn!(target: TOPO, "restore: GC stale edge {} <-> {} (endpoint no longer a known node)", a, b);
+                info!(target: TOPO, "restore: GC stale edge {} <-> {} (endpoint no longer a known node)", a, b);
                 if let Err(e) = self.link_repo.remove_edge(&a, &b).await {
                     warn!(target: TOPO, "restore: failed to GC stale edge {} <-> {}: {}", a, b, e);
                 }
@@ -248,7 +248,7 @@ impl TopologyMgr {
                 },
                 // Policy no longer describes this link in either direction: GC it.
                 Err(ServiceError::Topology(TopologyError::LinkNotFound(_))) => {
-                    warn!(target: TOPO, "restore: GC stale edge {} <-> {} (policy no longer describes link)", a, b);
+                    info!(target: TOPO, "restore: GC stale edge {} <-> {} (policy no longer describes link)", a, b);
                     if let Err(e) = self.link_repo.remove_edge(&a, &b).await {
                         warn!(target: TOPO, "restore: failed to GC stale edge {} <-> {}: {}", a, b, e);
                     }
