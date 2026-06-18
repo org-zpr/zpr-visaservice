@@ -689,8 +689,8 @@ mod tests {
         );
     }
 
-    /// Documents the hazard that justifies main.rs failing startup rather than restoring
-    /// with an empty node set: an empty surviving-node set GCs every persisted edge.
+    /// Restoring from an empty surviving-node set intentionally GCs every persisted edge.
+    /// With no known nodes, no persisted topology links or routes can remain valid.
     #[tokio::test]
     async fn test_restore_with_empty_node_set_gcs_all_edges() {
         let db = Arc::new(FakeDb::new());
@@ -704,8 +704,7 @@ mod tests {
 
         assert!(
             LinkRepo::new(db).list_edges().await.unwrap().is_empty(),
-            "with no surviving nodes every edge is GC'd — hence main.rs must fail fast \
-             instead of restoring with an empty node set"
+            "with no surviving nodes every edge is GC'd"
         );
     }
 }
