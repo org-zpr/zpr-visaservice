@@ -15,7 +15,7 @@ use crate::db::LinkRepo;
 use crate::error::{ServiceError, TopologyError};
 use crate::logging::targets::TOPO;
 use crate::policy_mgr::{LinkDescription, PolicySnapshot};
-use crate::router::Router;
+use crate::router::{LinkSpec, Router};
 
 use libeval::actor::Actor;
 use libeval::attribute::{AttrMatch, Attribute, attributes_equivalent};
@@ -399,11 +399,16 @@ impl TopologyMgr {
             }
         }
 
-        // Apply removals first so every reassigned id is free before any install.
-        for r in &removals {
-            if let Some(id) = &r.old_id {
-                self.router.remove_link(id);
+        // Do all fallible async persistence before touching the router, so a persistence
+        // failure returns with the live graph untouched rather than half-rewritten.
+        // Repair persistence drift: router knows the link but Redis missed it.
+        for e in &surviving {
+            if !e.persisted {
+                self.persist_edge(&e.a, &e.b).await?;
+                report.links_repaired += 1;
             }
+        }
+        for r in &removals {
             if r.persisted {
                 // Best-effort, same as restore: a surviving stale edge is
                 // re-validated on the next pass / restart.
@@ -416,31 +421,36 @@ impl TopologyMgr {
                 report.links_removed += 1;
             }
         }
-        // Vacate the old id of every changed edge before installing, so a moved id can't
-        // collide with the edge it is moving away from.
-        for e in &surviving {
-            if let Action::Replace(old) = &e.action {
-                self.router.remove_link(old);
-            }
-        }
+
+        // Collect every router mutation and apply it as one atomic batch: no concurrent
+        // visa route can observe a half-rewritten graph, and a rejected install rolls back
+        // instead of leaving moved ids vacated. Removals (GC'd edges plus the old id of
+        // every changed edge) are listed first so each reassigned id is free before reuse.
+        let mut removal_ids: Vec<LinkId> =
+            removals.iter().filter_map(|r| r.old_id.clone()).collect();
+        let mut additions: Vec<LinkSpec> = Vec::new();
         for e in surviving {
-            // Repair persistence drift: router knows the link but Redis missed it.
-            if !e.persisted {
-                self.persist_edge(&e.a, &e.b).await?;
-                report.links_repaired += 1;
-            }
+            let spec = LinkSpec {
+                a: e.a,
+                b: e.b,
+                id: e.desc.link_id.into(),
+                attributes: e.desc.attrs,
+                cost: e.desc.cost,
+            };
             match e.action {
                 Action::Keep => {}
                 Action::Fresh => {
-                    self.install_router_link(&e.a, &e.b, e.desc)?;
+                    additions.push(spec);
                     report.links_repaired += 1;
                 }
-                Action::Replace(_) => {
-                    self.install_router_link(&e.a, &e.b, e.desc)?;
+                Action::Replace(old) => {
+                    removal_ids.push(old);
+                    additions.push(spec);
                     report.links_updated += 1;
                 }
             }
         }
+        self.router.apply_link_batch(&removal_ids, additions)?;
 
         // Detect + report orphans. An orphan node is a legitimate state and stays in the
         // topology so long as it remains a known node; removing it belongs to the

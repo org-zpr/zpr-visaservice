@@ -132,6 +132,15 @@ pub struct RouterLink {
     pub cost: u32,
 }
 
+/// One link to install as part of an [Router::apply_link_batch] reconciliation.
+pub struct LinkSpec {
+    pub a: IpAddr,
+    pub b: IpAddr,
+    pub id: LinkId,
+    pub attributes: Vec<Attribute>,
+    pub cost: u32,
+}
+
 pub struct Router {
     inner: RwLock<RouterInner>,
 }
@@ -239,6 +248,42 @@ impl Router {
         inner.link_to_cache_keys.clear();
 
         inner.topology.add_link(a, b, id, attributes, cost)?;
+        inner.topo_generation += 1;
+        Ok(())
+    }
+
+    /// Atomically apply a batch of link removals followed by additions under a single
+    /// write lock, so no concurrent route observes a partially-rewritten graph.
+    pub fn apply_link_batch(
+        &self,
+        removals: &[LinkId],
+        additions: Vec<LinkSpec>,
+    ) -> Result<(), TopologyError> {
+        let mut inner = self.inner.write().unwrap();
+        for id in removals {
+            inner.topology.remove_link(id);
+        }
+        let mut added: Vec<LinkId> = Vec::with_capacity(additions.len());
+        for spec in additions {
+            if let Err(e) =
+                inner
+                    .topology
+                    .add_link(spec.a, spec.b, spec.id.clone(), spec.attributes, spec.cost)
+            {
+                for done in added.iter().rev() {
+                    inner.topology.remove_link(done);
+                }
+                inner.route_cache.clear();
+                inner.link_to_cache_keys.clear();
+                inner.topo_generation += 1;
+                return Err(e);
+            }
+            added.push(spec.id);
+        }
+        // A reconcile touches arbitrary edges, so a full cache flush is the only sound
+        // invalidation; targeted eviction is not worth the bookkeeping on this cold path.
+        inner.route_cache.clear();
+        inner.link_to_cache_keys.clear();
         inner.topo_generation += 1;
         Ok(())
     }
