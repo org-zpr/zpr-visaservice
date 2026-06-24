@@ -198,21 +198,20 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
 
      */
 
-    // For all connected nodes.
-    //   - are they still in policy? NO-> remove node (and links)
-    // For all remaining nodes.
-    //   - does node have peers? NO-> make sure no peers in topology
-    //   - YES -> check that existing peers in topo are still allowed. If not, remove link.
-    //
-    // .. finally send new link message to all nodes.
+    // Grab one consistent policy snapshot and use it for the entire synchronize-to-policy
+    // pass below, so revalidation and per-node link computation all read the same view.
+    let psnap = asm.policy_mgr.get_current_snapshot();
 
-    // alternatively- If I just ask topo manager to reconcile with policy
-    // we should get back a list of links/nodes removed.
-    // and we need to update our actor_mgr (stop vss workers etc).
-    //
-    // BUT, after this step there is nothing in topo that is at odds with policy.
-    // However, nodes in the wild will still be linked and our actor state etc is wrong.
-    // VS can drop l7 links with nodes. Then send disconnect message (new link message) to existing nodes.
+    // PolicyUpdated(vinst) is a trigger, not a guarantee that this handler reconciles that
+    // exact revision. If updates queue faster than we process them we reconcile against the
+    // latest snapshot.
+    let snapshot_vinst = psnap.vinst();
+    if snapshot_vinst != vinst {
+        info!(
+            target: EVENT,
+            "policy update event called with vinst={vinst}, using current snapshot vinst={snapshot_vinst}"
+        );
+    }
 
     info!(target: EVENT, "policy updated vinst={vinst}: TODO revalidate connected nodes");
     let connected_node_addrs = asm.actor_mgr.list_node_addrs().await?;
@@ -222,13 +221,10 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
     // Once validated the `connected_node_addrs` will be in sync with policy. And we should have already removed the stale
     // nodes from the actor_mgr state, disconnected from VSS, etc.
 
-    // TODO: We should grab a snap shot here and use it in all the following syncronize-to-policy code.
-    //let psnap = asm.policy_manager.get_current_snapshot().await?;
-
     info!(target: EVENT, "policy updated vinst={vinst}: revalidating topology");
     let report = asm
         .topo_mgr
-        .revalidate_against_policy(&asm.policy_mgr, &connected_node_addrs)
+        .revalidate_against_policy(&psnap, &connected_node_addrs)
         .await?;
     info!(
         target: EVENT,
@@ -239,17 +235,16 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
         report.orphaned_nodes.len()
     );
 
-    for naddr in &connected_node_addrs {
-        // TODO: Send updated topology to each connected node.
-        let links = asm.policy_mgr.resolved_links_for_node(naddr);
-        // let links = psnap.resolved_links_for_node(node_addr);
-
-        if let Some(vss_handle) = asm.vss_mgr.get_handle(&naddr) {
+    // Queue up setTopology messages in parallel.
+    let futs = connected_node_addrs.iter().filter_map(|naddr| {
+        let links = psnap.links_for_node(naddr);
+        asm.vss_mgr.get_handle(naddr).map(|vss_handle| async move {
             if let Err(e) = vss_handle.set_topology(links).await {
                 error!(target: EVENT, "failed to set topology for node {}: {}", naddr, e);
             }
-        }
-    }
+        })
+    });
+    futures::future::join_all(futs).await;
 
     Ok(())
 }

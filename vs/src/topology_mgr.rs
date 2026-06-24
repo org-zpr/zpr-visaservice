@@ -14,7 +14,7 @@ use crate::actor_mgr::ActorMgr;
 use crate::db::LinkRepo;
 use crate::error::{ServiceError, TopologyError};
 use crate::logging::targets::TOPO;
-use crate::policy_mgr::{LinkDescription, PolicyMgr};
+use crate::policy_mgr::{LinkDescription, PolicySnapshot};
 use crate::router::Router;
 
 use libeval::actor::Actor;
@@ -131,7 +131,7 @@ impl TopologyMgr {
     /// error, so we never report failure while leaving a router edge behind.
     pub async fn add_linked_node(
         &self,
-        policy_mgr: &PolicyMgr,
+        snapshot: &PolicySnapshot,
         actor_mgr: &ActorMgr,
         actor: &Actor,
         connect_via: &IpAddr,
@@ -140,7 +140,7 @@ impl TopologyMgr {
         let peer_node_addrs = self.router.get_peers(new_node_addr);
         let preexisting_node = self.router.has_node(new_node_addr);
 
-        let link_desc = match policy_mgr.describe_link(connect_via, new_node_addr) {
+        let link_desc = match snapshot.describe_link(connect_via, new_node_addr) {
             Ok(d) => d,
             Err(e) => return Err(AddLinkedNodeError::new(preexisting_node, e)),
         };
@@ -223,7 +223,7 @@ impl TopologyMgr {
     /// startup fails the service rather than silently deleting valid persisted edges.
     pub async fn restore_from_state(
         &self,
-        policy_mgr: &PolicyMgr,
+        snapshot: &PolicySnapshot,
         node_addrs: &[IpAddr],
     ) -> Result<(), ServiceError> {
         // In this code path there should be no cases for errors from add_node.
@@ -237,7 +237,7 @@ impl TopologyMgr {
             // Decide the edge's fate against the current policy + known-node set. Any
             // error other than the precise not-described case is propagated, so a
             // transient policy/DB problem fails startup rather than deleting valid edges.
-            match Self::decide_edge(policy_mgr, &known, &a, &b)? {
+            match Self::decide_edge(snapshot, &known, &a, &b)? {
                 EdgeDecision::Install(link_desc) => {
                     match self.install_router_link(&a, &b, link_desc) {
                         Ok(()) | Err(TopologyError::LinkExists(_)) => {}
@@ -264,7 +264,7 @@ impl TopologyMgr {
     /// `LinkNotFound`-in-policy case yields `Gc`; any other error propagates so a
     /// transient policy/DB failure never silently deletes a valid edge.
     fn decide_edge(
-        policy_mgr: &PolicyMgr,
+        snapshot: &PolicySnapshot,
         known: &HashSet<IpAddr>,
         a: &IpAddr,
         b: &IpAddr,
@@ -274,7 +274,7 @@ impl TopologyMgr {
         }
         // Edges are stored undirected, so try describing the link in either direction
         // before concluding the policy no longer describes it.
-        match Self::describe_policy_link_either(policy_mgr, a, b) {
+        match Self::describe_policy_link_either(snapshot, a, b) {
             Ok(desc) => Ok(EdgeDecision::Install(desc)),
             Err(ServiceError::Topology(TopologyError::LinkNotFound(_))) => Ok(EdgeDecision::Gc),
             Err(e) => Err(e),
@@ -297,7 +297,7 @@ impl TopologyMgr {
     /// pass.
     pub async fn revalidate_against_policy(
         &self,
-        policy_mgr: &PolicyMgr,
+        snapshot: &PolicySnapshot,
         node_addrs: &[IpAddr],
     ) -> Result<RevalidationReport, ServiceError> {
         let mut report = RevalidationReport::default();
@@ -326,7 +326,7 @@ impl TopologyMgr {
             let persisted = persisted_set.contains(&(a, b));
             let router_link = self.router.link_between(&a, &b);
 
-            match Self::decide_edge(policy_mgr, &known, &a, &b)? {
+            match Self::decide_edge(snapshot, &known, &a, &b)? {
                 EdgeDecision::Gc => {
                     let had_router = router_link.is_some();
                     if let Some(rl) = &router_link {
@@ -403,13 +403,13 @@ impl TopologyMgr {
     /// `LinkNotFound` only when neither direction matches; any other error from the
     /// first lookup is returned as-is.
     fn describe_policy_link_either(
-        policy_mgr: &PolicyMgr,
+        snapshot: &PolicySnapshot,
         a: &IpAddr,
         b: &IpAddr,
     ) -> Result<LinkDescription, ServiceError> {
-        match policy_mgr.describe_link(a, b) {
+        match snapshot.describe_link(a, b) {
             Err(ServiceError::Topology(TopologyError::LinkNotFound(_))) => {
-                policy_mgr.describe_link(b, a)
+                snapshot.describe_link(b, a)
             }
             other => other,
         }
@@ -513,6 +513,7 @@ mod tests {
     use crate::config;
     use crate::counters::Counters;
     use crate::db::{ActorRepo, DbConnection, FakeDb, LinkRepo, NodeRepo, PolicyRepo};
+    use crate::policy_mgr::PolicyMgr;
     use crate::test_helpers::{FakeResolver, make_container_bytes, make_node_actor_defexp};
 
     fn ip(s: &str) -> IpAddr {
@@ -608,9 +609,15 @@ mod tests {
         topo.add_node(a).unwrap();
         let actor_b = make_node_actor_defexp(&b.to_string(), "node-b", "[fd5a:5052::100]:1234");
 
-        topo.add_linked_node(&policy_mgr, &actor_mgr, &actor_b, &a, &b)
-            .await
-            .unwrap();
+        topo.add_linked_node(
+            &policy_mgr.get_current_snapshot(),
+            &actor_mgr,
+            &actor_b,
+            &a,
+            &b,
+        )
+        .await
+        .unwrap();
 
         let edges = LinkRepo::new(db).list_edges().await.unwrap();
         assert_eq!(edges.len(), 1);
@@ -643,9 +650,15 @@ mod tests {
 
         // Re-adding the same link hits the already-connected path and repairs Redis.
         let actor_b = make_node_actor_defexp(&b.to_string(), "node-b", "[fd5a:5052::100]:1234");
-        topo.add_linked_node(&policy_mgr, &actor_mgr, &actor_b, &a, &b)
-            .await
-            .unwrap();
+        topo.add_linked_node(
+            &policy_mgr.get_current_snapshot(),
+            &actor_mgr,
+            &actor_b,
+            &a,
+            &b,
+        )
+        .await
+        .unwrap();
 
         let edges = LinkRepo::new(db).list_edges().await.unwrap();
         assert_eq!(edges.len(), 1);
@@ -668,7 +681,13 @@ mod tests {
         db.set("topology:edges", "junk").await.unwrap();
 
         let result = topo
-            .add_linked_node(&policy_mgr, &actor_mgr, &actor_b, &a, &b)
+            .add_linked_node(
+                &policy_mgr.get_current_snapshot(),
+                &actor_mgr,
+                &actor_b,
+                &a,
+                &b,
+            )
             .await;
         // A brand-new node's failure must be reported as a new-node failure so the
         // caller releases the freshly allocated address.
@@ -713,7 +732,13 @@ mod tests {
 
         let actor_b = make_node_actor_defexp(&b.to_string(), "node-b", "[fd5a:5052::100]:1234");
         let result = topo
-            .add_linked_node(&policy_mgr, &actor_mgr, &actor_b, &a, &b)
+            .add_linked_node(
+                &policy_mgr.get_current_snapshot(),
+                &actor_mgr,
+                &actor_b,
+                &a,
+                &b,
+            )
             .await;
 
         assert!(
@@ -740,9 +765,15 @@ mod tests {
 
         topo.add_node(a).unwrap();
         let actor_b = make_node_actor_defexp(&b.to_string(), "node-b", "[fd5a:5052::100]:1234");
-        topo.add_linked_node(&policy_mgr, &actor_mgr, &actor_b, &a, &b)
-            .await
-            .unwrap();
+        topo.add_linked_node(
+            &policy_mgr.get_current_snapshot(),
+            &actor_mgr,
+            &actor_b,
+            &a,
+            &b,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             LinkRepo::new(db.clone()).list_edges().await.unwrap().len(),
             1
@@ -768,7 +799,9 @@ mod tests {
         LinkRepo::new(db.clone()).add_edge(&a, &b).await.unwrap();
         let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
 
-        topo.restore_from_state(&policy_mgr, &[a, b]).await.unwrap();
+        topo.restore_from_state(&policy_mgr.get_current_snapshot(), &[a, b])
+            .await
+            .unwrap();
 
         // The link is back: a and b are peers and a route exists.
         assert_eq!(topo.get_peers(&a), vec![b]);
@@ -786,7 +819,9 @@ mod tests {
         // Persist an edge directly, then restore into a fresh topology to simulate restart.
         LinkRepo::new(db.clone()).add_edge(&a, &b).await.unwrap();
         let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
-        topo.restore_from_state(&policy_mgr, &[a, b]).await.unwrap();
+        topo.restore_from_state(&policy_mgr.get_current_snapshot(), &[a, b])
+            .await
+            .unwrap();
         assert_eq!(topo.get_peers(&a), vec![b], "precondition: link restored");
 
         let added = topo.add_node_if_not_exists(b);
@@ -816,7 +851,9 @@ mod tests {
         LinkRepo::new(db.clone()).add_edge(&a, &c).await.unwrap();
         let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
 
-        topo.restore_from_state(&policy_mgr, &[a, c]).await.unwrap();
+        topo.restore_from_state(&policy_mgr.get_current_snapshot(), &[a, c])
+            .await
+            .unwrap();
 
         assert!(
             topo.get_peers(&a).is_empty(),
@@ -839,7 +876,9 @@ mod tests {
         let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
 
         // Only `a` survived node-state refresh; `b` is gone.
-        topo.restore_from_state(&policy_mgr, &[a]).await.unwrap();
+        topo.restore_from_state(&policy_mgr.get_current_snapshot(), &[a])
+            .await
+            .unwrap();
 
         assert!(topo.get_peers(&a).is_empty());
         assert!(
@@ -859,7 +898,9 @@ mod tests {
         LinkRepo::new(db.clone()).add_edge(&a, &b).await.unwrap();
         let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
 
-        topo.restore_from_state(&policy_mgr, &[]).await.unwrap();
+        topo.restore_from_state(&policy_mgr.get_current_snapshot(), &[])
+            .await
+            .unwrap();
 
         assert!(
             LinkRepo::new(db).list_edges().await.unwrap().is_empty(),
@@ -887,7 +928,7 @@ mod tests {
         LinkRepo::new(db.clone()).add_edge(&a, &c).await.unwrap();
 
         let report = topo
-            .revalidate_against_policy(&policy_mgr, &[a, c])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, c])
             .await
             .unwrap();
 
@@ -920,7 +961,7 @@ mod tests {
         LinkRepo::new(db.clone()).add_edge(&a, &b).await.unwrap();
 
         let report = topo
-            .revalidate_against_policy(&policy_mgr, &[a, b])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b])
             .await
             .unwrap();
 
@@ -945,7 +986,7 @@ mod tests {
         let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
 
         let report = topo
-            .revalidate_against_policy(&policy_mgr, &[a, b])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b])
             .await
             .unwrap();
 
@@ -976,7 +1017,7 @@ mod tests {
         );
 
         let report = topo
-            .revalidate_against_policy(&policy_mgr, &[a, b])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b])
             .await
             .unwrap();
 
@@ -1006,7 +1047,7 @@ mod tests {
             .unwrap();
 
         let report = topo
-            .revalidate_against_policy(&policy_mgr, &[a, c])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, c])
             .await
             .unwrap();
 
@@ -1024,13 +1065,13 @@ mod tests {
         LinkRepo::new(db.clone()).add_edge(&a, &b).await.unwrap();
         let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
         // First pass installs the link from policy.
-        topo.revalidate_against_policy(&policy_mgr, &[a, b])
+        topo.revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b])
             .await
             .unwrap();
 
         // Second pass must be a no-op.
         let report = topo
-            .revalidate_against_policy(&policy_mgr, &[a, b])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b])
             .await
             .unwrap();
 
@@ -1057,13 +1098,13 @@ mod tests {
         LinkRepo::new(db.clone()).add_edge(&a, &b).await.unwrap();
         let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
         // First pass installs the attribute-bearing link.
-        topo.revalidate_against_policy(&policy_mgr, &[a, b])
+        topo.revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b])
             .await
             .unwrap();
 
         // Second pass must not report a spurious update from rebuilt attrs.
         let report = topo
-            .revalidate_against_policy(&policy_mgr, &[a, b])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b])
             .await
             .unwrap();
 
@@ -1102,7 +1143,7 @@ mod tests {
             .unwrap();
 
         let result = topo
-            .revalidate_against_policy(&policy_mgr, &[a, b, c, d])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b, c, d])
             .await;
 
         assert!(result.is_err(), "id collision must surface as an error");
@@ -1126,7 +1167,7 @@ mod tests {
 
         // `c` is a known node with no links.
         let report = topo
-            .revalidate_against_policy(&policy_mgr, &[a, b, c])
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b, c])
             .await
             .unwrap();
 
