@@ -116,20 +116,6 @@ impl TopologyMgr {
         connect_via: &IpAddr,
         new_node_addr: &IpAddr,
     ) -> Result<(), AddLinkedNodeError> {
-        // I think we need to add the node.
-        // But I'm not sure that the actor-mgr needs to know about links.
-        // It does know about tethers.  So maybe is should?  But the router has the
-        // actual graph. So maybe we add redis backing to the router???
-        //
-        // Is this node already in our graph over another link?
-        //
-        // QUESTION - how to tell if this node is just making a link or if it is reconnecting and we need to restore state?
-        //
-        // If a node is already connected to ZPR why does it need to authenticate again?
-        // Well, it may not be allowed to make the link for one thing.
-        //
-        // Computed before describe_link so even an early policy failure is classified
-        // (new vs pre-existing node) for the caller's address-release decision.
         let peer_node_addrs = self.router.get_peers(new_node_addr);
         let preexisting_node = self.router.has_node(new_node_addr);
 
