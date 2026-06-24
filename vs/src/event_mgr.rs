@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use zpr::vsapi::v1::DisconnectReason;
 use zpr::vsapi_types::ServiceDescriptor;
@@ -168,7 +168,7 @@ async fn set_services_all_nodes(
     Ok(())
 }
 
-async fn handle_policy_updated(_asm: &Arc<Assembly>, vinst: u64) -> Result<(), ServiceError> {
+async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), ServiceError> {
     /*
 
     https://github.com/org-zpr/zpr-visaservice/issues/219
@@ -184,6 +184,8 @@ async fn handle_policy_updated(_asm: &Arc<Assembly>, vinst: u64) -> Result<(), S
 
     - request re-auth all nodes.
 
+    - clear revocation list? May make more sense to keep it and make admin clear manually.
+
     - services -> ensure all services being offered are still allowed by policy.
        - What if an already connected adapter has a new service -> will need to re-connect?
        - We can do a basic check to see that all the services we have do exist in policy.
@@ -195,6 +197,59 @@ async fn handle_policy_updated(_asm: &Arc<Assembly>, vinst: u64) -> Result<(), S
        - Instead we will have already killed visas. Probably ok to let them be connected but unable to do anything.
 
      */
-    warn!(target: EVENT, "policy updated event vinst={vinst} (not implemented)");
+
+    // For all connected nodes.
+    //   - are they still in policy? NO-> remove node (and links)
+    // For all remaining nodes.
+    //   - does node have peers? NO-> make sure no peers in topology
+    //   - YES -> check that existing peers in topo are still allowed. If not, remove link.
+    //
+    // .. finally send new link message to all nodes.
+
+    // alternatively- If I just ask topo manager to reconcile with policy
+    // we should get back a list of links/nodes removed.
+    // and we need to update our actor_mgr (stop vss workers etc).
+    //
+    // BUT, after this step there is nothing in topo that is at odds with policy.
+    // However, nodes in the wild will still be linked and our actor state etc is wrong.
+    // VS can drop l7 links with nodes. Then send disconnect message (new link message) to existing nodes.
+
+    info!(target: EVENT, "policy updated vinst={vinst}: TODO revalidate connected nodes");
+    let connected_node_addrs = asm.actor_mgr.list_node_addrs().await?;
+
+    // TODO: Check existing nodes against policy.
+    // Until then  we just assume has not changed.
+    // Once validated the `connected_node_addrs` will be in sync with policy. And we should have already removed the stale
+    // nodes from the actor_mgr state, disconnected from VSS, etc.
+
+    // TODO: We should grab a snap shot here and use it in all the following syncronize-to-policy code.
+    //let psnap = asm.policy_manager.get_current_snapshot().await?;
+
+    info!(target: EVENT, "policy updated vinst={vinst}: revalidating topology");
+    let report = asm
+        .topo_mgr
+        .revalidate_against_policy(&asm.policy_mgr, &connected_node_addrs)
+        .await?;
+    info!(
+        target: EVENT,
+        "topology revalidated vinst={vinst}: removed={} updated={} repaired={} orphaned={}",
+        report.links_removed,
+        report.links_updated,
+        report.links_repaired,
+        report.orphaned_nodes.len()
+    );
+
+    for naddr in &connected_node_addrs {
+        // TODO: Send updated topology to each connected node.
+        let links = asm.policy_mgr.resolved_links_for_node(naddr);
+        // let links = psnap.resolved_links_for_node(node_addr);
+
+        if let Some(vss_handle) = asm.vss_mgr.get_handle(&naddr) {
+            if let Err(e) = vss_handle.set_topology(links).await {
+                error!(target: EVENT, "failed to set topology for node {}: {}", naddr, e);
+            }
+        }
+    }
+
     Ok(())
 }

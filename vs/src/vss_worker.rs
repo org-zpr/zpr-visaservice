@@ -175,6 +175,12 @@ pub async fn vss_worker_loop(
                                 asm.counters.incr(CounterType::VssErrors);
                             }
                         }
+                        VssCmd::SetTopology(links, resp_tx) => {
+                            if let Err(e) = resp_tx.send(vss_do_set_topology(&vss_handle, &links).await) {
+                                error!(target: VSS, "failed to send response for set-topology command: {:?}", e);
+                                asm.counters.incr(CounterType::VssErrors);
+                            }
+                        }
                     }
                     None => {
                         // Uh oh - channel closed.
