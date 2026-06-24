@@ -365,6 +365,9 @@ impl Router {
     /// - [TopologyError::LinkNotFound] if no link currently connects `a` and `b`.
     /// - [TopologyError::LinkExists] if `id` differs from the old id but is already used
     ///   by another live edge.
+    // Retained as a tested Router primitive; revalidation now does remove-then-install
+    // so it has no live caller.
+    #[allow(dead_code)]
     pub fn replace_link_between(
         &self,
         a: &IpAddr,
@@ -635,6 +638,7 @@ impl Graph {
     /// Replace the link currently connecting `a` and `b` with one carrying the given id,
     /// attributes, and cost. Validates fully before mutating so a rejected replacement
     /// leaves the existing link untouched. See [Router::replace_link_between].
+    #[allow(dead_code)]
     fn replace_link(
         &mut self,
         a: &NodeId,

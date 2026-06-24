@@ -322,60 +322,122 @@ impl TopologyMgr {
             work_edges.insert(Self::canonical_pair(link.a, link.b));
         }
 
+        // Reconcile in two phases: decide every edge first, then mutate. A policy update
+        // can move a link id from one edge to another; doing the work edge-by-edge would
+        // let an install collide with the id's prior holder when `work_edges` (a HashSet)
+        // happens to visit the new edge first, aborting the whole pass nondeterministically.
+        // Deciding first lets us free every reassigned id before installing any, and lets
+        // us reject a genuinely invalid policy (two surviving edges claiming one id)
+        // up front so the live topology is left untouched rather than half-rewritten.
+
+        /// How a surviving edge's router link must change to match policy.
+        enum Action {
+            /// Router already matches policy; nothing to install.
+            Keep,
+            /// Router missing the link (drift) — install fresh.
+            Fresh,
+            /// Router link differs (id/cost/attrs changed) — vacate this old id, then reinstall.
+            Replace(LinkId),
+        }
+        struct Surviving {
+            a: IpAddr,
+            b: IpAddr,
+            persisted: bool,
+            desc: LinkDescription,
+            action: Action,
+        }
+        struct Removal {
+            a: IpAddr,
+            b: IpAddr,
+            persisted: bool,
+            old_id: Option<LinkId>,
+        }
+
+        let mut surviving: Vec<Surviving> = Vec::new();
+        let mut removals: Vec<Removal> = Vec::new();
         for (a, b) in work_edges {
             let persisted = persisted_set.contains(&(a, b));
             let router_link = self.router.link_between(&a, &b);
-
             match Self::decide_edge(snapshot, &known, &a, &b)? {
-                EdgeDecision::Gc => {
-                    let had_router = router_link.is_some();
-                    if let Some(rl) = &router_link {
-                        self.router.remove_link(&rl.id);
-                    }
-                    if persisted {
-                        // Best-effort, same as restore: a surviving stale edge is
-                        // re-validated on the next pass / restart.
-                        if let Err(e) = self.link_repo.remove_edge(&a, &b).await {
-                            warn!(target: TOPO, "revalidate: failed to GC edge {} <-> {}: {}", a, b, e);
-                        }
-                    }
-                    if had_router || persisted {
-                        info!(target: TOPO, "revalidate: removed edge {} <-> {} (policy no longer describes link)", a, b);
-                        report.links_removed += 1;
-                    }
-                }
+                EdgeDecision::Gc => removals.push(Removal {
+                    a,
+                    b,
+                    persisted,
+                    old_id: router_link.map(|rl| rl.id),
+                }),
                 EdgeDecision::Install(desc) => {
-                    // Repair persistence drift: router knows the link but Redis missed it.
-                    if !persisted {
-                        self.persist_edge(&a, &b).await?;
-                        report.links_repaired += 1;
-                    }
-                    match &router_link {
-                        // Repair router drift: persisted edge missing from the live router.
-                        None => {
-                            match self.install_router_link(&a, &b, desc) {
-                                Ok(()) | Err(TopologyError::LinkExists(_)) => {}
-                                Err(e) => return Err(e.into()),
-                            }
-                            report.links_repaired += 1;
-                        }
-                        // Link present in both stores: refresh only if policy changed it.
+                    let action = match &router_link {
+                        None => Action::Fresh,
                         Some(rl) => {
                             let changed = rl.id.0 != desc.link_id
                                 || rl.cost != desc.cost
                                 || !attributes_equivalent(&rl.attributes, &desc.attrs);
                             if changed {
-                                self.router.replace_link_between(
-                                    &a,
-                                    &b,
-                                    desc.link_id.into(),
-                                    desc.attrs,
-                                    desc.cost,
-                                )?;
-                                report.links_updated += 1;
+                                Action::Replace(rl.id.clone())
+                            } else {
+                                Action::Keep
                             }
                         }
-                    }
+                    };
+                    surviving.push(Surviving {
+                        a,
+                        b,
+                        persisted,
+                        desc,
+                        action,
+                    });
+                }
+            }
+        }
+
+        // Reject genuine id collisions (two surviving edges want the same id) before any
+        // mutation. A surviving edge's final id is always its policy `link_id`.
+        let mut claimed: HashSet<&str> = HashSet::new();
+        for e in &surviving {
+            if !claimed.insert(e.desc.link_id.as_str()) {
+                return Err(TopologyError::LinkExists(e.desc.link_id.clone()).into());
+            }
+        }
+
+        // Apply removals first so every reassigned id is free before any install.
+        for r in &removals {
+            if let Some(id) = &r.old_id {
+                self.router.remove_link(id);
+            }
+            if r.persisted {
+                // Best-effort, same as restore: a surviving stale edge is
+                // re-validated on the next pass / restart.
+                if let Err(e) = self.link_repo.remove_edge(&r.a, &r.b).await {
+                    warn!(target: TOPO, "revalidate: failed to GC edge {} <-> {}: {}", r.a, r.b, e);
+                }
+            }
+            if r.old_id.is_some() || r.persisted {
+                info!(target: TOPO, "revalidate: removed edge {} <-> {} (policy no longer describes link)", r.a, r.b);
+                report.links_removed += 1;
+            }
+        }
+        // Vacate the old id of every changed edge before installing, so a moved id can't
+        // collide with the edge it is moving away from.
+        for e in &surviving {
+            if let Action::Replace(old) = &e.action {
+                self.router.remove_link(old);
+            }
+        }
+        for e in surviving {
+            // Repair persistence drift: router knows the link but Redis missed it.
+            if !e.persisted {
+                self.persist_edge(&e.a, &e.b).await?;
+                report.links_repaired += 1;
+            }
+            match e.action {
+                Action::Keep => {}
+                Action::Fresh => {
+                    self.install_router_link(&e.a, &e.b, e.desc)?;
+                    report.links_repaired += 1;
+                }
+                Action::Replace(_) => {
+                    self.install_router_link(&e.a, &e.b, e.desc)?;
+                    report.links_updated += 1;
                 }
             }
         }
@@ -1151,6 +1213,62 @@ mod tests {
         assert!(
             topo.get_best_route(&a, &b).is_some(),
             "old link must be left intact after a failed replacement"
+        );
+    }
+
+    /// A policy update that reassigns link ids between two still-valid edges must
+    /// reconcile successfully. Here a<->b and c<->d swap ids: each id stays unique in
+    /// the new policy, but during the single reconciliation pass the target id is still
+    /// held by the other live edge that hasn't been processed yet. Because `work_edges`
+    /// is a HashSet, neither processing order can avoid the in-pass collision, so this
+    /// fails deterministically today (replace_link_between returns LinkExists and the
+    /// whole pass aborts) — the deterministic instance of the move/reuse class flagged
+    /// in review.
+    #[tokio::test]
+    async fn test_revalidate_swaps_link_ids_between_valid_edges() {
+        let db = Arc::new(FakeDb::new());
+        let a = ip("fd5a:5052::1");
+        let b = ip("fd5a:5052::2");
+        let c = ip("fd5a:5052::3");
+        let d = ip("fd5a:5052::4");
+        // New policy keeps both edges but swaps their link ids.
+        let policy_mgr = make_policy_mgr_from_bytes(
+            db.clone(),
+            policy_bytes_from_peerings(&[
+                peering(a, b, "link-2", vec![]),
+                peering(c, d, "link-1", vec![]),
+            ]),
+        )
+        .await;
+        let topo = TopologyMgr::new(LinkRepo::new(db.clone()));
+        topo.add_node(a).unwrap();
+        topo.add_node(b).unwrap();
+        topo.add_node(c).unwrap();
+        topo.add_node(d).unwrap();
+        // Live router currently has the ids the policy is about to swap.
+        topo.add_link(a, b, LinkId("link-1".into()), vec![], 1)
+            .unwrap();
+        topo.add_link(c, d, LinkId("link-2".into()), vec![], 1)
+            .unwrap();
+        LinkRepo::new(db.clone()).add_edge(&a, &b).await.unwrap();
+        LinkRepo::new(db.clone()).add_edge(&c, &d).await.unwrap();
+
+        let report = topo
+            .revalidate_against_policy(&policy_mgr.get_current_snapshot(), &[a, b, c, d])
+            .await
+            .expect("id reassignment between valid edges must reconcile, not abort");
+
+        assert_eq!(report.links_updated, 2, "both edges' ids refreshed");
+        assert_eq!(report.links_removed, 0, "neither edge is stale");
+        assert_eq!(
+            topo.router.link_between(&a, &b).unwrap().id.0,
+            "link-2",
+            "a<->b took the new id"
+        );
+        assert_eq!(
+            topo.router.link_between(&c, &d).unwrap().id.0,
+            "link-1",
+            "c<->d took the new id"
         );
     }
 
