@@ -384,6 +384,7 @@ impl VisaMgr {
             source_zpl.into(),
             hit.direction,
             path,
+            pdesc,
         );
         if let Some(sig) = hit.signal.as_ref() {
             metadata.signal_msgs.push(sig.message.clone());
@@ -600,7 +601,7 @@ mod tests {
     use super::*;
     use crate::db::{FakeDb, VisaRepo};
     use crate::packet::make_fivetuple_tcp;
-    use crate::test_helpers::make_visa;
+    use crate::test_helpers::{make_pdesc, make_visa};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -673,6 +674,7 @@ mod tests {
             "zpl".to_string(),
             Direction::Forward,
             None,
+            &make_pdesc(),
         );
 
         mgr.repo
@@ -729,6 +731,7 @@ mod tests {
             "zpl".to_string(),
             Direction::Forward,
             None,
+            &make_pdesc(),
         );
 
         mgr.repo
@@ -764,6 +767,7 @@ mod tests {
             "zpl".to_string(),
             Direction::Forward,
             None,
+            &make_pdesc(),
         );
 
         mgr.repo
@@ -817,6 +821,7 @@ mod tests {
             "zpl".to_string(),
             Direction::Forward,
             path,
+            &make_pdesc(),
         );
         mgr.repo
             .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
@@ -838,6 +843,7 @@ mod tests {
             "zpl".to_string(),
             Direction::Forward,
             path,
+            &make_pdesc(),
         );
         mgr.repo
             .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
