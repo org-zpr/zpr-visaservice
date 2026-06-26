@@ -380,11 +380,8 @@ mod tests {
     use crate::test_helpers::make_container_bytes;
     use std::sync::Arc;
     use zpr::policy::v1 as policy_capnp;
-    use zpr::policy_types::{AttrExp, AttrOp, NetAddr, Peering};
+    use zpr::policy_types::{AttrExp, NetAddr, Peering};
     use zpr::write_to::WriteTo;
-
-    use libeval::attribute::key;
-    use libeval::policy::DEFAULT_LINK_COST;
 
     use crate::db::{FakeDb, PolicyRepo};
     use crate::test_helpers::FakeResolver;
@@ -552,127 +549,6 @@ mod tests {
         let pcb = PolicyContainerBytes::from(b"not a capnp container".to_vec());
         let result = LoadedPolicy::from_container(pcb, &config::POLICY_MIN_VERSION);
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    /// describe_link returns LinkNotFound when the policy has no topology.
-    async fn test_describe_link_no_topology() {
-        let mgr = make_policy_mgr(policy_no_topology()).await;
-        let result = mgr.describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"));
-        assert!(matches!(
-            result,
-            Err(ServiceError::Topology(TopologyError::LinkNotFound(_)))
-        ));
-    }
-
-    #[tokio::test]
-    /// describe_link returns LinkNotFound when node_a has no peers in the topology.
-    async fn test_describe_link_node_a_not_in_topology() {
-        let peering = make_peering(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1", vec![]);
-        let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr.describe_link(&ip("fd5a:5052::99"), &ip("fd5a:5052::2"));
-        assert!(matches!(
-            result,
-            Err(ServiceError::Topology(TopologyError::LinkNotFound(_)))
-        ));
-    }
-
-    #[tokio::test]
-    /// describe_link returns LinkNotFound when node_a is found but no peer's ZPR address
-    /// matches node_b.
-    async fn test_describe_link_node_b_not_matched() {
-        let peering = make_peering(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1", vec![]);
-        let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr.describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::99"));
-        assert!(matches!(
-            result,
-            Err(ServiceError::Topology(TopologyError::LinkNotFound(_)))
-        ));
-    }
-
-    #[tokio::test]
-    /// describe_link returns the correct link_id when a matching peer is found via IP.
-    async fn test_describe_link_found_by_ip() {
-        let peering = make_peering(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-abc", vec![]);
-        let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr
-            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .unwrap();
-        assert_eq!(result.link_id, "link-abc");
-    }
-
-    #[tokio::test]
-    /// describe_link returns DEFAULT_LINK_COST and an empty attrs vec when the link has no
-    /// attributes.
-    async fn test_describe_link_default_cost_no_attrs() {
-        let peering = make_peering(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1", vec![]);
-        let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr
-            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .unwrap();
-        assert_eq!(result.cost, DEFAULT_LINK_COST);
-        assert!(result.attrs.is_empty());
-    }
-
-    #[tokio::test]
-    /// describe_link reads the numeric cost from the link.zpr.cost attribute.
-    async fn test_describe_link_cost_from_attr() {
-        let peering = make_peering(
-            ip("fd5a:5052::1"),
-            ip("fd5a:5052::2"),
-            "link-1",
-            vec![AttrExp {
-                key: key::LINK_COST.to_string(),
-                op: AttrOp::Eq,
-                value: vec!["5".to_string()],
-            }],
-        );
-        let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr
-            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .unwrap();
-        assert_eq!(result.cost, 5);
-    }
-
-    #[tokio::test]
-    /// describe_link falls back to DEFAULT_LINK_COST when the cost attribute cannot be parsed.
-    async fn test_describe_link_cost_unparseable_uses_default() {
-        let peering = make_peering(
-            ip("fd5a:5052::1"),
-            ip("fd5a:5052::2"),
-            "link-1",
-            vec![AttrExp {
-                key: key::LINK_COST.to_string(),
-                op: AttrOp::Eq,
-                value: vec!["not-a-number".to_string()],
-            }],
-        );
-        let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr
-            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .unwrap();
-        assert_eq!(result.cost, DEFAULT_LINK_COST);
-    }
-
-    #[tokio::test]
-    /// describe_link includes non-cost attributes in the returned LinkDescription.
-    async fn test_describe_link_returns_non_cost_attrs() {
-        let peering = make_peering(
-            ip("fd5a:5052::1"),
-            ip("fd5a:5052::2"),
-            "link-1",
-            vec![AttrExp {
-                key: "link.class".to_string(),
-                op: AttrOp::Eq,
-                value: vec!["trusted".to_string()],
-            }],
-        );
-        let mgr = make_policy_mgr(policy_with_peerings(&[peering])).await;
-        let result = mgr
-            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
-            .unwrap();
-        assert_eq!(result.attrs.len(), 1);
-        assert_eq!(result.attrs[0].get_key(), "link.class");
     }
 
     /// A snapshot is an internally-consistent, stable, owned view: its policy vinst and

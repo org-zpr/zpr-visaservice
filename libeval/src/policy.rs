@@ -778,4 +778,152 @@ mod test {
         let beta = policy.get_link_attrs("link-beta").unwrap();
         assert_eq!(beta[0].key, "link.class");
     }
+
+    // --- describe_link ---
+
+    #[test]
+    /// describe_link returns LinkNotFound when the policy has no topology.
+    fn test_describe_link_no_topology() {
+        let policy = policy_with_peerings(&[]);
+        let result = policy.describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"));
+        assert!(matches!(result, Err(PolicyError::LinkNotFound(_))));
+    }
+
+    #[test]
+    /// describe_link returns LinkNotFound when node_a has no peers in the topology.
+    fn test_describe_link_node_a_not_in_topology() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let result = policy.describe_link(&ip("fd5a:5052::99"), &ip("fd5a:5052::2"));
+        assert!(matches!(result, Err(PolicyError::LinkNotFound(_))));
+    }
+
+    #[test]
+    /// describe_link returns LinkNotFound when node_a is found but no peer's ZPR address
+    /// matches node_b.
+    fn test_describe_link_node_b_not_matched() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let result = policy.describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::99"));
+        assert!(matches!(result, Err(PolicyError::LinkNotFound(_))));
+    }
+
+    #[test]
+    /// describe_link returns the correct link_id when a matching peer is found via IP.
+    fn test_describe_link_found_by_ip() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-abc",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let result = policy
+            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
+            .unwrap();
+        assert_eq!(result.link_id, "link-abc");
+    }
+
+    #[test]
+    /// describe_link returns DEFAULT_LINK_COST and an empty attrs vec when the link has no
+    /// attributes.
+    fn test_describe_link_default_cost_no_attrs() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let result = policy
+            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
+            .unwrap();
+        assert_eq!(result.cost, DEFAULT_LINK_COST);
+        assert!(result.attrs.is_empty());
+    }
+
+    #[test]
+    /// describe_link reads the numeric cost from the link.zpr.cost attribute.
+    fn test_describe_link_cost_from_attr() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![AttrExp {
+                key: key::LINK_COST.to_string(),
+                op: AttrOp::Eq,
+                value: vec!["5".to_string()],
+            }],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let result = policy
+            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
+            .unwrap();
+        assert_eq!(result.cost, 5);
+    }
+
+    #[test]
+    /// describe_link falls back to DEFAULT_LINK_COST when the cost attribute cannot be parsed.
+    fn test_describe_link_cost_unparseable_uses_default() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![AttrExp {
+                key: key::LINK_COST.to_string(),
+                op: AttrOp::Eq,
+                value: vec!["not-a-number".to_string()],
+            }],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let result = policy
+            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
+            .unwrap();
+        assert_eq!(result.cost, DEFAULT_LINK_COST);
+    }
+
+    #[test]
+    /// describe_link includes non-cost attributes in the returned LinkDescription.
+    fn test_describe_link_returns_non_cost_attrs() {
+        let peering = make_peering_full(
+            ip("fd5a:5052::1"),
+            "10.0.0.1",
+            ip("fd5a:5052::2"),
+            "10.0.0.2",
+            "link-1",
+            vec![AttrExp {
+                key: "link.class".to_string(),
+                op: AttrOp::Eq,
+                value: vec!["trusted".to_string()],
+            }],
+        );
+        let policy = policy_with_peerings(&[peering]);
+        let result = policy
+            .describe_link(&ip("fd5a:5052::1"), &ip("fd5a:5052::2"))
+            .unwrap();
+        assert_eq!(result.attrs.len(), 1);
+        assert_eq!(result.attrs[0].get_key(), "link.class");
+    }
 }
