@@ -5,7 +5,6 @@
 //! - visa:<ID> a hash of metadata about each visa.
 //! - visas:<ID>:blob the capnp encoded visa blob itself.
 //! - nodevisa:<ZADDR>:<ID> a hash of state about each visa on each node.
-//! - visaflow:<FLOWID> holds a visa ID. <FLOWID> is derived from 5-tuple.
 
 use capnp;
 
@@ -18,7 +17,7 @@ use tracing::{debug, error, warn};
 use ::zpr::vsapi::v1 as vsapi;
 use libeval::eval_result::Direction;
 use serde_with::{TimestampSeconds, serde_as};
-use zpr::vsapi_types::{PacketDesc, Visa};
+use zpr::vsapi_types::{PacketDesc, Visa, VsapiFiveTuple};
 use zpr::write_to::WriteTo;
 
 use crate::db::{DbConnection, DbOp, ZAddr, gen_timestamp};
@@ -50,17 +49,7 @@ pub struct VisaMetadata {
     pub signal_msgs: Vec<String>, // note we do not keep the signal destination
     pub direction: Direction,
     pub path: Option<Vec<IpAddr>>, // ZPR addresses of nodes on the path only set if a link needs to be traversed.
-    pub five_tuple: FiveTuple,
-}
-
-/// Same as a [PacketDesc] but only gets the 5-tuple info and is serializable.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FiveTuple {
-    pub source: IpAddr,
-    pub source_port: u16,
-    pub dest: IpAddr,
-    pub dest_port: u16,
-    pub protocol: u8,
+    pub five_tuple: VsapiFiveTuple,
 }
 
 pub struct VisaRepo {
@@ -90,28 +79,8 @@ impl VisaMetadata {
             signal_msgs: Vec::new(),
             direction,
             path,
-            five_tuple: FiveTuple::from_packet_desc(pdesc),
+            five_tuple: pdesc.five_tuple.clone(),
         }
-    }
-}
-
-impl FiveTuple {
-    /// Lossy conversion of `PacketDesc` into `FiveTuple`
-    fn from_packet_desc(pdesc: &PacketDesc) -> Self {
-        FiveTuple {
-            source: pdesc.five_tuple.source_addr,
-            source_port: pdesc.five_tuple.source_port,
-            dest: pdesc.five_tuple.dest_addr,
-            dest_port: pdesc.five_tuple.dest_port,
-            protocol: pdesc.five_tuple.l4_protocol,
-        }
-    }
-
-    fn flow_id(&self) -> String {
-        format!(
-            "{}|{}|{}|{}|{}",
-            self.source, self.source_port, self.dest, self.dest_port, self.protocol
-        )
     }
 }
 
@@ -144,12 +113,6 @@ impl VisaRepo {
         let visa_id_key = visa_key_for_visa(visa_id);
 
         let mut ops = Vec::new();
-
-        if let Ok(metadata) = self.get_visa_metadata_by_id(visa_id).await {
-            let flowkey = visaflow_key_for_five_tuple(&metadata.five_tuple);
-            ops.push(DbOp::Del(flowkey));
-        }
-
         ops.push(DbOp::Del(blob_key.clone()));
         ops.push(DbOp::Del(visa_id_key.clone()));
         self.db.atomic_pipeline(&ops).await?;
@@ -272,15 +235,6 @@ impl VisaRepo {
             .set(&key_visa, &serde_json::to_string(&metadata)?)
             .await?;
         self.db.expire(&key_visa, expiration_seconds as i64).await?;
-
-        // visaflow:<FLOWID> -> <visa_id>
-        self.db
-            .set_ex(
-                &visaflow_key_for_five_tuple(&metadata.five_tuple),
-                &visa_id.to_string(),
-                expiration_seconds,
-            )
-            .await?;
 
         // Now update the state/time for the requesting node and any nodes on the path.
         //
@@ -546,10 +500,6 @@ fn visa_key_for_visa(visa_id: u64) -> String {
 fn node_visa_key_for_visa(node_addr: &IpAddr, visa_id: u64) -> String {
     let zaddr = ZAddr::from(node_addr);
     format!("{KEY_NODEVISA}:{zaddr}:{visa_id}")
-}
-
-fn visaflow_key_for_five_tuple(five_tuple: &FiveTuple) -> String {
-    format!("visaflow:{}", five_tuple.flow_id())
 }
 
 #[cfg(test)]
@@ -905,7 +855,7 @@ mod test {
             signal_msgs: vec!["sig-a".to_string(), "sig-b".to_string()],
             direction: Direction::Reverse,
             path: None,
-            five_tuple: FiveTuple::from_packet_desc(&make_pdesc()),
+            five_tuple: make_pdesc().five_tuple,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -937,7 +887,7 @@ mod test {
             signal_msgs: signals.clone(),
             direction: Direction::Forward,
             path: None,
-            five_tuple: FiveTuple::from_packet_desc(&make_pdesc()),
+            five_tuple: make_pdesc().five_tuple,
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -961,7 +911,7 @@ mod test {
                 signal_msgs: Vec::new(),
                 direction,
                 path: None,
-                five_tuple: FiveTuple::from_packet_desc(&make_pdesc()),
+                five_tuple: make_pdesc().five_tuple,
             };
             let json = serde_json::to_string(&original).unwrap();
             let decoded: VisaMetadata = serde_json::from_str(&json).unwrap();
