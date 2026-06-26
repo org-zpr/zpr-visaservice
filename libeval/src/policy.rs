@@ -7,11 +7,14 @@ use bytes::{Buf, Bytes};
 use openssl::pkey::{PKey, Public};
 use thiserror::Error;
 
-use crate::attribute::Attribute;
+use crate::attribute::{Attribute, key};
 use crate::joinpolicy::JPolicy;
 
 use zpr::policy::v1 as policy_capnp;
 use zpr::policy_types::{AttrExp, NetAddr, Peering, PolicyTypeError, Service, ServiceType};
+
+/// The default and the minimum.
+pub const DEFAULT_LINK_COST: u32 = 1;
 
 #[derive(Debug, Error)]
 pub enum PolicyError {
@@ -41,6 +44,9 @@ pub enum PolicyError {
 
     #[error("policy type error: {0}")]
     PolicyTypeError(#[from] PolicyTypeError),
+
+    #[error("link not found: {0}")]
+    LinkNotFound(String),
 }
 
 #[derive(Default)]
@@ -72,6 +78,13 @@ pub struct Peer {
 
     /// Substrate (physical/underlay) address used to reach the remote peer.
     pub remote_substrate: NetAddr,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkDescription {
+    pub link_id: String,
+    pub attrs: Vec<Attribute>,
+    pub cost: u32,
 }
 
 impl Policy {
@@ -270,6 +283,74 @@ impl Policy {
     pub fn get_link_attrs(&self, link_id: &str) -> Option<&[AttrExp]> {
         self.link_attrs.as_ref()?.get(link_id).map(|v| v.as_slice())
     }
+
+    /// Describe the link between `node_a` and `node_b` against the captured policy.
+    /// Both arguments are ZPR addresses.
+    ///
+    /// ## Errors
+    /// - `PolicyError::LinkNotFound` if there is no link between `node_a` and `node_b`
+    ///   in the captured policy.
+    pub fn describe_link(
+        &self,
+        node_a: &IpAddr,
+        node_b: &IpAddr,
+    ) -> Result<LinkDescription, PolicyError> {
+        if let Some(peers) = self.get_peers_for_node(node_a) {
+            for peer in peers {
+                if &peer.remote_zpr_addr == node_b {
+                    let attrs = get_attributes_for_link(self, &peer.link_id);
+                    let cost = if !attrs.is_empty() {
+                        get_link_cost(&attrs, DEFAULT_LINK_COST)
+                    } else {
+                        DEFAULT_LINK_COST
+                    };
+                    return Ok(LinkDescription {
+                        link_id: peer.link_id.clone(),
+                        attrs,
+                        cost,
+                    });
+                }
+            }
+        }
+        Err(PolicyError::LinkNotFound(format!("{node_a} <-> {node_b}")))
+    }
+}
+
+/// Given policy and a link_id, return the libeval-style Attributes for that link.
+/// If there are no attributes, return an empty vec.
+fn get_attributes_for_link(policy: &Policy, link_id: &str) -> Vec<Attribute> {
+    if let Some(attr_exps) = policy.get_link_attrs(link_id) {
+        attr_exps
+            .iter()
+            .map(|ae| Attribute::builder(ae.key.clone()).values(ae.value.clone()))
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Use the special 'zpr.link.cost' attribute to obtain a numeric cost.
+/// Return `default_cost` if there is no cost attribute or if we cannot cooerce it into a number.
+///
+/// TODO: Better to do this in the compiler and then just have an integer cost value as part of the
+/// bin2 representation.
+fn get_link_cost(attrs: &[Attribute], default_cost: u32) -> u32 {
+    for attr in attrs {
+        if attr.get_key() == key::LINK_COST {
+            let value = attr
+                .get_single_value()
+                .ok()
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(default_cost as i32);
+            return if value > 0 {
+                value as u32
+            } else {
+                default_cost
+            };
+        }
+    }
+    // Default cost if not specified or if parsing fails.
+    default_cost
 }
 
 fn load_bootstrap_keys(

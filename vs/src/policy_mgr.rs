@@ -18,9 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use libeval::attribute::Attribute;
-use libeval::attribute::key;
-use libeval::policy::{Peer, Policy};
+use libeval::policy::{LinkDescription, Peer, Policy};
 
 use zpr::policy_types::{NetAddr, NetworkHost, PolicyContainerBytes};
 use zpr::vsapi_types::{Link, LinkRole, SockAddr};
@@ -43,9 +41,6 @@ pub trait DnsResolver: Send + Sync {
 /// active, including policies for different domains.
 pub const DEFAULT_POLICY_ID: u64 = 0;
 
-/// The default and the minimum.
-const DEFAULT_LINK_COST: u32 = 1;
-
 /// Combined policy, source container, and resolved topology — swapped atomically
 /// as a unit so the three can never drift apart.
 struct PolicyState {
@@ -54,20 +49,12 @@ struct PolicyState {
     links_by_node: HashMap<IpAddr, Vec<Link>>,
 }
 
-#[allow(dead_code)]
 pub struct PolicyMgr {
     state: ArcSwap<PolicyState>,
     repo: db::PolicyRepo,
     /// Serializes concurrent policy updates; reads remain lock-free via ArcSwap.
     update_lock: tokio::sync::Mutex<()>,
     resolver: PolicyResolver,
-}
-
-#[derive(Debug, Clone)]
-pub struct LinkDescription {
-    pub link_id: String,
-    pub attrs: Vec<Attribute>,
-    pub cost: u32,
 }
 
 /// A consistent, owned snapshot of policy, source container, and resolved topology,
@@ -104,36 +91,19 @@ impl PolicySnapshot {
         self.0.links_by_node.get(node).cloned().unwrap_or_default()
     }
 
-    /// Describe the link between `node_a` and `node_b` against the captured policy.
-    /// Both arguments are ZPR addresses.
+    /// Dispatches to [Policy::describe_link] on the captured policy.
     ///
     /// ## Errors
-    /// - `TopologyError::LinkNotFound` if there is no link between `node_a` and `node_b`
-    ///   in the captured policy.
+    /// - `TopologyError::LinkNotFound` if there is no link between `node_a` and
+    ///   `node_b` in the captured policy.
     pub fn describe_link(
         &self,
         node_a: &IpAddr,
         node_b: &IpAddr,
     ) -> Result<LinkDescription, ServiceError> {
-        let policy = self.policy();
-        if let Some(peers) = policy.get_peers_for_node(node_a) {
-            for peer in peers {
-                if &peer.remote_zpr_addr == node_b {
-                    let attrs = get_attributes_for_link(policy, &peer.link_id);
-                    let cost = if !attrs.is_empty() {
-                        get_link_cost(&attrs, DEFAULT_LINK_COST)
-                    } else {
-                        DEFAULT_LINK_COST
-                    };
-                    return Ok(LinkDescription {
-                        link_id: peer.link_id.clone(),
-                        attrs,
-                        cost,
-                    });
-                }
-            }
-        }
-        Err(TopologyError::LinkNotFound(format!("{node_a} <-> {node_b}")).into())
+        self.policy()
+            .describe_link(node_a, node_b)
+            .map_err(|_| TopologyError::LinkNotFound(format!("{node_a} <-> {node_b}")).into())
     }
 }
 
@@ -325,6 +295,8 @@ impl PolicyMgr {
     /// [PolicySnapshot::describe_link]; callers needing a consistent multi-step view
     /// should take a snapshot and call its method directly.
     ///
+    /// Only used in unit tests.
+    ///
     /// ## Errors
     /// - `TopologyError::LinkNotFound` if there is no link between `node_a` and `node_b` in the policy.
     #[allow(dead_code)]
@@ -401,43 +373,6 @@ async fn resolve_netaddr(
     }
 }
 
-/// Given policy and a link_id, return the libeval-style Attributes for that link.
-/// If there are no attributes, return an empty vec.
-fn get_attributes_for_link(policy: &Policy, link_id: &str) -> Vec<Attribute> {
-    if let Some(attr_exps) = policy.get_link_attrs(link_id) {
-        attr_exps
-            .iter()
-            .map(|ae| Attribute::builder(ae.key.clone()).values(ae.value.clone()))
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
-
-/// Use the special 'zpr.link.cost' attribute to obtain a numeric cost.
-/// Return `default_cost` if there is no cost attribute or if we cannot cooerce it into a number.
-///
-/// TODO: Better to do this in the compiler and then just have an integer cost value as part of the
-/// bin2 representation.
-fn get_link_cost(attrs: &[Attribute], default_cost: u32) -> u32 {
-    for attr in attrs {
-        if attr.get_key() == key::LINK_COST {
-            let value = attr
-                .get_single_value()
-                .ok()
-                .and_then(|s| s.parse::<i32>().ok())
-                .unwrap_or(default_cost as i32);
-            return if value > 0 {
-                value as u32
-            } else {
-                default_cost
-            };
-        }
-    }
-    // Default cost if not specified or if parsing fails.
-    default_cost
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +382,9 @@ mod tests {
     use zpr::policy::v1 as policy_capnp;
     use zpr::policy_types::{AttrExp, AttrOp, NetAddr, Peering};
     use zpr::write_to::WriteTo;
+
+    use libeval::attribute::key;
+    use libeval::policy::DEFAULT_LINK_COST;
 
     use crate::db::{FakeDb, PolicyRepo};
     use crate::test_helpers::FakeResolver;
