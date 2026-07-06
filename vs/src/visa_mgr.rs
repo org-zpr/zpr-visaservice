@@ -304,6 +304,7 @@ impl VisaMgr {
         route: &Route,
         source_zpl: impl Into<String>,
         policy_version: u64,
+        vinst: u64,
     ) -> Result<VisaWithMetadata, ServiceError> {
         let expiration_time = std::time::SystemTime::now()
             .checked_add(config::DEFAULT_VISA_EXPIRATION)
@@ -381,6 +382,7 @@ impl VisaMgr {
         let mut metadata = db::VisaMetadata::new(
             requesting_node.clone(),
             policy_version,
+            vinst,
             source_zpl.into(),
             hit.direction,
             path,
@@ -671,6 +673,7 @@ mod tests {
         let metadata = db::VisaMetadata::new(
             node_addr.clone(),
             0,
+            0,
             "zpl".to_string(),
             Direction::Forward,
             None,
@@ -728,6 +731,7 @@ mod tests {
         let metadata = db::VisaMetadata::new(
             node_addr.clone(),
             0,
+            0,
             "zpl".to_string(),
             Direction::Forward,
             None,
@@ -763,6 +767,7 @@ mod tests {
         let visa = make_visa(3, std::time::Duration::from_secs(60));
         let metadata = db::VisaMetadata::new(
             node_addr.clone(),
+            0,
             0,
             "zpl".to_string(),
             Direction::Forward,
@@ -818,6 +823,7 @@ mod tests {
         let metadata = db::VisaMetadata::new(
             requesting_node,
             0,
+            0,
             "zpl".to_string(),
             Direction::Forward,
             path,
@@ -839,6 +845,7 @@ mod tests {
         let visa = make_visa(id, Duration::from_secs(60));
         let metadata = db::VisaMetadata::new(
             requesting_node,
+            0,
             0,
             "zpl".to_string(),
             Direction::Forward,
@@ -1053,7 +1060,7 @@ mod tests {
 
         let visawmd = asm
             .visa_mgr
-            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
+            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0, 0)
             .await
             .unwrap();
 
@@ -1081,7 +1088,7 @@ mod tests {
 
         let visawmd = asm
             .visa_mgr
-            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
+            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0, 0)
             .await
             .unwrap();
 
@@ -1127,7 +1134,7 @@ mod tests {
 
         let visawmd = asm
             .visa_mgr
-            .create_visa(&asm, &dst, &pdesc, &hit, &route, "", 0)
+            .create_visa(&asm, &dst, &pdesc, &hit, &route, "", 0, 0)
             .await
             .unwrap();
 
@@ -1166,7 +1173,7 @@ mod tests {
 
         let visawmd = asm
             .visa_mgr
-            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0)
+            .create_visa(&asm, &src, &pdesc, &hit, &route, "", 0, 0)
             .await
             .unwrap();
 

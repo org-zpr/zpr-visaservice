@@ -44,7 +44,9 @@ pub struct VisaMetadata {
     pub requesting_node: IpAddr,
     #[serde_as(as = "TimestampSeconds<i64>")]
     pub ctime: SystemTime,
-    pub policy_version: u64,
+    pub policy_version: u64, // from policy.get_version
+    pub created_vinst: u64,  // service vinst active when the visa was issued
+    pub checked_vinst: u64,  // latest vinst this visa has been evaluated against
     pub zpl: String,
     pub signal_msgs: Vec<String>, // note we do not keep the signal destination
     pub direction: Direction,
@@ -61,11 +63,14 @@ impl VisaMetadata {
     ///
     /// `requesting_node` is the node that requested the visa.
     /// `pver` is the policy version that was in effect at the time of the visa request.
+    /// `vinst` is the service policy-install generation active at issuance; it
+    /// seeds both `created_vinst` and `checked_vinst`.
     /// `zpl` is the ZPL is a copy of the ZPL line that matched in policy.
     /// `direction` is the direction of the match as reported by the hit.
     pub fn new(
         requesting_node: IpAddr,
         pver: u64,
+        vinst: u64,
         zpl: String,
         direction: Direction,
         path: Option<Vec<IpAddr>>,
@@ -75,6 +80,8 @@ impl VisaMetadata {
             requesting_node,
             ctime: SystemTime::now(),
             policy_version: pver,
+            created_vinst: vinst,
+            checked_vinst: vinst,
             zpl,
             signal_msgs: Vec::new(),
             direction,
@@ -519,6 +526,7 @@ mod test {
         let metadata = VisaMetadata::new(
             node_addr,
             0,
+            0,
             String::new(),
             Direction::Forward,
             None,
@@ -586,6 +594,7 @@ mod test {
         let metadata = VisaMetadata::new(
             node_addr,
             0,
+            0,
             String::new(),
             Direction::Forward,
             None,
@@ -617,6 +626,7 @@ mod test {
         let metadata = VisaMetadata::new(
             node_addr,
             0,
+            0,
             String::new(),
             Direction::Forward,
             None,
@@ -641,6 +651,7 @@ mod test {
 
         let metadata = VisaMetadata::new(
             node_addr,
+            0,
             0,
             String::new(),
             Direction::Forward,
@@ -674,6 +685,7 @@ mod test {
         let metadata_a = VisaMetadata::new(
             node_addr,
             0,
+            0,
             String::new(),
             Direction::Forward,
             None,
@@ -684,6 +696,7 @@ mod test {
             .unwrap();
         let metadata_b = VisaMetadata::new(
             node_addr,
+            0,
             0,
             String::new(),
             Direction::Forward,
@@ -719,6 +732,7 @@ mod test {
             VisaMetadata::new(
                 node_addr,
                 0,
+                0,
                 String::new(),
                 Direction::Forward,
                 None,
@@ -733,6 +747,7 @@ mod test {
             VisaMetadata::new(
                 node_addr,
                 0,
+                0,
                 String::new(),
                 Direction::Forward,
                 None,
@@ -746,6 +761,7 @@ mod test {
             &visa_c,
             VisaMetadata::new(
                 node_addr,
+                0,
                 0,
                 String::new(),
                 Direction::Forward,
@@ -772,6 +788,7 @@ mod test {
 
         let metadata = VisaMetadata::new(
             node_addr,
+            0,
             0,
             String::new(),
             Direction::Forward,
@@ -816,6 +833,7 @@ mod test {
         let stored_metadata = VisaMetadata::new(
             node_addr,
             0,
+            0,
             String::new(),
             Direction::Forward,
             None,
@@ -851,6 +869,8 @@ mod test {
             requesting_node: node_addr,
             ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             policy_version: 42,
+            created_vinst: 7,
+            checked_vinst: 9,
             zpl: "permit src any dst any".to_string(),
             signal_msgs: vec!["sig-a".to_string(), "sig-b".to_string()],
             direction: Direction::Reverse,
@@ -867,6 +887,8 @@ mod test {
         assert_eq!(decoded.zpl, original.zpl);
         assert_eq!(decoded.signal_msgs, original.signal_msgs);
         assert_eq!(decoded.direction, original.direction);
+        assert_eq!(decoded.created_vinst, original.created_vinst);
+        assert_eq!(decoded.checked_vinst, original.checked_vinst);
     }
 
     /// Verifies that signal_msgs is preserved correctly when non-empty across
@@ -883,6 +905,8 @@ mod test {
             requesting_node: node_addr,
             ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_001),
             policy_version: 1,
+            created_vinst: 0,
+            checked_vinst: 0,
             zpl: String::new(),
             signal_msgs: signals.clone(),
             direction: Direction::Forward,
@@ -907,6 +931,8 @@ mod test {
                 requesting_node: node_addr,
                 ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_002),
                 policy_version: 0,
+                created_vinst: 0,
+                checked_vinst: 0,
                 zpl: String::new(),
                 signal_msgs: Vec::new(),
                 direction,
@@ -933,6 +959,7 @@ mod test {
 
         let metadata = VisaMetadata::new(
             requesting,
+            0,
             0,
             String::new(),
             Direction::Forward,
@@ -976,6 +1003,7 @@ mod test {
 
         let metadata = VisaMetadata::new(
             requesting,
+            0,
             0,
             String::new(),
             Direction::Forward,
@@ -1021,6 +1049,7 @@ mod test {
         let metadata = VisaMetadata::new(
             requesting,
             0,
+            0,
             String::new(),
             Direction::Forward,
             Some(vec![requesting, path_node]),
@@ -1056,6 +1085,7 @@ mod test {
         let metadata = VisaMetadata::new(
             requesting,
             0,
+            0,
             String::new(),
             Direction::Forward,
             None,
@@ -1089,6 +1119,7 @@ mod test {
         let metadata_a = VisaMetadata::new(
             node_addr,
             0,
+            0,
             String::new(),
             Direction::Forward,
             None,
@@ -1100,6 +1131,7 @@ mod test {
 
         let metadata_b = VisaMetadata::new(
             node_addr,
+            0,
             0,
             String::new(),
             Direction::Forward,
