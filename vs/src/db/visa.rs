@@ -119,9 +119,7 @@ impl VisaRepo {
         let blob_key = blob_key_for_visa(visa_id);
         let visa_id_key = visa_key_for_visa(visa_id);
 
-        let mut ops = Vec::new();
-        ops.push(DbOp::Del(blob_key.clone()));
-        ops.push(DbOp::Del(visa_id_key.clone()));
+        let ops = vec![DbOp::Del(blob_key.clone()), DbOp::Del(visa_id_key.clone())];
         self.db.atomic_pipeline(&ops).await?;
 
         // Remove any nodevisa references to this visa.
