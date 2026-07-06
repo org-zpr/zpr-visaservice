@@ -524,6 +524,12 @@ impl VisaMgr {
         Ok(())
     }
 
+    /// Drop expired visas from the in-memory store. Called by housekeeping.
+    pub async fn purge_expired_visas(&self) -> Result<(), ServiceError> {
+        self.repo.purge_expired().await?;
+        Ok(())
+    }
+
     /// Get all the visa IDs (non-expired).
     pub async fn list_all_visa_ids(&self) -> Result<Vec<u64>, ServiceError> {
         let visa_ids = self.repo.list_visa_ids().await?;
