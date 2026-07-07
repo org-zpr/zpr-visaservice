@@ -66,16 +66,19 @@ pub struct VisaMetadata {
 }
 
 /// Persisted per-node state within a `VisaRecord` (keyed by ZAddr string).
+/// This is the persisted [NodeState].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredNodeState {
     state: NodeVisaState,
     utime: String,
-    revoke_vinst: Option<u64>, // TODO: Will be set if we need to revoke this visa.
+    revoke_vinst: Option<u64>,
 }
 
 /// The single JSON value persisted at `visa:<id>`. Redis's only jobs are
 /// persisting and expiring whole visas, so everything a visa needs lives here.
 /// Expiry lives in the capnp blob (`visa.expires`) and is recovered on decode.
+///
+/// This is the persisted [VisaEntry].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VisaRecord {
     blob: String, // base64 capnp visa bytes (Visa is not serde)
@@ -83,14 +86,14 @@ struct VisaRecord {
     node_states: HashMap<String, StoredNodeState>, // keyed by ZAddr string
 }
 
-/// In-memory per-node state for a visa.
+/// In-memory, authoritative per-node state for a visa.
 #[derive(Debug, Clone)]
 struct NodeState {
     state: NodeVisaState,
-    revoke_vinst: Option<u64>, // TODO: will be stamped when marked PendingRevoke
+    revoke_vinst: Option<u64>, // TODO: will be stamped with a policy `vinst` when marked PendingRevoke
 }
 
-/// In-memory authoritative copy of one visa.
+/// In-memory, authoritative copy of one visa.
 struct VisaEntry {
     visa: Visa,
     metadata: VisaMetadata,
