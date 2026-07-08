@@ -2,19 +2,24 @@
 //! visa service system such as actor joins/leaves. Operations in here
 //! are not able to report back success/failure to the "caller".
 
+use futures::future::join_all;
 use futures::stream::{self, StreamExt};
+
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use zpr::vsapi::v1::DisconnectReason;
 use zpr::vsapi_types::ServiceDescriptor;
 
+use libeval::eval::EvalContext;
+
 use crate::assembly::Assembly;
 use crate::error::ServiceError;
 use crate::logging::targets::EVENT;
+use crate::policy_mgr::PolicySnapshot;
 
 pub enum VsEvent {
     /// Use _after_ actor has been authenticated and the datastore updated.
@@ -213,38 +218,140 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
         );
     }
 
-    info!(target: EVENT, "policy updated vinst={vinst}: TODO revalidate connected nodes");
-    let connected_node_addrs = asm.actor_mgr.list_node_addrs().await?;
+    // The new policy may invalidate some existing nodes.
+    let connected_node_addrs = match revalidate_nodes(asm, &psnap).await {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            error!(target: EVENT, "failed to load the set of connected nodes: {e}");
+            Vec::new() // proceed with empty set of nodes
+        }
+    };
 
-    // TODO: Check existing nodes against policy.
-    // Until then  we just assume has not changed.
-    // Once validated the `connected_node_addrs` will be in sync with policy. And we should have already removed the stale
-    // nodes from the actor_mgr state, disconnected from VSS, etc.
+    // Only do these steps if we managed to get a set of connected nodes. If
+    // there actually are no nodes connected at the moment, then topology should
+    // have been updated via other code paths.  The purpose of updating the
+    // topology when presented with a new policy is to verify that existing
+    // links are still allowed, and send out peer messages.
+    if !connected_node_addrs.is_empty() {
+        info!(target: EVENT, "policy updated vinst={vinst}: revalidating topology ({} nodes)", connected_node_addrs.len());
+        let report = asm
+            .topo_mgr
+            .revalidate_against_policy(&psnap, &connected_node_addrs)
+            .await?;
+        info!(
+            target: EVENT,
+            "topology revalidated vinst={vinst}: removed={} updated={} repaired={} orphaned={}",
+            report.links_removed,
+            report.links_updated,
+            report.links_repaired,
+            report.orphaned_nodes.len()
+        );
 
-    info!(target: EVENT, "policy updated vinst={vinst}: revalidating topology");
-    let report = asm
-        .topo_mgr
-        .revalidate_against_policy(&psnap, &connected_node_addrs)
-        .await?;
-    info!(
-        target: EVENT,
-        "topology revalidated vinst={vinst}: removed={} updated={} repaired={} orphaned={}",
-        report.links_removed,
-        report.links_updated,
-        report.links_repaired,
-        report.orphaned_nodes.len()
-    );
-
-    // Queue up setTopology messages in parallel.
-    let futs = connected_node_addrs.iter().filter_map(|naddr| {
-        let links = psnap.links_for_node(naddr);
-        asm.vss_mgr.get_handle(naddr).map(|vss_handle| async move {
-            if let Err(e) = vss_handle.set_topology(links).await {
-                error!(target: EVENT, "failed to set topology for node {}: {}", naddr, e);
-            }
-        })
-    });
-    futures::future::join_all(futs).await;
+        // Queue up setTopology messages in parallel.
+        let futs = connected_node_addrs.iter().filter_map(|naddr| {
+            let links = psnap.links_for_node(naddr);
+            asm.vss_mgr.get_handle(naddr).map(|vss_handle| async move {
+                if let Err(e) = vss_handle.set_topology(links).await {
+                    error!(target: EVENT, "failed to set topology for node {}: {}", naddr, e);
+                }
+            })
+        });
+        join_all(futs).await;
+    }
 
     Ok(())
+}
+
+/// When we get a new policy, some nodes my no longer be valid. This will check
+/// that and return the set of connected nodes that are still valid under the
+/// policy.
+///
+/// Note that the best way to revalidate a node is to prompt it to
+/// re-authenticate. (TODO).
+///
+/// ### Errors
+/// - The only error you get from this will be an error from `list_node_addrs`.
+async fn revalidate_nodes(
+    asm: &Arc<Assembly>,
+    psnap: &PolicySnapshot,
+) -> Result<Vec<IpAddr>, ServiceError> {
+    let mut connected_node_addrs = asm.actor_mgr.list_node_addrs().await?;
+
+    // Check existing nodes against policy.
+    let ectx = EvalContext::new(psnap.policy_arc());
+
+    // Pass each node through our gating/checking function which is not a pure
+    // predicate -- it does have side effect of issuing disconnect requests and
+    // firing events if the node is found to be no longer valid under the new
+    // policy.
+    //
+    // But the nice thing is that this `keep_flags` vector is just a simple
+    // `Vec<bool>` that we can use to retain only the valid nodes in the end.
+    let keep_flags = join_all(
+        connected_node_addrs
+            .iter()
+            .map(|naddr| revalidate_node_or_disconnect(asm, &ectx, naddr)),
+    )
+    .await;
+
+    let mut flags_iter = keep_flags.into_iter();
+    connected_node_addrs.retain(|_| flags_iter.next().unwrap());
+
+    Ok(connected_node_addrs)
+}
+
+/// Helper function for [revalidate_nodes].
+/// Loads the node `Actor` from the `actor_mgr` and then uses the `EvalContext` to check that
+/// the actor is still permitted by policy. Note this does not check authentication -- just
+/// attributes that were authenticated under the previous policy.
+///
+/// If the node passes the check, `true` is returned, meaning node looks valid.
+///
+/// If the check fails, this function has additional side effects:
+/// - (1) Call to `ConnectionControl` to disconnect the node.
+/// - (2) Record an `ActorLeaves` event in the `EventMgr` queue.
+///
+/// Errors in here are just logged, not propagated.
+async fn revalidate_node_or_disconnect(
+    asm: &Arc<Assembly>,
+    ectx: &EvalContext,
+    naddr: &IpAddr,
+) -> bool {
+    if let Ok(maybe_node_actor) = asm.actor_mgr.get_actor_by_zpr_addr(naddr).await {
+        if let Some(node_actor) = maybe_node_actor {
+            match ectx.approve_connected(&node_actor) {
+                Ok(true) => return true,
+
+                Ok(false) => {
+                    info!(target: EVENT, "connected node {naddr} is no longer approved by policy, disconnecting");
+                    if let Err(e) = asm
+                        .cc
+                        .disconnect(asm.clone(), *naddr, DisconnectReason::Admin)
+                        .await
+                    {
+                        warn!(target: EVENT, "error processing disconnect of {naddr}: {e}");
+                        // And in this case we do not send an actor-leaves event.
+                        // But we still return false, so the node appears to caller to be invalid.
+                    } else {
+                        let evt = VsEvent::ActorLeaves(*naddr, DisconnectReason::Admin);
+                        if let Err(e) = asm.event_mgr.record_event(evt).await {
+                            warn!(target: EVENT, "failed to record actor leaves event for {naddr}: {e}");
+                        }
+                    }
+                    return false;
+                }
+                Err(e) => {
+                    warn!(target: EVENT, "failed to evaluate connected node {naddr} against policy: {e}");
+                    return true;
+                }
+            }
+        } else {
+            // We passed a node address to ActorMgr but did not get an Actor back?
+            // That's probably a problem, but not our problem.  We let it stand for now.
+            return true;
+        }
+    } else {
+        // Some issue occurred while querying for the actor. We optamistically return true here.
+        return true;
+    }
 }

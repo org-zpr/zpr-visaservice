@@ -329,6 +329,23 @@ impl EvalContext {
         Ok(actor)
     }
 
+    /// Similar to [EvalContext::approve_connection] except this assums that the passed actor
+    /// is already connected and this just checks to see if the actor is compatible with the
+    /// current policy.
+    pub fn approve_connected(&self, connected_actor: &Actor) -> Result<bool, EvalError> {
+        // All the AttrExpr's in the Join Policy must be present as Attributes on the actor and
+        // have the same values.  It's ok for the actor to have more attributes than indicated in
+        // a Join Policy.
+        //
+        // If join policy indicates (via flags) that the actor is a node, then the actor must return
+        // true for `is_node()`. If there is no node flag then `is_node()` must return false.
+        //
+        // The services provided according to policy must also be present on the actor. It's ok
+        // for the actor to have more services than listed in policy.
+
+        return Ok(false); // not implemented
+    }
+
     fn match_policies(
         &self,
         allows: bool,
