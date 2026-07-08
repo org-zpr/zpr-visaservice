@@ -329,7 +329,7 @@ impl EvalContext {
         Ok(actor)
     }
 
-    /// Similar to [EvalContext::approve_connection] except this assums that the passed actor
+    /// Similar to [EvalContext::approve_connection] except this assumes that the passed actor
     /// is already connected and this just checks to see if the actor is compatible with the
     /// current policy.
     pub fn approve_connected(&self, connected_actor: &Actor) -> Result<bool, EvalError> {
@@ -343,7 +343,40 @@ impl EvalContext {
         // The services provided according to policy must also be present on the actor. It's ok
         // for the actor to have more services than listed in policy.
 
-        return Ok(false); // not implemented
+        // Re-run join-policy matching against the actor's current attributes.
+        let claims: Vec<Attribute> = connected_actor.attrs_iter().cloned().collect();
+        let matching = self.policy.match_join_policies(&claims);
+        if matching.is_empty() {
+            // A node must be covered by a join policy; a non-node may remain
+            // connected without one (see #227).
+            return Ok(!connected_actor.is_node());
+        }
+
+        // Union the flags and services from all matching policies, mirroring
+        // how `approve_connection` builds the actor.
+        let mut flags: EnumSet<JFlag> = EnumSet::new();
+        let mut services = HashSet::new();
+        for jp in matching {
+            flags |= jp.flags;
+            if let Some(svcs) = &jp.services {
+                services.extend(svcs.iter().cloned());
+            }
+        }
+
+        // Node role must agree with policy in both directions.
+        if flags.contains(JFlag::IsNode) != connected_actor.is_node() {
+            return Ok(false);
+        }
+
+        // Every service required by policy must be provided by the actor.
+        if !services
+            .iter()
+            .all(|s: &String| connected_actor.provides(s))
+        {
+            return Ok(false);
+        }
+
+        Ok(true)
     }
 
     fn match_policies(
@@ -1012,5 +1045,66 @@ mod test {
                 assert!(actor.get_zpr_addr().is_none());
             }
         };
+    }
+
+    // A node approved under the current policy should still pass re-check.
+    #[test]
+    fn test_approve_connected_node_still_valid() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        let authenticated_claims = vec![Attribute::builder(key::CN).value("node.zpr.org")];
+        let unauthenticated_claims =
+            vec![Attribute::builder(key::ZPR_ADDR).value("fd5a:5052:90de::1")];
+        let actor = ctx
+            .approve_connection(
+                Some(authenticated_claims.as_slice()),
+                Some(unauthenticated_claims.as_slice()),
+                Duration::from_secs(1000),
+            )
+            .unwrap();
+        assert!(actor.is_node());
+
+        assert!(ctx.approve_connected(&actor).unwrap());
+    }
+
+    // A non-node actor that matches no join policy may stay connected (#227).
+    #[test]
+    fn test_approve_connected_non_node_no_policy_ok() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        let authenticated_claims = vec![Attribute::builder(key::CN).value("nobody.zpr.org")];
+        let actor = ctx
+            .approve_connection(
+                Some(authenticated_claims.as_slice()),
+                None,
+                Duration::from_secs(1000),
+            )
+            .unwrap();
+        assert!(!actor.is_node());
+
+        assert!(ctx.approve_connected(&actor).unwrap());
+    }
+
+    // A node whose attributes match no join policy must be rejected.
+    #[test]
+    fn test_approve_connected_node_not_in_policy() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        let mut actor = Actor::new();
+        actor
+            .add_attr_from_parts(key::CN, "rando.zpr.org", Duration::from_secs(1000))
+            .unwrap();
+        actor
+            .add_attr_from_parts(key::ROLE, ROLE_NODE, Duration::from_secs(1000))
+            .unwrap();
+        assert!(actor.is_node());
+
+        assert!(!ctx.approve_connected(&actor).unwrap());
     }
 }
