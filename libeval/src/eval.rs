@@ -340,8 +340,9 @@ impl EvalContext {
         // If join policy indicates (via flags) that the actor is a node, then the actor must return
         // true for `is_node()`. If there is no node flag then `is_node()` must return false.
         //
-        // The services provided according to policy must also be present on the actor. It's ok
-        // for the actor to have more services than listed in policy.
+        // Any services offered by the actor must be allowed by policy.
+        // The policy may have more services for the actor, but that must be picked up
+        // by doing a re-auth.
 
         // Re-run join-policy matching against the actor's current attributes.
         let claims: Vec<Attribute> = connected_actor.attrs_iter().cloned().collect();
@@ -368,10 +369,12 @@ impl EvalContext {
             return Ok(false);
         }
 
-        // Every service required by policy must be provided by the actor.
-        if !services
-            .iter()
-            .all(|s: &String| connected_actor.provides(s))
+        // Every service offered by the actor must be allowed by policy. Policy
+        // may allow more services than the actor offers; those are picked up on
+        // re-auth, not here.
+        if !connected_actor
+            .services_iter()
+            .all(|s| services.contains(s))
         {
             return Ok(false);
         }
@@ -744,7 +747,7 @@ mod test {
         match decision {
             PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
-                assert_eq!(hits[0].match_idx, 4);
+                assert_eq!(hits[0].match_idx, 1);
                 assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected allow decision, not {:?}", decision),
@@ -759,7 +762,7 @@ mod test {
         match decision {
             PartialEvalResult::Deny(FinalDeny::Deny(hits)) => {
                 assert_eq!(hits.len(), 1);
-                assert_eq!(hits[0].match_idx, 3);
+                assert_eq!(hits[0].match_idx, 0);
                 assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected deny decision, not {:?}", decision),
@@ -835,7 +838,7 @@ mod test {
         match decision {
             PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
-                assert_eq!(hits[0].match_idx, 1);
+                assert_eq!(hits[0].match_idx, 2);
                 assert!(hits[0].direction == Direction::Forward);
             }
             _ => panic!("expected allow decision, not {:?}", decision),
@@ -870,7 +873,7 @@ mod test {
         match decision {
             PartialEvalResult::AllowWithoutRoute(hits) => {
                 assert_eq!(hits.len(), 1);
-                assert_eq!(hits[0].match_idx, 1);
+                assert_eq!(hits[0].match_idx, 2);
                 assert!(hits[0].direction == Direction::Forward);
                 assert!(hits[0].signal.is_some());
                 let signal = hits[0].signal.as_ref().unwrap();
@@ -1105,6 +1108,61 @@ mod test {
             .unwrap();
         assert!(actor.is_node());
 
+        assert!(!ctx.approve_connected(&actor).unwrap());
+    }
+
+    // Build the node actor from join policy 4 (node.zpr.org) with the given services.
+    fn node_actor_with_services(services: &[&str]) -> Actor {
+        let mut actor = Actor::new();
+        actor
+            .add_attr_from_parts(
+                key::ZPR_ADDR,
+                "fd5a:5052:90de::1",
+                Duration::from_secs(1000),
+            )
+            .unwrap();
+        actor
+            .add_attr_from_parts(
+                "endpoint.zpr.adapter.cn",
+                "node.zpr.org",
+                Duration::from_secs(1000),
+            )
+            .unwrap();
+        actor
+            .add_attr_from_parts(key::ROLE, ROLE_NODE, Duration::from_secs(1000))
+            .unwrap();
+        actor
+            .add_attribute(
+                Attribute::builder(key::SERVICES)
+                    .expires_in(Duration::from_secs(1000))
+                    .values(services.iter().copied()),
+            )
+            .unwrap();
+        actor
+    }
+
+    // An actor offering only a subset of the services its policy allows is still
+    // approved; the policy having extra services does not reject the connection.
+    #[test]
+    fn test_approve_connected_policy_has_extra_services_ok() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        // Join policy 4 allows both "zpr/n0/vss" and "/zpr/n0"; offer just one.
+        let actor = node_actor_with_services(&["zpr/n0/vss"]);
+        assert!(ctx.approve_connected(&actor).unwrap());
+    }
+
+    // An actor offering a service its policy does not allow must be rejected.
+    #[test]
+    fn test_approve_connected_actor_service_not_in_policy() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        // "not-allowed" is not among join policy 4's permitted services.
+        let actor = node_actor_with_services(&["zpr/n0/vss", "not-allowed"]);
         assert!(!ctx.approve_connected(&actor).unwrap());
     }
 }

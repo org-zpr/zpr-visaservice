@@ -218,14 +218,9 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
         );
     }
 
-    // The new policy may invalidate some existing nodes.
-    let connected_node_addrs = match revalidate_nodes(asm, &psnap).await {
-        Ok(addrs) => addrs,
-        Err(e) => {
-            error!(target: EVENT, "failed to load the set of connected nodes: {e}");
-            Vec::new() // proceed with empty set of nodes
-        }
-    };
+    // The new policy may invalidate some existing nodes. An error here will bail on the
+    // update handling.
+    let connected_node_addrs = revalidate_nodes(asm, &psnap).await?;
 
     // Only do these steps if we managed to get a set of connected nodes. If
     // there actually are no nodes connected at the moment, then topology should
@@ -515,9 +510,9 @@ mod tests {
         );
     }
 
-    /// Mixed set under one snapshot: policy requires service "svc-x". The node that
-    /// provides it survives; the one that doesn't is disconnected. Guards the
-    /// keep-flag/retain index alignment.
+    /// Mixed set under one snapshot: policy allows service "svc-x". A node whose
+    /// services are a subset of the policy survives; a node offering an unlisted
+    /// service ("svc-y") is disconnected. Guards the keep-flag/retain index alignment.
     #[tokio::test]
     async fn test_revalidate_nodes_mixed() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
@@ -539,14 +534,17 @@ mod tests {
             )
             .unwrap();
         asm.actor_mgr.add_node(&good_actor, false).await.unwrap();
-        // Node without the service → invalid → disconnected.
-        asm.actor_mgr
-            .add_node(
-                &make_node_actor_defexp("fd5a:5052::2", "node-bad", "[fd5a:5052::102]:1234"),
-                false,
+        // Node offering a service the policy does not allow → invalid → disconnected.
+        let mut bad_actor =
+            make_node_actor_defexp("fd5a:5052::2", "node-bad", "[fd5a:5052::102]:1234");
+        bad_actor
+            .add_attribute(
+                Attribute::builder(key::SERVICES)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("svc-y"),
             )
-            .await
             .unwrap();
+        asm.actor_mgr.add_node(&bad_actor, false).await.unwrap();
 
         let psnap = asm.policy_mgr.get_current_snapshot();
         let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
