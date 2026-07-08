@@ -220,7 +220,26 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
 
     // The new policy may invalidate some existing nodes. An error here will bail on the
     // update handling.
-    let connected_node_addrs = revalidate_nodes(asm, &psnap).await?;
+    let (connected_node_addrs, invalid_node_addrs) = revalidate_nodes(asm, &psnap).await?;
+
+    // Disconnect the nodes that are no longer approved by the new policy.
+    for naddr in &invalid_node_addrs {
+        info!(target: EVENT, "connected node {naddr} is no longer approved by policy, disconnecting");
+        if let Err(e) = asm
+            .cc
+            .disconnect(asm.clone(), *naddr, DisconnectReason::Admin)
+            .await
+        {
+            warn!(target: EVENT, "error processing disconnect of {naddr}: {e}");
+            // In this case we do not send an actor-leaves event.
+        } else {
+            // TODO: Do not re-queue onto this event manager. We can handle this directly ourselves later.
+            let evt = VsEvent::ActorLeaves(*naddr, DisconnectReason::Admin);
+            if let Err(e) = asm.event_mgr.record_event(evt).await {
+                warn!(target: EVENT, "failed to record actor leaves event for {naddr}: {e}");
+            }
+        }
+    }
 
     // Only do these steps if we managed to get a set of connected nodes. If
     // there actually are no nodes connected at the moment, then topology should
@@ -257,9 +276,10 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
     Ok(())
 }
 
-/// When we get a new policy, some nodes my no longer be valid. This will check
-/// that and return the set of connected nodes that are still valid under the
-/// policy.
+/// When we get a new policy, some nodes may no longer be valid. This checks each
+/// connected node against the policy and partitions them into `(valid, invalid)`
+/// addresses. It has no side effects -- disconnecting the invalid nodes is left to
+/// the caller.
 ///
 /// Note that the best way to revalidate a node is to prompt it to
 /// re-authenticate. (TODO).
@@ -269,85 +289,50 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
 async fn revalidate_nodes(
     asm: &Arc<Assembly>,
     psnap: &PolicySnapshot,
-) -> Result<Vec<IpAddr>, ServiceError> {
-    let mut connected_node_addrs = asm.actor_mgr.list_node_addrs().await?;
+) -> Result<(Vec<IpAddr>, Vec<IpAddr>), ServiceError> {
+    let connected_node_addrs = asm.actor_mgr.list_node_addrs().await?;
 
     // Check existing nodes against policy.
     let ectx = EvalContext::new(psnap.policy_arc());
 
-    // Pass each node through our gating/checking function which is not a pure
-    // predicate -- it does have side effect of issuing disconnect requests and
-    // firing events if the node is found to be no longer valid under the new
-    // policy.
-    //
-    // But the nice thing is that this `keep_flags` vector is just a simple
-    // `Vec<bool>` that we can use to retain only the valid nodes in the end.
     let keep_flags = join_all(
         connected_node_addrs
             .iter()
-            .map(|naddr| revalidate_node_or_disconnect(asm, &ectx, naddr)),
+            .map(|naddr| node_still_valid(asm, &ectx, naddr)),
     )
     .await;
 
-    let mut flags_iter = keep_flags.into_iter();
-    connected_node_addrs.retain(|_| flags_iter.next().unwrap());
+    // Partition into still-valid and no-longer-valid nodes.
+    let (valid, invalid): (Vec<_>, Vec<_>) = connected_node_addrs
+        .into_iter()
+        .zip(keep_flags)
+        .partition(|(_, keep)| *keep);
 
-    Ok(connected_node_addrs)
+    let valid = valid.into_iter().map(|(naddr, _)| naddr).collect();
+    let invalid = invalid.into_iter().map(|(naddr, _)| naddr).collect();
+
+    Ok((valid, invalid))
 }
 
-/// Helper function for [revalidate_nodes].
-/// Loads the node `Actor` from the `actor_mgr` and then uses the `EvalContext` to check that
+/// Pure predicate helper for [revalidate_nodes].
+/// Loads the node `Actor` from the `actor_mgr` and uses the `EvalContext` to check that
 /// the actor is still permitted by policy. Note this does not check authentication -- just
 /// attributes that were authenticated under the previous policy.
 ///
-/// If the node passes the check, `true` is returned, meaning node looks valid.
-///
-/// If the check fails, this function has additional side effects:
-/// - (1) Call to `ConnectionControl` to disconnect the node.
-/// - (2) Record an `ActorLeaves` event in the `EventMgr` queue.
-///
-/// Errors in here are just logged, not propagated.
-async fn revalidate_node_or_disconnect(
-    asm: &Arc<Assembly>,
-    ectx: &EvalContext,
-    naddr: &IpAddr,
-) -> bool {
-    if let Ok(maybe_node_actor) = asm.actor_mgr.get_actor_by_zpr_addr(naddr).await {
-        if let Some(node_actor) = maybe_node_actor {
-            match ectx.approve_connected(&node_actor) {
-                Ok(true) => return true,
-
-                Ok(false) => {
-                    info!(target: EVENT, "connected node {naddr} is no longer approved by policy, disconnecting");
-                    if let Err(e) = asm
-                        .cc
-                        .disconnect(asm.clone(), *naddr, DisconnectReason::Admin)
-                        .await
-                    {
-                        warn!(target: EVENT, "error processing disconnect of {naddr}: {e}");
-                        // And in this case we do not send an actor-leaves event.
-                        // But we still return false, so the node appears to caller to be invalid.
-                    } else {
-                        let evt = VsEvent::ActorLeaves(*naddr, DisconnectReason::Admin);
-                        if let Err(e) = asm.event_mgr.record_event(evt).await {
-                            warn!(target: EVENT, "failed to record actor leaves event for {naddr}: {e}");
-                        }
-                    }
-                    return false;
-                }
-                Err(e) => {
-                    warn!(target: EVENT, "failed to evaluate connected node {naddr} against policy: {e}");
-                    return true;
-                }
+/// Returns `true` if the node looks valid (including on any query/eval error, where we
+/// optimistically keep the node), and `false` only if policy affirmatively rejects it.
+async fn node_still_valid(asm: &Arc<Assembly>, ectx: &EvalContext, naddr: &IpAddr) -> bool {
+    match asm.actor_mgr.get_actor_by_zpr_addr(naddr).await {
+        Ok(Some(node_actor)) => match ectx.approve_connected(&node_actor) {
+            Ok(approved) => approved,
+            Err(e) => {
+                warn!(target: EVENT, "failed to evaluate connected node {naddr} against policy: {e}");
+                true
             }
-        } else {
-            // We passed a node address to ActorMgr but did not get an Actor back?
-            // That's probably a problem, but not our problem.  We let it stand for now.
-            return true;
-        }
-    } else {
-        // Some issue occurred while querying for the actor. We optamistically return true here.
-        return true;
+        },
+        // No actor came back for this address, or the query failed. Optimistically keep it.
+        Ok(None) => true,
+        Err(_) => true,
     }
 }
 
@@ -445,24 +430,10 @@ mod tests {
             .unwrap();
 
         let psnap = asm.policy_mgr.get_current_snapshot();
-        let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
+        let (valid, invalid) = revalidate_nodes(&asm, &psnap).await.unwrap();
 
-        assert_eq!(sorted(kept), sorted(vec![a, b]));
-        // Both actors remain in the datastore (not disconnected).
-        assert!(
-            asm.actor_mgr
-                .get_actor_by_zpr_addr(&a)
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            asm.actor_mgr
-                .get_actor_by_zpr_addr(&b)
-                .await
-                .unwrap()
-                .is_some()
-        );
+        assert_eq!(sorted(valid), sorted(vec![a, b]));
+        assert!(invalid.is_empty());
     }
 
     /// No node satisfies the default (join-policy-free) policy: the returned set is
@@ -490,24 +461,10 @@ mod tests {
             .unwrap();
 
         let psnap = asm.policy_mgr.get_current_snapshot();
-        let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
+        let (valid, invalid) = revalidate_nodes(&asm, &psnap).await.unwrap();
 
-        assert!(kept.is_empty());
-        // Both nodes were disconnected → removed from the actor datastore.
-        assert!(
-            asm.actor_mgr
-                .get_actor_by_zpr_addr(&a)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            asm.actor_mgr
-                .get_actor_by_zpr_addr(&b)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(valid.is_empty());
+        assert_eq!(sorted(invalid), sorted(vec![a, b]));
     }
 
     /// Mixed set under one snapshot: policy allows service "svc-x". A node whose
@@ -547,23 +504,10 @@ mod tests {
         asm.actor_mgr.add_node(&bad_actor, false).await.unwrap();
 
         let psnap = asm.policy_mgr.get_current_snapshot();
-        let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
+        let (valid, invalid) = revalidate_nodes(&asm, &psnap).await.unwrap();
 
-        assert_eq!(kept, vec![good]);
-        assert!(
-            asm.actor_mgr
-                .get_actor_by_zpr_addr(&good)
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            asm.actor_mgr
-                .get_actor_by_zpr_addr(&bad)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(valid, vec![good]);
+        assert_eq!(invalid, vec![bad]);
     }
 
     /// No connected nodes at all: returns an empty set without error.
@@ -571,7 +515,8 @@ mod tests {
     async fn test_revalidate_nodes_empty() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
         let psnap = asm.policy_mgr.get_current_snapshot();
-        let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
-        assert!(kept.is_empty());
+        let (valid, invalid) = revalidate_nodes(&asm, &psnap).await.unwrap();
+        assert!(valid.is_empty());
+        assert!(invalid.is_empty());
     }
 }
