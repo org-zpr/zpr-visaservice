@@ -162,6 +162,8 @@ async fn main() -> std::process::ExitCode {
         None
     };
 
+    // NOTE: tasks spawned onto this LocalSet (spawn_local) are only queued; they
+    // do not start running until the LocalSet is driven by run_until below.
     let local_set = tokio::task::LocalSet::new();
     let _local_set_guard = local_set.enter();
 
@@ -211,8 +213,10 @@ async fn main() -> std::process::ExitCode {
 
     // Spawn lock renewal immediately after acquisition so it covers hydration
     // (VisaRepo::new) and the rest of startup — otherwise the lock runs on its
-    // un-renewed fuse (VALKEY_LOCK_TIMEOUT) through all of startup.
-    js.spawn_local(db_worker::launch(db_handle.clone(), vslock_desc));
+    // un-renewed fuse (VALKEY_LOCK_TIMEOUT) through all of startup. This must be
+    // a plain spawn (not spawn_local): LocalSet tasks aren't polled until
+    // run_until, which is only reached after hydration completes.
+    js.spawn(db_worker::launch(db_handle.clone(), vslock_desc));
 
     let counters = Arc::new(Counters::default());
 
