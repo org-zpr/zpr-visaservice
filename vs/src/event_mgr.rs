@@ -355,3 +355,225 @@ async fn revalidate_node_or_disconnect(
         return true;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::assembly::tests::new_assembly_for_tests;
+    use crate::config;
+    use crate::test_helpers::{make_container_bytes, make_node_actor_defexp};
+
+    use libeval::attribute::{Attribute, key};
+    use std::time::Duration;
+    use zpr::policy::v1 as capnp_policy;
+    use zpr::policy_types::{JoinPolicy, PFlags, Scope, Service, ServiceType};
+    use zpr::write_to::WriteTo;
+
+    /// Build a policy container whose single join policy marks connections as
+    /// nodes. `provides` is the set of services a node must offer to stay valid
+    /// (`None` = no service requirement). Conditions are empty, so the policy
+    /// matches any actor's claims.
+    fn make_node_join_policy(provides: Option<Vec<Service>>) -> Vec<u8> {
+        let mut msg = capnp::message::Builder::new_default();
+        {
+            let mut policy_bldr = msg.init_root::<capnp_policy::policy::Builder>();
+            policy_bldr.set_created("2024-01-01T00:00:00Z");
+            policy_bldr.set_version(1);
+            policy_bldr.set_metadata("");
+            let mut jp_list = policy_bldr.reborrow().init_join_policies(1);
+            let mut jp_bldr = jp_list.reborrow().get(0);
+            let jp = JoinPolicy {
+                conditions: Vec::new(),
+                flags: PFlags::node(false),
+                provides,
+            };
+            jp.write_to(&mut jp_bldr);
+        }
+        let mut bytes = Vec::new();
+        capnp::serialize::write_message(&mut bytes, &msg).unwrap();
+        make_container_bytes(
+            config::POLICY_MIN_COMPILER_MAJOR,
+            config::POLICY_MIN_COMPILER_MINOR,
+            config::POLICY_MIN_COMPILER_PATCH,
+            &bytes,
+        )
+    }
+
+    /// Build a single-endpoint regular [Service] with the given id, for use as a
+    /// policy-required service.
+    fn svc(id: &str) -> Service {
+        Service {
+            id: id.to_string(),
+            endpoints: vec![Scope {
+                protocol: 0,
+                flag: None,
+                port: Some(4000),
+                port_range: None,
+            }],
+            kind: ServiceType::Regular,
+        }
+    }
+
+    /// Sort a vec of addrs so results can be compared order-independently
+    /// (`list_node_addrs` order is not guaranteed).
+    fn sorted(mut addrs: Vec<IpAddr>) -> Vec<IpAddr> {
+        addrs.sort();
+        addrs
+    }
+
+    /// All connected nodes satisfy the policy: all are returned and none disconnected.
+    #[tokio::test]
+    async fn test_revalidate_nodes_all_valid() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        // Any node is valid: node flag set, no required services.
+        asm.policy_mgr
+            .update_policy_from_container_bytes(make_node_join_policy(None))
+            .await
+            .unwrap();
+
+        let a: IpAddr = "fd5a:5052::1".parse().unwrap();
+        let b: IpAddr = "fd5a:5052::2".parse().unwrap();
+        asm.actor_mgr
+            .add_node(
+                &make_node_actor_defexp("fd5a:5052::1", "node-a", "[fd5a:5052::101]:1234"),
+                false,
+            )
+            .await
+            .unwrap();
+        asm.actor_mgr
+            .add_node(
+                &make_node_actor_defexp("fd5a:5052::2", "node-b", "[fd5a:5052::102]:1234"),
+                false,
+            )
+            .await
+            .unwrap();
+
+        let psnap = asm.policy_mgr.get_current_snapshot();
+        let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
+
+        assert_eq!(sorted(kept), sorted(vec![a, b]));
+        // Both actors remain in the datastore (not disconnected).
+        assert!(
+            asm.actor_mgr
+                .get_actor_by_zpr_addr(&a)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            asm.actor_mgr
+                .get_actor_by_zpr_addr(&b)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// No node satisfies the default (join-policy-free) policy: the returned set is
+    /// empty and every node is disconnected/removed.
+    #[tokio::test]
+    async fn test_revalidate_nodes_all_invalid() {
+        // The default test-assembly policy has no join policies, so no node matches.
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+
+        let a: IpAddr = "fd5a:5052::1".parse().unwrap();
+        let b: IpAddr = "fd5a:5052::2".parse().unwrap();
+        asm.actor_mgr
+            .add_node(
+                &make_node_actor_defexp("fd5a:5052::1", "node-a", "[fd5a:5052::101]:1234"),
+                false,
+            )
+            .await
+            .unwrap();
+        asm.actor_mgr
+            .add_node(
+                &make_node_actor_defexp("fd5a:5052::2", "node-b", "[fd5a:5052::102]:1234"),
+                false,
+            )
+            .await
+            .unwrap();
+
+        let psnap = asm.policy_mgr.get_current_snapshot();
+        let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
+
+        assert!(kept.is_empty());
+        // Both nodes were disconnected → removed from the actor datastore.
+        assert!(
+            asm.actor_mgr
+                .get_actor_by_zpr_addr(&a)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            asm.actor_mgr
+                .get_actor_by_zpr_addr(&b)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Mixed set under one snapshot: policy requires service "svc-x". The node that
+    /// provides it survives; the one that doesn't is disconnected. Guards the
+    /// keep-flag/retain index alignment.
+    #[tokio::test]
+    async fn test_revalidate_nodes_mixed() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        asm.policy_mgr
+            .update_policy_from_container_bytes(make_node_join_policy(Some(vec![svc("svc-x")])))
+            .await
+            .unwrap();
+
+        let good: IpAddr = "fd5a:5052::1".parse().unwrap();
+        let bad: IpAddr = "fd5a:5052::2".parse().unwrap();
+        // Node that provides the required service → stays valid.
+        let mut good_actor =
+            make_node_actor_defexp("fd5a:5052::1", "node-good", "[fd5a:5052::101]:1234");
+        good_actor
+            .add_attribute(
+                Attribute::builder(key::SERVICES)
+                    .expires_in(Duration::from_secs(3600))
+                    .value("svc-x"),
+            )
+            .unwrap();
+        asm.actor_mgr.add_node(&good_actor, false).await.unwrap();
+        // Node without the service → invalid → disconnected.
+        asm.actor_mgr
+            .add_node(
+                &make_node_actor_defexp("fd5a:5052::2", "node-bad", "[fd5a:5052::102]:1234"),
+                false,
+            )
+            .await
+            .unwrap();
+
+        let psnap = asm.policy_mgr.get_current_snapshot();
+        let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
+
+        assert_eq!(kept, vec![good]);
+        assert!(
+            asm.actor_mgr
+                .get_actor_by_zpr_addr(&good)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            asm.actor_mgr
+                .get_actor_by_zpr_addr(&bad)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// No connected nodes at all: returns an empty set without error.
+    #[tokio::test]
+    async fn test_revalidate_nodes_empty() {
+        let asm = Arc::new(new_assembly_for_tests(None).await);
+        let psnap = asm.policy_mgr.get_current_snapshot();
+        let kept = revalidate_nodes(&asm, &psnap).await.unwrap();
+        assert!(kept.is_empty());
+    }
+}
