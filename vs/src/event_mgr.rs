@@ -79,17 +79,13 @@ pub async fn launch(asm: Arc<Assembly>, mut event_rx: mpsc::Receiver<VsEvent>) {
     info!(target: EVENT, "event manager shutting down");
 }
 
-// Reserved for future topology handling on actor join. Auth-service propagation now
-// happens via an `AuthServiceChange` event emitted at the join call site (see
-// `record_auth_change_if_provider`).
+/// TODO: Does not do anything yet.
 async fn handle_actor_joins(_asm: &Arc<Assembly>, actor_addr: IpAddr) -> Result<(), ServiceError> {
     info!(target: EVENT, "actor joined: {}", actor_addr);
     Ok(())
 }
 
-// Reserved for future topology handling on actor leave. Auth-service propagation now
-// happens via an `AuthServiceChange` event emitted at the leave call site, which must
-// detect the change *before* the disconnect removes the actor from the state DB.
+/// TODO: Does not do anything yet.
 async fn handle_actor_leaves(
     _asm: &Arc<Assembly>,
     actor_addr: IpAddr,
