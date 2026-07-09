@@ -225,13 +225,16 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
     // Disconnect the nodes that are no longer approved by the new policy.
     for naddr in &invalid_node_addrs {
         info!(target: EVENT, "connected node {naddr} is no longer approved by policy, disconnecting");
+        // Note that the following disconnect call will also update the topology manager.
         if let Err(e) = asm
             .cc
             .disconnect(asm.clone(), *naddr, DisconnectReason::Admin)
             .await
         {
-            warn!(target: EVENT, "error processing disconnect of {naddr}: {e}");
+            error!(target: EVENT, "error processing disconnect of {naddr}: {e}");
             // In this case we do not send an actor-leaves event.
+            // What is the state of our topology manager now?
+            // Visa service is porbably hosed.
         } else {
             // TODO: Do not re-queue onto this event manager. We can handle this directly ourselves later.
             let evt = VsEvent::ActorLeaves(*naddr, DisconnectReason::Admin);
@@ -243,9 +246,9 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
 
     // Only do these steps if we managed to get a set of connected nodes. If
     // there actually are no nodes connected at the moment, then topology should
-    // have been updated via other code paths.  The purpose of updating the
-    // topology when presented with a new policy is to verify that existing
-    // links are still allowed, and send out peer messages.
+    // have been (or will soon be) updated via other code paths.  The purpose of
+    // updating the topology when presented with a new policy is to verify that
+    // existing links are still allowed, and send out peer messages.
     if !connected_node_addrs.is_empty() {
         info!(target: EVENT, "policy updated vinst={vinst}: revalidating topology ({} nodes)", connected_node_addrs.len());
         let report = asm
