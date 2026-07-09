@@ -210,16 +210,9 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
     let (connected_node_addrs, invalid_node_addrs) = revalidate_nodes(asm, &psnap).await?;
 
     // Disconnect the nodes that are no longer approved by the new policy.
-    let mut auth_services_changed = false;
     for naddr in &invalid_node_addrs {
         info!(target: EVENT, "connected node {naddr} is no longer approved by policy, disconnecting");
         // Note that the following disconnect call will also update the topology manager.
-
-        // Highly unlikely, but we check:
-        let was_auth_provider = match asm.actor_mgr.has_auth_services(asm.clone(), naddr).await {
-            Ok(true) => true,
-            _ => false,
-        };
         if let Err(e) = asm
             .cc
             .disconnect(asm.clone(), *naddr, DisconnectReason::Admin)
@@ -229,12 +222,8 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
             // In this case we do not send an actor-leaves event.
             // What is the state of our topology manager now?
             // Visa service is porbably hosed.
-        } else {
-            if was_auth_provider {
-                auth_services_changed = true;
-            }
-            // TODO: If ActorLeaves event ever does anything we may need it here.
         }
+        // TODO: If ActorLeaves event ever does anything we may need it here.
     }
 
     // Only do these steps if we managed to get a set of connected nodes. If
@@ -267,11 +256,12 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
             })
         });
         join_all(futs).await;
-    }
-    if auth_services_changed {
-        // If we disconnected an auth service provider, make sure to trigger an update to all nodes so they get the new list.
+
+        // A policy update can change the authorized-service set (a provider was
+        // disconnected above, or policy reclassified a service). Re-push the current
+        // list so surviving nodes stay in sync.
         if let Err(e) = handle_auth_service_change(asm).await {
-            error!(target: EVENT, "failed to handle auth service change event after policy update: {}", e);
+            error!(target: EVENT, "failed to refresh auth services after policy update: {e}");
         }
     }
 
