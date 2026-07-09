@@ -802,6 +802,10 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
         }
         self.asm.counters.incr(CounterType::NodeConnectionsSuccess);
 
+        // If this node provides an auth service, the authorized-services list grew and
+        // nodes must be updated. Detect it now while the actor is still in the DB.
+        event_mgr::record_auth_change_if_provider(&self.asm, &node_zpr_addr).await;
+
         let vs_handle: vsapi::v_s_handle::Client =
             capnp_rpc::new_client(VSHandleImpl::new(self.asm.clone(), node_actor));
         let mut res_builder = results.get().init_res();
