@@ -409,7 +409,8 @@ impl ConnectionControl {
 
     /// Disconnect logic. Cleans up actor database, visas, and our view of topology. Updates router.
     ///
-    /// TODO: Needs work.  See https://github.com/org-zpr/zpr-visaservice/issues/240
+    /// This is used only for policy disconnect calls over the VSAPI or for a policy instigated disconnect.
+    /// In both cases, it is safe to remove all state for the disconnecting actor.
     ///
     /// ### Errors
     /// Most cleanup failures are logged and swallowed (the caller can't act on them). Only these
