@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Text},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use reqwest::tls::Certificate;
 
@@ -19,6 +19,52 @@ use crate::vsclient::{RoleFilter, VsClient};
 /// Do not hit the VS ADMIN api more than this often.
 const REFRESH_RATE: Duration = Duration::from_millis(2000);
 
+/// Which content pane is currently selected for keyboard interaction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Pane {
+    Actors,
+    Services,
+    Visas,
+}
+
+/// Next selection index given current index, list length, and direction.
+/// Clamps at 0 and len-1; None only for an empty list.
+fn move_selection(current: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let cur = current.unwrap_or(0);
+    Some(if down {
+        (cur + 1).min(len - 1)
+    } else {
+        cur.saturating_sub(1)
+    })
+}
+
+/// Keep a stored selection in range after the row vec is rebuilt.
+fn clamp_state(state: &mut TableState, len: usize) {
+    state.select(match (state.selected(), len) {
+        (_, 0) => None,
+        (Some(i), _) if i >= len => Some(len - 1),
+        (None, _) => Some(0),
+        (some, _) => some,
+    });
+}
+
+/// Bordered block for a pane; thick bold border when selected, and the
+/// hot-key letter of the title underlined+bold.
+fn pane_block<'a>(letter: &'a str, rest: &'a str, selected: bool) -> Block<'a> {
+    let title = Line::from(vec![letter.underlined().bold(), rest.bold()]);
+    let block = Block::default().borders(Borders::ALL).title(title);
+    if selected {
+        block
+            .border_type(BorderType::Thick)
+            .border_style(Style::default().bold())
+    } else {
+        block
+    }
+}
+
 #[derive(Debug)]
 struct Gui {
     exit: bool,
@@ -28,6 +74,10 @@ struct Gui {
     actors: Vec<ActorDescriptor>,
     services: Vec<ServiceDescriptor>,
     visas: Vec<VisaDescriptor>,
+    selected: Pane,
+    actor_state: TableState,
+    service_state: TableState,
+    visa_state: TableState,
     table_header_style: Style,
     zpr_addr_style: Style,
     cn_style: Style,
@@ -57,6 +107,10 @@ impl Gui {
             actors: Vec::new(),
             services: Vec::new(),
             visas: Vec::new(),
+            selected: Pane::Actors,
+            actor_state: TableState::default().with_selected(Some(0)),
+            service_state: TableState::default().with_selected(Some(0)),
+            visa_state: TableState::default().with_selected(Some(0)),
             last_updated: None,
             table_header_style: Style::default().fg(Color::LightGreen).bg(Color::Black),
             zpr_addr_style: Color::Yellow.into(),
@@ -79,7 +133,7 @@ impl Gui {
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         self.render_gui(frame, frame.area());
     }
 
@@ -88,6 +142,18 @@ impl Gui {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => self.exit = true,
+                    KeyCode::Char('a') => self.selected = Pane::Actors,
+                    KeyCode::Char('s') => self.selected = Pane::Services,
+                    KeyCode::Char('v') => self.selected = Pane::Visas,
+                    KeyCode::Up | KeyCode::Down => {
+                        let down = key.code == KeyCode::Down;
+                        let (state, len) = match self.selected {
+                            Pane::Actors => (&mut self.actor_state, self.actors.len()),
+                            Pane::Services => (&mut self.service_state, self.services.len()),
+                            Pane::Visas => (&mut self.visa_state, self.visas.len()),
+                        };
+                        state.select(move_selection(state.selected(), len, down));
+                    }
                     _ => {}
                 }
             }
@@ -115,6 +181,7 @@ impl Gui {
                 }
             }
             self.actors.sort(); // uses Ord trait
+            clamp_state(&mut self.actor_state, self.actors.len());
         }
         self.last_updated = Some(Instant::now());
 
@@ -130,6 +197,7 @@ impl Gui {
                 }
             }
             self.services.sort(); // uses Ord trait
+            clamp_state(&mut self.service_state, self.services.len());
         }
 
         {
@@ -145,18 +213,22 @@ impl Gui {
             }
             self.visas.sort(); // uses Ord trait
             self.visas.reverse();
+            clamp_state(&mut self.visa_state, self.visas.len());
         }
 
         self.last_updated = Some(Instant::now());
         Ok(())
     }
 
-    fn render_gui(&self, frame: &mut Frame, area: Rect) {
+    fn render_gui(&mut self, frame: &mut Frame, area: Rect) {
         let title = Line::from("  ZPR Visa Service  ".bold());
         let instructions = Line::from(vec![
-            " Press".into(),
-            " <q> ".blue().bold(),
-            "to quit ".into(),
+            " a/s/v".blue().bold(),
+            " select · ".into(),
+            "↑/↓".blue().bold(),
+            " move · ".into(),
+            "q".blue().bold(),
+            " quit ".into(),
         ]);
 
         let [header_area, content_area, footer_area] = Layout::vertical([
@@ -193,11 +265,15 @@ impl Gui {
         self.render_visas(frame, visa_area);
     }
 
-    fn render_services(&self, frame: &mut Frame, area: Rect) {
+    fn render_services(&mut self, frame: &mut Frame, area: Rect) {
+        let is_selected = self.selected == Pane::Services;
         if self.services.is_empty() {
             frame.render_widget(
-                Paragraph::new(Text::from("No services found.").red())
-                    .block(Block::default().borders(Borders::ALL).title("Services ")),
+                Paragraph::new(Text::from("No services found.").red()).block(pane_block(
+                    "S",
+                    "ervices ",
+                    is_selected,
+                )),
                 area,
             );
             return;
@@ -244,19 +320,24 @@ impl Gui {
             ],
         )
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Services ".bold()),
-        );
-        frame.render_widget(table, area);
+        .block(pane_block("S", "ervices ", is_selected));
+        if is_selected {
+            let table = table.row_highlight_style(Style::default().reversed());
+            frame.render_stateful_widget(table, area, &mut self.service_state);
+        } else {
+            frame.render_widget(table, area);
+        }
     }
 
-    fn render_actors(&self, frame: &mut Frame, area: Rect) {
+    fn render_actors(&mut self, frame: &mut Frame, area: Rect) {
+        let is_selected = self.selected == Pane::Actors;
         if self.actors.is_empty() {
             frame.render_widget(
-                Paragraph::new(Text::from("No actors found.").red())
-                    .block(Block::default().borders(Borders::ALL).title("Actors ")),
+                Paragraph::new(Text::from("No actors found.").red()).block(pane_block(
+                    "A",
+                    "ctors ",
+                    is_selected,
+                )),
                 area,
             );
             return;
@@ -307,19 +388,25 @@ impl Gui {
         )
         .header(header)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Actors ".bold())
-                .title(Line::from(clock.cyan()).right_aligned()),
+            pane_block("A", "ctors ", is_selected).title(Line::from(clock.cyan()).right_aligned()),
         );
-        frame.render_widget(table, area);
+        if is_selected {
+            let table = table.row_highlight_style(Style::default().reversed());
+            frame.render_stateful_widget(table, area, &mut self.actor_state);
+        } else {
+            frame.render_widget(table, area);
+        }
     }
 
-    fn render_visas(&self, frame: &mut Frame, area: Rect) {
+    fn render_visas(&mut self, frame: &mut Frame, area: Rect) {
+        let is_selected = self.selected == Pane::Visas;
         if self.visas.is_empty() {
             frame.render_widget(
-                Paragraph::new(Text::from("No visas found.").red())
-                    .block(Block::default().borders(Borders::ALL).title("Visas ")),
+                Paragraph::new(Text::from("No visas found.").red()).block(pane_block(
+                    "V",
+                    "isas ",
+                    is_selected,
+                )),
                 area,
             );
             return;
@@ -378,11 +465,27 @@ impl Gui {
             ],
         )
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Visas ".bold()),
-        );
-        frame.render_widget(table, area);
+        .block(pane_block("V", "isas ", is_selected));
+        if is_selected {
+            let table = table.row_highlight_style(Style::default().reversed());
+            frame.render_stateful_widget(table, area, &mut self.visa_state);
+        } else {
+            frame.render_widget(table, area);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::move_selection;
+
+    /// move_selection clamps at both ends and handles the empty list.
+    #[test]
+    fn move_selection_clamps_and_steps() {
+        assert_eq!(move_selection(None, 0, true), None);
+        assert_eq!(move_selection(Some(0), 3, false), Some(0)); // clamp top
+        assert_eq!(move_selection(Some(2), 3, true), Some(2)); // clamp bottom
+        assert_eq!(move_selection(Some(0), 3, true), Some(1)); // step down
+        assert_eq!(move_selection(Some(2), 3, false), Some(1)); // step up
     }
 }
