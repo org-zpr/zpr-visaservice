@@ -580,6 +580,19 @@ impl Gui {
                         self.detail_scroll = 0;
                     }
                     KeyCode::Char('d') => self.selected = Pane::Details,
+                    KeyCode::Tab => {
+                        // Cycle Actors -> Services -> Visas -> Details -> Actors.
+                        self.selected = match self.selected {
+                            Pane::Actors => Pane::Services,
+                            Pane::Services => Pane::Visas,
+                            Pane::Visas => Pane::Details,
+                            Pane::Details => Pane::Actors,
+                        };
+                        if self.selected != Pane::Details {
+                            self.detail_source = self.selected;
+                            self.detail_scroll = 0;
+                        }
+                    }
                     KeyCode::Up | KeyCode::Down => {
                         let down = key.code == KeyCode::Down;
                         if self.selected == Pane::Details {
