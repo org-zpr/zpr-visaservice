@@ -12,7 +12,9 @@ use reqwest::tls::Certificate;
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::time::{Duration, Instant, SystemTime};
 
-use admin_api_types::{ActorDescriptor, ApiKeySet, ServiceDescriptor, VisaDescriptor};
+use admin_api_types::{
+    ActorDescriptor, ApiKeySet, NodeRecordBrief, ServiceDescriptor, VisaDescriptor,
+};
 
 use thousands::Separable;
 
@@ -235,6 +237,205 @@ fn visa_detail_text(
         &session_key_summary(&v.session_key),
         width,
     ));
+
+    Text::from(lines)
+}
+
+/// A `SystemTime` as RFC3339 (secs, UTC), or `fallback` when absent.
+fn ts_or(t: Option<SystemTime>, fallback: &str) -> String {
+    match t {
+        Some(t) => {
+            let dt: DateTime<Utc> = t.into();
+            dt.to_rfc3339_opts(SecondsFormat::Secs, true)
+        }
+        None => fallback.to_string(),
+    }
+}
+
+/// Header's right-hand auth text: "no auth" (None), "auth EXPIRED" (past),
+/// or "auth in Xh Ym".
+fn auth_hdr(auth_exp: Option<SystemTime>, now: SystemTime) -> String {
+    match auth_exp {
+        None => "no auth".to_string(),
+        Some(e) => match e.duration_since(now) {
+            Err(_) => "auth EXPIRED".to_string(),
+            Ok(d) => format!("auth in {}", hm(d.as_secs() / 60)),
+        },
+    }
+}
+
+/// Relative " (Xm ago)" / " (Xh Ym ago)" suffix for a past time; empty if the
+/// time is in the future or absent.
+fn ago_suffix(t: SystemTime, now: SystemTime) -> String {
+    match now.duration_since(t) {
+        Ok(d) => {
+            let mins = d.as_secs() / 60;
+            if mins >= 60 {
+                format!(" ({} ago)", hm(mins))
+            } else {
+                format!(" ({mins}m ago)")
+            }
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// The `-- node --` block for a node actor's `NodeRecordBrief`.
+/// `width` is the inner (border-excluded) pane width.
+fn node_detail_lines(nd: &NodeRecordBrief, now: SystemTime, width: u16) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Full-width "-- node ----" divider.
+    let mut divider = String::from("-- node ");
+    let pad = (width as usize).saturating_sub(divider.len());
+    divider.push_str(&"-".repeat(pad));
+    lines.push(Line::from(Span::from(divider).style(HEADING_STYLE)));
+
+    lines.extend(labeled(
+        "sync",
+        if nd.in_sync { "YES" } else { "NO" },
+        width,
+    ));
+    let last_contact = format!(
+        "{}{}",
+        ts_or(nd.last_contact, "never"),
+        nd.last_contact
+            .map(|t| ago_suffix(t, now))
+            .unwrap_or_default(),
+    );
+    lines.extend(labeled("last contact", &last_contact, width));
+    lines.extend(labeled(
+        "vss port",
+        &nd.vss_port.map(|p| p.to_string()).unwrap_or("-".into()),
+        width,
+    ));
+    lines.extend(labeled(
+        "visa reqs",
+        &format!(
+            "{}  (approved {} denied {})",
+            nd.visa_requests.separate_with_commas(),
+            nd.approved_vreqs.separate_with_commas(),
+            nd.denied_vreqs.separate_with_commas(),
+        ),
+        width,
+    ));
+    let last_vreq = format!(
+        "{}{}",
+        ts_or(nd.last_vreq, "never"),
+        nd.last_vreq.map(|t| ago_suffix(t, now)).unwrap_or_default(),
+    );
+    lines.extend(labeled("last vreq", &last_vreq, width));
+    lines.extend(labeled(
+        "connect reqs",
+        &nd.connect_requests.separate_with_commas(),
+        width,
+    ));
+    // installed = live visas, pending = awaiting install, revoking = pending
+    // revocation. `visas_enqueued` (queued IDs) is not surfaced here.
+    lines.extend(labeled(
+        "installs",
+        &format!(
+            "{} installed  {} pending  {} revoking",
+            nd.visas.len().separate_with_commas(),
+            nd.pending_install.separate_with_commas(),
+            nd.pending_revocation.separate_with_commas(),
+        ),
+        width,
+    ));
+    let adapters = if nd.adapters.is_empty() {
+        "(none)".to_string()
+    } else {
+        nd.adapters.join(", ")
+    };
+    lines.extend(labeled("adapters", &adapters, width));
+    let links = if nd.links.is_empty() {
+        "(none)".to_string()
+    } else {
+        nd.links.join(", ")
+    };
+    lines.extend(labeled("links", &links, width));
+
+    lines
+}
+
+/// Build the full multi-line actor detail view for the Details pane.
+/// `services` is the CNs' bound service names (already filtered by caller).
+/// Pure: no `self`, no frame — `width` is the inner (border-excluded) width.
+fn actor_detail_text(
+    a: &ActorDescriptor,
+    services: &[&str],
+    now: SystemTime,
+    width: u16,
+) -> Text<'static> {
+    let w = width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header: "actor <cn>" left; "[node]/[adapter]   <auth>" right, padded.
+    let badge = if a.node { "[node]" } else { "[adapter]" };
+    let right = format!("{badge}   {}", auth_hdr(a.auth_exp, now));
+    let left = format!("actor {}", a.cn);
+    let pad = w.saturating_sub(left.len() + right.len());
+    lines.push(Line::from(vec![
+        Span::from("actor ").style(HEADING_STYLE),
+        Span::from(a.cn.clone()),
+        Span::from(" ".repeat(pad)),
+        Span::from(right).style(HEADING_STYLE),
+    ]));
+    lines.push(Line::from(""));
+
+    lines.extend(labeled("identity", &a.ident, width));
+    lines.extend(labeled("zpr addr", &a.zpr_addr, width));
+    let created: DateTime<Utc> = a.ctime.into();
+    lines.extend(labeled(
+        "created",
+        &created.to_rfc3339_opts(SecondsFormat::Secs, true),
+        width,
+    ));
+    // auth exp: timestamp plus a relative "(in Xh Ym)"/"(EXPIRED)" suffix.
+    let auth_suffix = match a.auth_exp {
+        Some(e) => match e.duration_since(now) {
+            Err(_) => "  (EXPIRED)".to_string(),
+            Ok(d) => format!("  (in {})", hm(d.as_secs() / 60)),
+        },
+        None => String::new(),
+    };
+    lines.extend(labeled(
+        "auth exp",
+        &format!("{}{auth_suffix}", ts_or(a.auth_exp, "no auth")),
+        width,
+    ));
+
+    // attributes: first "key=values" on the label line, rest indented.
+    // Sort by key so the order is stable across refreshes (attrs arrive unordered).
+    if a.attrs.is_empty() {
+        lines.extend(labeled("attributes", "(none)", width));
+    } else {
+        let mut attrs: Vec<&_> = a.attrs.iter().collect();
+        attrs.sort_by(|x, y| x.key.cmp(&y.key));
+        for (i, attr) in attrs.iter().enumerate() {
+            let label = if i == 0 { "attributes" } else { "" };
+            lines.extend(labeled(
+                label,
+                &format!("{}={}", attr.key, attr.value.join(",")),
+                width,
+            ));
+        }
+    }
+
+    // services: one bound service name per line, or (none).
+    if services.is_empty() {
+        lines.extend(labeled("services", "(none)", width));
+    } else {
+        for (i, s) in services.iter().enumerate() {
+            let label = if i == 0 { "services" } else { "" };
+            lines.extend(labeled(label, s, width));
+        }
+    }
+
+    // node block only for node actors.
+    if let Some(nd) = &a.node_details {
+        lines.extend(node_detail_lines(nd, now, width));
+    }
 
     Text::from(lines)
 }
@@ -726,6 +927,31 @@ impl Gui {
             }
         }
 
+        // Full actor detail when the Actors pane feeds Details and a row is set.
+        if self.detail_source == Pane::Actors {
+            if let Some(a) = self.actor_state.selected().and_then(|i| self.actors.get(i)) {
+                let mut services: Vec<&str> = self
+                    .services
+                    .iter()
+                    .filter(|s| s.actor_cn == a.cn)
+                    .map(|s| s.service_name.as_str())
+                    .collect();
+                // Stable order across refreshes.
+                services.sort_unstable();
+                let text = actor_detail_text(
+                    a,
+                    &services,
+                    SystemTime::now(),
+                    area.width.saturating_sub(2),
+                );
+                frame.render_widget(
+                    Paragraph::new(text).block(pane_block("D", "etails ", is_selected)),
+                    area,
+                );
+                return;
+            }
+        }
+
         let id = match self.detail_source {
             Pane::Actors => self
                 .actor_state
@@ -755,11 +981,57 @@ impl Gui {
 #[cfg(test)]
 mod tests {
     use super::{
-        LABEL_W, Pane, detail_line, flow_str, labeled, move_selection, remaining_str,
-        session_key_summary,
+        LABEL_W, Pane, actor_detail_text, auth_hdr, detail_line, flow_str, labeled, move_selection,
+        remaining_str, session_key_summary, ts_or,
     };
-    use admin_api_types::{ApiKeySet, VisaDescriptor, VisaMatchDirection};
+    use admin_api_types::{
+        ActorDescriptor, ApiAttribute, ApiKeySet, NodeRecordBrief, VisaDescriptor,
+        VisaMatchDirection,
+    };
     use std::time::{Duration, UNIX_EPOCH};
+
+    /// A minimal ActorDescriptor; `node_details`/`attrs` set per-test.
+    fn sample_actor() -> ActorDescriptor {
+        ActorDescriptor {
+            cn: "web-server-01".into(),
+            ctime: UNIX_EPOCH,
+            ident: "CN=web-server-01,O=ZPR".into(),
+            node: false,
+            zpr_addr: "fd5a:5052::b2".into(),
+            attrs: vec![],
+            auth_exp: None,
+            node_details: None,
+        }
+    }
+
+    /// A NodeRecordBrief fixture for the "-- node --" block.
+    fn sample_node() -> NodeRecordBrief {
+        NodeRecordBrief {
+            pending_install: 3,
+            last_contact: Some(UNIX_EPOCH + Duration::from_secs(600)),
+            visa_requests: 1204,
+            connect_requests: 5309,
+            in_sync: true,
+            approved_vreqs: 1180,
+            denied_vreqs: 24,
+            last_vreq: Some(UNIX_EPOCH + Duration::from_secs(500)),
+            adapters: vec!["adapter-a".into(), "adapter-b".into()],
+            links: vec!["node-2".into()],
+            visas: vec![1, 2, 3],
+            visas_enqueued: vec![4],
+            pending_revocation: 0,
+            vss_port: Some(8443),
+        }
+    }
+
+    /// Join a Text's lines into one string for substring assertions.
+    fn text_str(t: &super::Text<'static>) -> String {
+        t.lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     /// A minimal VisaDescriptor for helper tests.
     fn sample_visa() -> VisaDescriptor {
@@ -850,5 +1122,58 @@ mod tests {
         // Continuation line begins with LABEL_W spaces.
         let second = lines[1].to_string();
         assert!(second.starts_with(&" ".repeat(LABEL_W as usize)));
+    }
+
+    /// auth_hdr covers None, expired, and future cases.
+    #[test]
+    fn auth_hdr_none_expired_future() {
+        let base = UNIX_EPOCH;
+        assert_eq!(auth_hdr(None, base), "no auth");
+        // 1s in the past → EXPIRED.
+        assert_eq!(
+            auth_hdr(Some(base), base + Duration::from_secs(1)),
+            "auth EXPIRED"
+        );
+        // 1h02m ahead.
+        let exp = base + Duration::from_secs(3720);
+        assert_eq!(auth_hdr(Some(exp), base), "auth in 1h 02m");
+    }
+
+    /// ts_or renders RFC3339 when set, else the fallback word.
+    #[test]
+    fn ts_or_timestamp_or_fallback() {
+        assert!(ts_or(Some(UNIX_EPOCH), "never").contains("1970-01-01"));
+        assert_eq!(ts_or(None, "never"), "never");
+    }
+
+    /// A node actor shows the badge, the node block, and its bound services.
+    #[test]
+    fn actor_detail_text_node() {
+        let mut a = sample_actor();
+        a.node = true;
+        a.attrs = vec![ApiAttribute {
+            key: "role".into(),
+            value: vec!["node".into()],
+            expires_at: UNIX_EPOCH,
+        }];
+        a.node_details = Some(sample_node());
+        let s = text_str(&actor_detail_text(&a, &["https-web"], UNIX_EPOCH, 78));
+        assert!(s.contains("[node]"));
+        assert!(s.contains("-- node"));
+        assert!(s.contains("sync"));
+        assert!(s.contains("role=node"));
+        assert!(s.contains("https-web"));
+    }
+
+    /// An adapter (no node_details) omits the node block; empty attrs/services
+    /// render "(none)".
+    #[test]
+    fn actor_detail_text_adapter_empty() {
+        let a = sample_actor(); // node=false, no details/attrs
+        let s = text_str(&actor_detail_text(&a, &[], UNIX_EPOCH, 78));
+        assert!(s.contains("[adapter]"));
+        assert!(!s.contains("-- node"));
+        assert!(s.contains("attributes  (none)"));
+        assert!(s.contains("services    (none)"));
     }
 }
