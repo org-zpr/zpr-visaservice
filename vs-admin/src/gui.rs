@@ -2,10 +2,13 @@
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{
+        Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, TableState,
+    },
 };
 use reqwest::tls::Certificate;
 
@@ -30,6 +33,12 @@ enum Pane {
     Services,
     Visas,
     Details,
+}
+
+/// Clamp a scroll offset so the last content line can reach the pane bottom
+/// but you can't scroll into empty space; 0 when content fits the viewport.
+fn clamp_scroll(offset: u16, content_h: u16, viewport_h: u16) -> u16 {
+    offset.min(content_h.saturating_sub(viewport_h))
 }
 
 /// Next selection index given current index, list length, and direction.
@@ -61,11 +70,16 @@ fn detail_line(source: Pane, id: Option<String>) -> String {
     }
 }
 
-/// Width of the label column in the visa Details view.
-const LABEL_W: u16 = 12;
+/// Width of the label column in the visa Details view. 13 = longest label
+/// ("last contact"/"connect reqs", 12 chars) plus a one-space gutter.
+const LABEL_W: u16 = 13;
 
 /// Color for the labels/headings in the visa Details view (vs. plain values).
 const HEADING_STYLE: Style = Style::new().fg(Color::Cyan);
+
+/// Attribute key / value colors (distinct from each other and the heading).
+const ATTR_KEY_STYLE: Style = Style::new().fg(Color::Yellow);
+const ATTR_VAL_STYLE: Style = Style::new().fg(Color::White);
 
 /// "Xh Ym" for a minute count, hours comma-separated (durations can be huge).
 fn hm(total_mins: u64) -> String {
@@ -312,7 +326,7 @@ fn node_detail_lines(nd: &NodeRecordBrief, now: SystemTime, width: u16) -> Vec<L
     lines.extend(labeled(
         "visa reqs",
         &format!(
-            "{}  (approved {} denied {})",
+            "{}  (approved {}, denied {})",
             nd.visa_requests.separate_with_commas(),
             nd.approved_vreqs.separate_with_commas(),
             nd.denied_vreqs.separate_with_commas(),
@@ -335,7 +349,7 @@ fn node_detail_lines(nd: &NodeRecordBrief, now: SystemTime, width: u16) -> Vec<L
     lines.extend(labeled(
         "installs",
         &format!(
-            "{} installed  {} pending  {} revoking",
+            "{} installed, {} pending, {} revoking",
             nd.visas.len().separate_with_commas(),
             nd.pending_install.separate_with_commas(),
             nd.pending_revocation.separate_with_commas(),
@@ -412,13 +426,18 @@ fn actor_detail_text(
     } else {
         let mut attrs: Vec<&_> = a.attrs.iter().collect();
         attrs.sort_by(|x, y| x.key.cmp(&y.key));
+        let lw = LABEL_W as usize;
         for (i, attr) in attrs.iter().enumerate() {
             let label = if i == 0 { "attributes" } else { "" };
-            lines.extend(labeled(
-                label,
-                &format!("{}={}", attr.key, attr.value.join(",")),
-                width,
-            ));
+            // Colored key = value; one line per attribute.
+            // ponytail: no wrap — attr values are short; long ones clip at the
+            // right edge (vertical scroll won't help). Widen if that bites.
+            lines.push(Line::from(vec![
+                Span::from(format!("{label:<lw$}")).style(HEADING_STYLE),
+                Span::from(attr.key.clone()).style(ATTR_KEY_STYLE),
+                Span::from(" = "),
+                Span::from(attr.value.join(", ")).style(ATTR_VAL_STYLE),
+            ]));
         }
     }
 
@@ -475,6 +494,7 @@ struct Gui {
     visas: Vec<VisaDescriptor>,
     selected: Pane,
     detail_source: Pane,
+    detail_scroll: u16, // top line offset of the Details pane
     actor_state: TableState,
     service_state: TableState,
     visa_state: TableState,
@@ -509,6 +529,7 @@ impl Gui {
             visas: Vec::new(),
             selected: Pane::Actors,
             detail_source: Pane::Actors,
+            detail_scroll: 0,
             actor_state: TableState::default().with_selected(Some(0)),
             service_state: TableState::default().with_selected(Some(0)),
             visa_state: TableState::default().with_selected(Some(0)),
@@ -546,26 +567,39 @@ impl Gui {
                     KeyCode::Char('a') => {
                         self.selected = Pane::Actors;
                         self.detail_source = Pane::Actors;
+                        self.detail_scroll = 0;
                     }
                     KeyCode::Char('s') => {
                         self.selected = Pane::Services;
                         self.detail_source = Pane::Services;
+                        self.detail_scroll = 0;
                     }
                     KeyCode::Char('v') => {
                         self.selected = Pane::Visas;
                         self.detail_source = Pane::Visas;
+                        self.detail_scroll = 0;
                     }
                     KeyCode::Char('d') => self.selected = Pane::Details,
                     KeyCode::Up | KeyCode::Down => {
                         let down = key.code == KeyCode::Down;
-                        let (state, len) = match self.selected {
-                            Pane::Actors => (&mut self.actor_state, self.actors.len()),
-                            Pane::Services => (&mut self.service_state, self.services.len()),
-                            Pane::Visas => (&mut self.visa_state, self.visas.len()),
-                            // ponytail: no scroll target yet; add when the details-content spec lands
-                            Pane::Details => return Ok(()),
-                        };
-                        state.select(move_selection(state.selected(), len, down));
+                        if self.selected == Pane::Details {
+                            // Scroll one line; bottom clamp is applied in render
+                            // against the real content/viewport heights.
+                            self.detail_scroll = if down {
+                                self.detail_scroll.saturating_add(1)
+                            } else {
+                                self.detail_scroll.saturating_sub(1)
+                            };
+                        } else {
+                            let (state, len) = match self.selected {
+                                Pane::Actors => (&mut self.actor_state, self.actors.len()),
+                                Pane::Services => (&mut self.service_state, self.services.len()),
+                                Pane::Visas => (&mut self.visa_state, self.visas.len()),
+                                Pane::Details => unreachable!(),
+                            };
+                            state.select(move_selection(state.selected(), len, down));
+                            self.detail_scroll = 0; // row changed → reset Details scroll
+                        }
                     }
                     _ => {}
                 }
@@ -907,22 +941,48 @@ impl Gui {
             .map(|a| a.cn.as_str())
     }
 
+    /// Clamp `detail_scroll` to the content, render the scrolled paragraph, and
+    /// overlay a scrollbar only when the content overflows the pane.
+    fn render_detail_text(&mut self, frame: &mut Frame, area: Rect, text: Text<'static>) {
+        let is_selected = self.selected == Pane::Details;
+        let content = text.height() as u16;
+        let viewport = area.height.saturating_sub(2); // minus borders
+        self.detail_scroll = clamp_scroll(self.detail_scroll, content, viewport);
+        let max = content.saturating_sub(viewport);
+        frame.render_widget(
+            Paragraph::new(text)
+                .scroll((self.detail_scroll, 0))
+                .block(pane_block("D", "etails ", is_selected)),
+            area,
+        );
+        if max > 0 {
+            // Content above/below the visible window → show the matching arrow.
+            let above = self.detail_scroll > 0;
+            let below = self.detail_scroll < max;
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(if above { Some("▲") } else { None })
+                    .end_symbol(if below { Some("▼") } else { None }),
+                area.inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut ScrollbarState::new(content as usize).position(self.detail_scroll as usize),
+            );
+        }
+    }
+
     /// Render the details pane. For a selected visa (`detail_source ==
     /// Pane::Visas`) this shows the full descriptor; every other case shows
     /// the "<entity> <id>" placeholder.
     fn render_details(&mut self, frame: &mut Frame, area: Rect) {
-        let is_selected = self.selected == Pane::Details;
-
         // Full visa detail when the Visas pane feeds Details and a row is set.
         if self.detail_source == Pane::Visas {
             if let Some(v) = self.visa_state.selected().and_then(|i| self.visas.get(i)) {
                 let cn = self.cn_for(&v.requesting_node);
                 // area.width - 2 excludes the block borders.
                 let text = visa_detail_text(v, cn, SystemTime::now(), area.width.saturating_sub(2));
-                frame.render_widget(
-                    Paragraph::new(text).block(pane_block("D", "etails ", is_selected)),
-                    area,
-                );
+                self.render_detail_text(frame, area, text);
                 return;
             }
         }
@@ -944,10 +1004,7 @@ impl Gui {
                     SystemTime::now(),
                     area.width.saturating_sub(2),
                 );
-                frame.render_widget(
-                    Paragraph::new(text).block(pane_block("D", "etails ", is_selected)),
-                    area,
-                );
+                self.render_detail_text(frame, area, text);
                 return;
             }
         }
@@ -971,18 +1028,16 @@ impl Gui {
             Pane::Details => None,
         };
         let text = detail_line(self.detail_source, id);
-        frame.render_widget(
-            Paragraph::new(Text::from(text)).block(pane_block("D", "etails ", is_selected)),
-            area,
-        );
+        // Placeholder is short, so max == 0 → no scrollbar; same path is harmless.
+        self.render_detail_text(frame, area, Text::from(text));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        LABEL_W, Pane, actor_detail_text, auth_hdr, detail_line, flow_str, labeled, move_selection,
-        remaining_str, session_key_summary, ts_or,
+        LABEL_W, Pane, actor_detail_text, auth_hdr, clamp_scroll, detail_line, flow_str, labeled,
+        move_selection, remaining_str, session_key_summary, ts_or,
     };
     use admin_api_types::{
         ActorDescriptor, ApiAttribute, ApiKeySet, NodeRecordBrief, VisaDescriptor,
@@ -1161,7 +1216,7 @@ mod tests {
         assert!(s.contains("[node]"));
         assert!(s.contains("-- node"));
         assert!(s.contains("sync"));
-        assert!(s.contains("role=node"));
+        assert!(s.contains("role = node"));
         assert!(s.contains("https-web"));
     }
 
@@ -1173,7 +1228,21 @@ mod tests {
         let s = text_str(&actor_detail_text(&a, &[], UNIX_EPOCH, 78));
         assert!(s.contains("[adapter]"));
         assert!(!s.contains("-- node"));
-        assert!(s.contains("attributes  (none)"));
-        assert!(s.contains("services    (none)"));
+        assert!(s.contains("attributes   (none)"));
+        assert!(s.contains("services     (none)"));
+    }
+
+    /// clamp_scroll: fits-in-view clamps to 0; past-end clamps to the max;
+    /// in-range is untouched.
+    #[test]
+    fn clamp_scroll_bounds() {
+        // Content shorter than viewport → no scroll.
+        assert_eq!(clamp_scroll(5, 10, 20), 0);
+        // Offset past the end → content_h - viewport_h.
+        assert_eq!(clamp_scroll(100, 30, 10), 20);
+        // Offset within range → unchanged.
+        assert_eq!(clamp_scroll(3, 30, 10), 3);
+        // Exactly fits → 0.
+        assert_eq!(clamp_scroll(4, 10, 10), 0);
     }
 }
