@@ -4,15 +4,17 @@ use ratatui::{DefaultTerminal, Frame};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use reqwest::tls::Certificate;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use admin_api_types::{ActorDescriptor, ServiceDescriptor, VisaDescriptor};
+use admin_api_types::{ActorDescriptor, ApiKeySet, ServiceDescriptor, VisaDescriptor};
+
+use thousands::Separable;
 
 use crate::vsclient::{RoleFilter, VsClient};
 
@@ -25,6 +27,7 @@ enum Pane {
     Actors,
     Services,
     Visas,
+    Details,
 }
 
 /// Next selection index given current index, list length, and direction.
@@ -39,6 +42,201 @@ fn move_selection(current: Option<usize>, len: usize, down: bool) -> Option<usiz
     } else {
         cur.saturating_sub(1)
     })
+}
+
+/// One-line description of the entity feeding the details pane, e.g.
+/// "visa 1001" or "actor (none selected)".
+fn detail_line(source: Pane, id: Option<String>) -> String {
+    let label = match source {
+        Pane::Actors => "actor",
+        Pane::Services => "service",
+        Pane::Visas => "visa",
+        Pane::Details => return String::new(),
+    };
+    match id {
+        Some(id) => format!("{label} {id}"),
+        None => format!("{label} (none selected)"),
+    }
+}
+
+/// Width of the label column in the visa Details view.
+const LABEL_W: u16 = 12;
+
+/// Color for the labels/headings in the visa Details view (vs. plain values).
+const HEADING_STYLE: Style = Style::new().fg(Color::Cyan);
+
+/// "Xh Ym" for a minute count, hours comma-separated (durations can be huge).
+fn hm(total_mins: u64) -> String {
+    format!(
+        "{}h {:02}m",
+        (total_mins / 60).separate_with_commas(),
+        total_mins % 60
+    )
+}
+
+/// Human-readable time remaining until `expires`, relative to `now`.
+/// "EXPIRED" once past; otherwise "expires in Xh Ym" (or "expires in Xm"
+/// under an hour). Rounds down.
+fn remaining_str(expires: SystemTime, now: SystemTime) -> String {
+    match expires.duration_since(now) {
+        Err(_) => "EXPIRED".to_string(),
+        Ok(d) => {
+            let mins = d.as_secs() / 60;
+            if mins >= 60 {
+                format!("expires in {}", hm(mins))
+            } else {
+                format!("expires in {mins}m")
+            }
+        }
+    }
+}
+
+/// The flow line: `[src]:sport  --PROTO-->  [dst]:dport`. Missing addr → `-`,
+/// missing port → `0` (matches the visas list row convention).
+fn flow_str(v: &VisaDescriptor) -> String {
+    let src = v.source_addr.as_deref().unwrap_or("-");
+    let dst = v.dest_addr.as_deref().unwrap_or("-");
+    let sport = v.source_port.unwrap_or(0);
+    let dport = v.dest_port.unwrap_or(0);
+    let proto = v.proto.to_uppercase();
+    format!("[{src}]:{sport}  --{proto}-->  [{dst}]:{dport}")
+}
+
+/// One-line session-key summary — never prints key material, only the key
+/// format and the encrypted byte lengths.
+fn session_key_summary(k: &ApiKeySet) -> String {
+    format!(
+        "fmt={:?} ingress={}B egress={}B",
+        k.format,
+        k.ingress_key.len(),
+        k.egress_key.len()
+    )
+}
+
+/// A labeled row: `label` (heading color) in a fixed `LABEL_W` column, `value`
+/// wrapped to the remaining width with continuation lines indented under the
+/// value column.
+fn labeled(label: &str, value: &str, width: u16) -> Vec<Line<'static>> {
+    let lw = LABEL_W as usize;
+    // Column available for the value; keep at least 1 so we always progress.
+    let vw = (width.saturating_sub(LABEL_W)).max(1) as usize;
+    let wrapped = wrap_words(value, vw);
+    let mut lines = Vec::with_capacity(wrapped.len().max(1));
+    for (i, seg) in wrapped.iter().enumerate() {
+        let label_span = if i == 0 {
+            Span::from(format!("{label:<lw$}")).style(HEADING_STYLE)
+        } else {
+            Span::from(" ".repeat(lw))
+        };
+        lines.push(Line::from(vec![label_span, Span::from(seg.clone())]));
+    }
+    lines
+}
+
+/// Word-wrap `s` to `width` cols. Splits on spaces; a single word longer than
+/// `width` is hard-split. Always returns at least one segment.
+fn wrap_words(s: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        // Hard-split a word that can't fit on its own line.
+        let mut word = word.to_string();
+        while word.len() > width {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            let (head, tail) = word.split_at(width);
+            out.push(head.to_string());
+            word = tail.to_string();
+        }
+        if cur.is_empty() {
+            cur = word;
+        } else if cur.len() + 1 + word.len() <= width {
+            cur.push(' ');
+            cur.push_str(&word);
+        } else {
+            out.push(std::mem::take(&mut cur));
+            cur = word;
+        }
+    }
+    out.push(cur);
+    out
+}
+
+/// Build the full multi-line visa detail view for the Details pane.
+/// Pure: no `self`, no frame — `width` is the inner (border-excluded) width.
+fn visa_detail_text(
+    v: &VisaDescriptor,
+    cn: Option<&str>,
+    now: SystemTime,
+    width: u16,
+) -> Text<'static> {
+    let w = width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header: "visa <id>" left, remaining right-aligned, padded to width.
+    let left = format!("visa {}", v.id);
+    let right = remaining_str(v.expires, now);
+    let pad = w.saturating_sub(left.len() + right.len());
+    lines.push(Line::from(vec![
+        Span::from("visa ").style(HEADING_STYLE),
+        Span::from(v.id.to_string()),
+        Span::from(" ".repeat(pad)),
+        Span::from(right).style(HEADING_STYLE),
+    ]));
+    lines.push(Line::from(""));
+
+    lines.extend(labeled("policy", &v.policy_id, width));
+    lines.extend(labeled(
+        "zpl",
+        &format!("[{}] {}", v.direction, v.zpl),
+        width,
+    ));
+    let requesting = match cn {
+        Some(cn) => format!("{} ({cn})", v.requesting_node),
+        None => v.requesting_node.clone(),
+    };
+    lines.extend(labeled("requesting", &requesting, width));
+    lines.extend(labeled("flow", &flow_str(v), width));
+
+    let created: DateTime<Utc> = v.created.into();
+    let expires: DateTime<Utc> = v.expires.into();
+    lines.extend(labeled(
+        "created",
+        &created.to_rfc3339_opts(SecondsFormat::Secs, true),
+        width,
+    ));
+    let dur = v
+        .expires
+        .duration_since(v.created)
+        .map(|d| hm(d.as_secs() / 60))
+        .unwrap_or_else(|_| "0h 00m".to_string());
+    lines.extend(labeled(
+        "expires",
+        &format!(
+            "{}  (duration {dur})",
+            expires.to_rfc3339_opts(SecondsFormat::Secs, true)
+        ),
+        width,
+    ));
+
+    // Signals: first on the label line, the rest indented under it.
+    if v.signals.is_empty() {
+        lines.extend(labeled("signals", "(none)", width));
+    } else {
+        for (i, sig) in v.signals.iter().enumerate() {
+            let label = if i == 0 { "signals" } else { "" };
+            lines.extend(labeled(label, sig, width));
+        }
+    }
+
+    lines.extend(labeled(
+        "session key",
+        &session_key_summary(&v.session_key),
+        width,
+    ));
+
+    Text::from(lines)
 }
 
 /// Keep a stored selection in range after the row vec is rebuilt.
@@ -75,6 +273,7 @@ struct Gui {
     services: Vec<ServiceDescriptor>,
     visas: Vec<VisaDescriptor>,
     selected: Pane,
+    detail_source: Pane,
     actor_state: TableState,
     service_state: TableState,
     visa_state: TableState,
@@ -108,6 +307,7 @@ impl Gui {
             services: Vec::new(),
             visas: Vec::new(),
             selected: Pane::Actors,
+            detail_source: Pane::Actors,
             actor_state: TableState::default().with_selected(Some(0)),
             service_state: TableState::default().with_selected(Some(0)),
             visa_state: TableState::default().with_selected(Some(0)),
@@ -142,15 +342,27 @@ impl Gui {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => self.exit = true,
-                    KeyCode::Char('a') => self.selected = Pane::Actors,
-                    KeyCode::Char('s') => self.selected = Pane::Services,
-                    KeyCode::Char('v') => self.selected = Pane::Visas,
+                    KeyCode::Char('a') => {
+                        self.selected = Pane::Actors;
+                        self.detail_source = Pane::Actors;
+                    }
+                    KeyCode::Char('s') => {
+                        self.selected = Pane::Services;
+                        self.detail_source = Pane::Services;
+                    }
+                    KeyCode::Char('v') => {
+                        self.selected = Pane::Visas;
+                        self.detail_source = Pane::Visas;
+                    }
+                    KeyCode::Char('d') => self.selected = Pane::Details,
                     KeyCode::Up | KeyCode::Down => {
                         let down = key.code == KeyCode::Down;
                         let (state, len) = match self.selected {
                             Pane::Actors => (&mut self.actor_state, self.actors.len()),
                             Pane::Services => (&mut self.service_state, self.services.len()),
                             Pane::Visas => (&mut self.visa_state, self.visas.len()),
+                            // ponytail: no scroll target yet; add when the details-content spec lands
+                            Pane::Details => return Ok(()),
                         };
                         state.select(move_selection(state.selected(), len, down));
                     }
@@ -221,9 +433,13 @@ impl Gui {
     }
 
     fn render_gui(&mut self, frame: &mut Frame, area: Rect) {
-        let title = Line::from("  ZPR Visa Service  ".bold());
+        let title = Line::from("  ZPR Visa Service".bold());
+        let clock_unix = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let clock = Line::from(
+            format!("{} ", clock_unix.to_rfc3339_opts(SecondsFormat::Secs, true)).cyan(),
+        );
         let instructions = Line::from(vec![
-            " a/s/v".blue().bold(),
+            " a/s/v/d".blue().bold(),
             " select · ".into(),
             "↑/↓".blue().bold(),
             " move · ".into(),
@@ -238,7 +454,14 @@ impl Gui {
         ])
         .areas(area);
 
-        frame.render_widget(Paragraph::new(Text::from(title)).centered(), header_area);
+        frame.render_widget(
+            Paragraph::new(Text::from(title)).left_aligned(),
+            header_area,
+        );
+        frame.render_widget(
+            Paragraph::new(Text::from(clock)).right_aligned(),
+            header_area,
+        );
         frame.render_widget(
             Paragraph::new(Text::from(instructions)).centered(),
             footer_area,
@@ -253,16 +476,20 @@ impl Gui {
         }
 
         // Else proceed with our layout.
-        let [actor_area, service_area, visa_area] = Layout::vertical([
-            Constraint::Percentage(20),
+        let [top, visa_area, detail_area] = Layout::vertical([
             Constraint::Percentage(30),
-            Constraint::Percentage(50),
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
         ])
         .areas(content_area);
+
+        let [actor_area, service_area] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(top);
 
         self.render_actors(frame, actor_area);
         self.render_services(frame, service_area);
         self.render_visas(frame, visa_area);
+        self.render_details(frame, detail_area);
     }
 
     fn render_services(&mut self, frame: &mut Frame, area: Rect) {
@@ -375,8 +602,6 @@ impl Gui {
             ];
             Row::new(cells)
         });
-        let clock_unix = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
-        let clock = format!(" {}", clock_unix.to_rfc3339_opts(SecondsFormat::Secs, true));
         let table = Table::new(
             rows,
             [
@@ -387,9 +612,7 @@ impl Gui {
             ],
         )
         .header(header)
-        .block(
-            pane_block("A", "ctors ", is_selected).title(Line::from(clock.cyan()).right_aligned()),
-        );
+        .block(pane_block("A", "ctors ", is_selected));
         if is_selected {
             let table = table.row_highlight_style(Style::default().reversed());
             frame.render_stateful_widget(table, area, &mut self.actor_state);
@@ -473,11 +696,94 @@ impl Gui {
             frame.render_widget(table, area);
         }
     }
+
+    /// CN of the actor at `zpr_addr`, if known.
+    // ponytail: linear scan, index by addr only if the actor list gets large.
+    fn cn_for(&self, zpr_addr: &str) -> Option<&str> {
+        self.actors
+            .iter()
+            .find(|a| a.zpr_addr == zpr_addr)
+            .map(|a| a.cn.as_str())
+    }
+
+    /// Render the details pane. For a selected visa (`detail_source ==
+    /// Pane::Visas`) this shows the full descriptor; every other case shows
+    /// the "<entity> <id>" placeholder.
+    fn render_details(&mut self, frame: &mut Frame, area: Rect) {
+        let is_selected = self.selected == Pane::Details;
+
+        // Full visa detail when the Visas pane feeds Details and a row is set.
+        if self.detail_source == Pane::Visas {
+            if let Some(v) = self.visa_state.selected().and_then(|i| self.visas.get(i)) {
+                let cn = self.cn_for(&v.requesting_node);
+                // area.width - 2 excludes the block borders.
+                let text = visa_detail_text(v, cn, SystemTime::now(), area.width.saturating_sub(2));
+                frame.render_widget(
+                    Paragraph::new(text).block(pane_block("D", "etails ", is_selected)),
+                    area,
+                );
+                return;
+            }
+        }
+
+        let id = match self.detail_source {
+            Pane::Actors => self
+                .actor_state
+                .selected()
+                .and_then(|i| self.actors.get(i))
+                .map(|a| a.cn.clone()),
+            Pane::Services => self
+                .service_state
+                .selected()
+                .and_then(|i| self.services.get(i))
+                .map(|s| s.service_name.clone()),
+            Pane::Visas => self
+                .visa_state
+                .selected()
+                .and_then(|i| self.visas.get(i))
+                .map(|v| v.id.to_string()),
+            Pane::Details => None,
+        };
+        let text = detail_line(self.detail_source, id);
+        frame.render_widget(
+            Paragraph::new(Text::from(text)).block(pane_block("D", "etails ", is_selected)),
+            area,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::move_selection;
+    use super::{
+        LABEL_W, Pane, detail_line, flow_str, labeled, move_selection, remaining_str,
+        session_key_summary,
+    };
+    use admin_api_types::{ApiKeySet, VisaDescriptor, VisaMatchDirection};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    /// A minimal VisaDescriptor for helper tests.
+    fn sample_visa() -> VisaDescriptor {
+        VisaDescriptor {
+            id: 1001,
+            expires: UNIX_EPOCH + Duration::from_secs(3600),
+            created: UNIX_EPOCH,
+            policy_id: "v7".into(),
+            zpl: "allow tcp alice -> web:443".into(),
+            direction: VisaMatchDirection::Forward,
+            requesting_node: "fd5a:5052::a1".into(),
+            source_addr: Some("fd5a:5052::a1".into()),
+            dest_addr: Some("fd5a:5052::b2".into()),
+            source_port: Some(52344),
+            dest_port: Some(443),
+            proto: "tcp".into(),
+            signals: vec![],
+            session_key: ApiKeySet {
+                format: Default::default(),
+                ingress_key: vec![0u8; 48],
+                egress_key: vec![0u8; 48],
+            },
+        }
+    }
 
     /// move_selection clamps at both ends and handles the empty list.
     #[test]
@@ -487,5 +793,62 @@ mod tests {
         assert_eq!(move_selection(Some(2), 3, true), Some(2)); // clamp bottom
         assert_eq!(move_selection(Some(0), 3, true), Some(1)); // step down
         assert_eq!(move_selection(Some(2), 3, false), Some(1)); // step up
+    }
+
+    /// detail_line formats "<entity> <id>" and falls back when nothing selected.
+    #[test]
+    fn detail_line_formats_and_falls_back() {
+        assert_eq!(detail_line(Pane::Visas, Some("1001".into())), "visa 1001");
+        assert_eq!(detail_line(Pane::Actors, None), "actor (none selected)");
+    }
+
+    /// remaining_str shows EXPIRED past, and hh/mm vs minutes-only.
+    #[test]
+    fn remaining_str_formats_and_expires() {
+        let base = UNIX_EPOCH;
+        // 1h02m ahead.
+        let exp = base + Duration::from_secs(3720);
+        assert_eq!(remaining_str(exp, base), "expires in 1h 02m");
+        // 45m ahead → minutes only.
+        let exp = base + Duration::from_secs(45 * 60);
+        assert_eq!(remaining_str(exp, base), "expires in 45m");
+        // already past.
+        assert_eq!(
+            remaining_str(base, base + Duration::from_secs(1)),
+            "EXPIRED"
+        );
+    }
+
+    /// flow_str renders full flows and uses -/0 for missing addr/port.
+    #[test]
+    fn flow_str_full_and_missing() {
+        let v = sample_visa();
+        assert_eq!(
+            flow_str(&v),
+            "[fd5a:5052::a1]:52344  --TCP-->  [fd5a:5052::b2]:443"
+        );
+        let mut v = sample_visa();
+        v.source_addr = None;
+        v.dest_port = None;
+        assert_eq!(flow_str(&v), "[-]:52344  --TCP-->  [fd5a:5052::b2]:0");
+    }
+
+    /// session_key_summary reports format and byte lengths, never key bytes.
+    #[test]
+    fn session_key_summary_no_material() {
+        let s = session_key_summary(&sample_visa().session_key);
+        assert!(s.contains("fmt="));
+        assert!(s.contains("ingress=48B"));
+        assert!(s.contains("egress=48B"));
+    }
+
+    /// labeled wraps long values and indents continuation lines by LABEL_W.
+    #[test]
+    fn labeled_wraps_and_indents() {
+        let lines = labeled("zpl", "alpha bravo charlie delta echo foxtrot", 24);
+        assert!(lines.len() > 1, "expected wrapping");
+        // Continuation line begins with LABEL_W spaces.
+        let second = lines[1].to_string();
+        assert!(second.starts_with(&" ".repeat(LABEL_W as usize)));
     }
 }
