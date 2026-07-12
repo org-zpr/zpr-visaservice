@@ -1,4 +1,5 @@
 //! HTTPS admin service implementation.
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tower_service::Service;
 
-use zpr::policy_types::PolicyBundle;
+use zpr::policy_types::{PolicyBundle, Scope};
 use zpr::vsapi_types::{DockPepType, KeyFormat, KeySet, Visa};
 
 use libeval::attribute::{Attribute, ROLE_NODE, key};
@@ -42,10 +43,12 @@ use crate::event_mgr::VsEvent;
 use crate::logging::targets::ADMIN;
 use crate::policy_mgr::DEFAULT_POLICY_ID;
 
+use zpr::vsapi_types::vsapi_ip_number as ip_proto;
+
 use admin_api_types::{
     ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry,
     ListEntry, NamedListEntry, NetworkDetails, NodeConnections, NodeRecordBrief, Revokes,
-    ServiceDescriptor, VisaDescriptor,
+    ServiceDescriptor, Stats, VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.
@@ -174,6 +177,7 @@ fn admin_app(state: SharedState) -> Router {
         .route("/admin/authrevoke/clear", post(clear_revokes))
         .route("/admin/authrevoke/{capture}", delete(remove_revoke))
         .route("/admin/network", get(get_network))
+        .route("/admin/stats", get(get_stats))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
@@ -654,9 +658,79 @@ async fn revoke_actor(EPath(cn): EPath<String>) -> impl IntoResponse {
     (StatusCode::OK, Json(r)).into_response()
 }
 
-async fn get_related_visas(EPath(cn): EPath<String>) -> impl IntoResponse {
+/// List of visa IDs
+async fn get_related_visas(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+    EPath(cn): EPath<String>,
+) -> (StatusCode, Json<Vec<ListEntry>>) {
+    if !perm.can_read() {
+        return (StatusCode::FORBIDDEN, Json(Vec::<ListEntry>::new()));
+    }
     debug!(target: ADMIN, "GET /admin/actors/{}/visas", cn);
-    two_elem_list()
+
+    // TODO: Waiting on another PR which reworks how the visa_mgr stores visas, once that is in
+    // place we will add appropriate index for this query. Currently this needs to look at
+    // every visa.
+
+    // Resolve the CN to an actor so we can get the ZPR address. We also clone the visa manager
+    // out from rstate so we can drop the lock.
+    let (actor_addr, visa_mgr) = {
+        let rstate = state.read().await;
+
+        let actor_addr = match rstate.asm.actor_mgr.get_actor_by_cn(&cn).await {
+            Err(e) => {
+                error!(target: ADMIN, "error getting actor with cn {}: {}", cn, e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(Vec::<ListEntry>::new()),
+                );
+            }
+            Ok(opt_a) => match opt_a {
+                None => return (StatusCode::NOT_FOUND, Json(Vec::<ListEntry>::new())),
+                Some(actor) => match actor.get_zpr_addr() {
+                    None => {
+                        warn!(target: ADMIN, "actor with cn {} has no ZPR address", cn);
+                        return (StatusCode::NOT_FOUND, Json(Vec::<ListEntry>::new()));
+                    }
+                    Some(addr) => *addr,
+                },
+            },
+        };
+
+        (actor_addr, rstate.asm.visa_mgr.clone())
+    };
+
+    let mut related_visas: Vec<ListEntry> = Vec::new();
+
+    let visa_ids = match visa_mgr.list_all_visa_ids().await {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!(target: ADMIN, "list_all_visa_ids failed: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Vec::<ListEntry>::new()),
+            );
+        }
+    };
+    for visa_id in visa_ids {
+        // Only the five-tuple is needed here, so fetch the visa without its metadata.
+        match visa_mgr.get_visa_by_id(visa_id).await {
+            Ok(Some(visa)) => {
+                if let Some(ftup) = visa.five_tuple() {
+                    if ftup.source_addr == actor_addr || ftup.dest_addr == actor_addr {
+                        related_visas.push(ListEntry { id: visa_id });
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(target: ADMIN, "error getting visa with id {}: {}", visa_id, e);
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(related_visas))
 }
 
 async fn get_services(
@@ -690,18 +764,18 @@ async fn get_services(
 async fn get_service(
     Extension(perm): Extension<Permission>,
     State(state): State<SharedState>,
-    EPath(cn): EPath<String>,
+    EPath(svc_name): EPath<String>,
 ) -> Result<Json<ServiceDescriptor>, StatusCode> {
     if !perm.can_read() {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    debug!(target: ADMIN, "GET /admin/service CN={}", cn);
+    debug!(target: ADMIN, "GET /admin/service name={}", svc_name);
     let rstate = state.read().await;
 
-    match rstate.asm.actor_mgr.get_service_detail(&cn).await {
+    match rstate.asm.actor_mgr.get_service_detail(&svc_name).await {
         Err(e) => {
-            error!(target: ADMIN, "error getting service detail for CN {}: {}", cn, e);
+            error!(target: ADMIN, "error getting service detail for service {}: {}", svc_name, e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
         Ok(opt_detail) => {
@@ -710,11 +784,24 @@ async fn get_service(
                     Some(cv_addr) => cv_addr.to_string(),
                     None => "".to_string(),
                 };
+                let cp = rstate.asm.policy_mgr.get_current();
+
+                let (svc_kind, svc_endpoints) = if let Some(psvc) = cp.service_by_id(&svc_name) {
+                    (
+                        format!("{:?}", psvc.kind),
+                        service_endpoints_to_string(&psvc.endpoints),
+                    )
+                } else {
+                    ("".to_string(), "".to_string())
+                };
+
                 let sd = ServiceDescriptor {
                     service_name: detail.service_name,
                     zpr_addr: detail.zpr_addr.to_string(),
                     actor_cn: detail.actor_cn,
                     dock_zpr_addr: connect_via,
+                    service_kind: svc_kind,
+                    service_endpoints: svc_endpoints,
                 };
                 Ok(Json(sd))
             } else {
@@ -722,6 +809,27 @@ async fn get_service(
             }
         }
     }
+}
+
+fn service_endpoints_to_string(endpoints: &Vec<Scope>) -> String {
+    let mut ep_strs: Vec<String> = Vec::new();
+    for ep in endpoints {
+        let port_str = if let Some(port) = ep.port {
+            port.to_string()
+        } else if let Some(port_range) = ep.port_range {
+            format!("{}-{}", port_range.0, port_range.1)
+        } else {
+            "".to_string()
+        };
+        match ep.protocol {
+            ip_proto::TCP => ep_strs.push(format!("TCP/{}", port_str)),
+            ip_proto::UDP => ep_strs.push(format!("UDP/{}", port_str)),
+            ip_proto::ICMP => ep_strs.push(format!("ICMP/{}", port_str)),
+            ip_proto::IPV6_ICMP => ep_strs.push(format!("IPV6_ICMP/{}", port_str)),
+            _ => ep_strs.push(format!("PROTO_{}/{}", ep.protocol, port_str)),
+        }
+    }
+    ep_strs.join(",")
 }
 
 async fn get_revokes() -> impl IntoResponse {
@@ -801,6 +909,31 @@ async fn get_network(
     }
 
     Ok(Json(NetworkDetails { network }))
+}
+
+async fn get_stats(
+    Extension(perm): Extension<Permission>,
+    State(state): State<SharedState>,
+) -> Result<Json<Stats>, StatusCode> {
+    if !perm.can_read() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    debug!(target: ADMIN, "GET /admin/stats");
+
+    let mut stat_map = HashMap::new();
+
+    let rstate = state.read().await;
+
+    stat_map.insert(
+        "uptime".to_string(),
+        rstate.asm.get_uptime().as_secs().to_string(),
+    );
+    for (key, ref value) in &rstate.asm.counters.counters {
+        stat_map.insert(key.name().to_string(), value.get_count().to_string());
+    }
+
+    Ok(Json(Stats { stats: stat_map }))
 }
 
 fn to_api_attribute(attr: &Attribute) -> ApiAttribute {
