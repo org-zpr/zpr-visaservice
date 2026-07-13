@@ -22,6 +22,7 @@ thiserror.workspace = true
 url = "2.5.8"
 zpr.workspace = true
 thousands = "0.2.0"
+unicode-width = "0.2.2"
 
 [features]
 complete = ["clap_complete"]

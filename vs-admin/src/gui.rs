@@ -21,6 +21,7 @@ use admin_api_types::{
 };
 
 use thousands::Separable;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::vsclient::{RoleFilter, VsClient};
 
@@ -181,31 +182,61 @@ fn labeled(label: &str, value: &str, width: u16) -> Vec<Line<'static>> {
 /// Word-wrap `s` to `width` cols. Splits on spaces; a single word longer than
 /// `width` is hard-split. Always returns at least one segment.
 fn wrap_words(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
     let mut out = Vec::new();
     let mut cur = String::new();
     for word in s.split_whitespace() {
-        // Hard-split a word that can't fit on its own line.
-        let mut word = word.to_string();
-        while word.len() > width {
+        let word_w = UnicodeWidthStr::width(word);
+        if word_w > width {
             if !cur.is_empty() {
                 out.push(std::mem::take(&mut cur));
             }
-            let (head, tail) = word.split_at(width);
-            out.push(head.to_string());
-            word = tail.to_string();
+            let chunks = split_word_by_display_width(word, width);
+            let last = chunks.len().saturating_sub(1);
+            for (i, chunk) in chunks.into_iter().enumerate() {
+                if i == last {
+                    cur = chunk;
+                } else {
+                    out.push(chunk);
+                }
+            }
+            continue;
         }
         if cur.is_empty() {
-            cur = word;
-        } else if cur.len() + 1 + word.len() <= width {
+            cur = word.to_string();
+        } else if UnicodeWidthStr::width(cur.as_str()) + 1 + word_w <= width {
             cur.push(' ');
-            cur.push_str(&word);
+            cur.push_str(word);
         } else {
             out.push(std::mem::take(&mut cur));
-            cur = word;
+            cur = word.to_string();
         }
     }
     out.push(cur);
     out
+}
+
+/// Split one whitespace-free string into UTF-8-safe display-width chunks.
+fn split_word_by_display_width(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut chunks = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0;
+
+    for ch in s.chars() {
+        let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+        if cur_w > 0 && cur_w + ch_w > width {
+            chunks.push(std::mem::take(&mut cur));
+            cur_w = 0;
+        }
+        cur.push(ch);
+        cur_w += ch_w;
+    }
+
+    if !cur.is_empty() {
+        chunks.push(cur);
+    }
+    chunks
 }
 
 /// Build the full multi-line visa detail view for the Details pane.
@@ -1234,7 +1265,7 @@ mod tests {
     use super::{
         LABEL_W, Pane, actor_detail_text, auth_hdr, clamp_scroll, detail_line, flow_str,
         fmt_uptime, labeled, move_selection, remaining_str, service_detail_text,
-        session_key_summary, sparkline, ts_or,
+        session_key_summary, sparkline, ts_or, wrap_words,
     };
     use admin_api_types::{
         ActorDescriptor, ApiAttribute, ApiKeySet, NodeRecordBrief, ServiceDescriptor,
@@ -1374,6 +1405,16 @@ mod tests {
         // Continuation line begins with LABEL_W spaces.
         let second = lines[1].to_string();
         assert!(second.starts_with(&" ".repeat(LABEL_W as usize)));
+    }
+
+    /// wrap_words hard-splits non-ASCII text without cutting UTF-8 bytes.
+    #[test]
+    fn wrap_words_handles_unicode_hard_split() {
+        assert_eq!(wrap_words("éé", 1), vec!["é".to_string(), "é".to_string()]);
+        assert_eq!(
+            wrap_words("日本語", 2),
+            vec!["日".to_string(), "本".to_string(), "語".to_string()]
+        );
     }
 
     /// auth_hdr covers None, expired, and future cases.
