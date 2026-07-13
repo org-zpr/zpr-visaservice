@@ -488,6 +488,23 @@ fn actor_detail_text(
     Text::from(lines)
 }
 
+/// Full multi-line detail view for a selected service. Header is the service
+/// name; body is one labeled row per field. All fields are plain strings.
+fn service_detail_text(s: &ServiceDescriptor, width: u16) -> Text<'static> {
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::from("service ").style(HEADING_STYLE),
+        Span::from(s.service_name.clone()),
+    ]));
+    lines.push(Line::from(""));
+    lines.extend(labeled("cn", &s.actor_cn, width));
+    lines.extend(labeled("zpr addr", &s.zpr_addr, width));
+    lines.extend(labeled("dock addr", &s.dock_zpr_addr, width));
+    lines.extend(labeled("kind", &s.service_kind, width));
+    lines.extend(labeled("endpoints", &s.service_endpoints, width));
+    Text::from(lines)
+}
+
 /// Keep a stored selection in range after the row vec is rebuilt.
 fn clamp_state(state: &mut TableState, len: usize) {
     state.select(match (state.selected(), len) {
@@ -925,9 +942,34 @@ impl Gui {
         if is_selected {
             let table = table.row_highlight_style(Style::default().reversed());
             frame.render_stateful_widget(table, area, &mut self.service_state);
+            self.render_list_scrollbar(
+                frame,
+                area,
+                self.services.len(),
+                self.service_state.offset(),
+            );
         } else {
             frame.render_widget(table, area);
         }
+    }
+
+    // Overlay a scrollbar on a list pane when its rows overflow the visible area.
+    fn render_list_scrollbar(&self, frame: &mut Frame, area: Rect, rows: usize, offset: usize) {
+        let viewport = area.height.saturating_sub(3) as usize; // borders (2) + header row (1)
+        if rows <= viewport {
+            return; // everything fits — no indicator
+        }
+        let max = rows - viewport;
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(if offset > 0 { Some("▲") } else { None })
+                .end_symbol(if offset < max { Some("▼") } else { None }),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut ScrollbarState::new(rows).position(offset),
+        );
     }
 
     fn render_actors(&mut self, frame: &mut Frame, area: Rect) {
@@ -990,6 +1032,7 @@ impl Gui {
         if is_selected {
             let table = table.row_highlight_style(Style::default().reversed());
             frame.render_stateful_widget(table, area, &mut self.actor_state);
+            self.render_list_scrollbar(frame, area, self.actors.len(), self.actor_state.offset());
         } else {
             frame.render_widget(table, area);
         }
@@ -1066,6 +1109,7 @@ impl Gui {
         if is_selected {
             let table = table.row_highlight_style(Style::default().reversed());
             frame.render_stateful_widget(table, area, &mut self.visa_state);
+            self.render_list_scrollbar(frame, area, self.visas.len(), self.visa_state.offset());
         } else {
             frame.render_widget(table, area);
         }
@@ -1148,6 +1192,19 @@ impl Gui {
             }
         }
 
+        // Full service detail when the Services pane feeds Details and a row is set.
+        if self.detail_source == Pane::Services {
+            if let Some(s) = self
+                .service_state
+                .selected()
+                .and_then(|i| self.services.get(i))
+            {
+                let text = service_detail_text(s, area.width.saturating_sub(2));
+                self.render_detail_text(frame, area, text);
+                return;
+            }
+        }
+
         let id = match self.detail_source {
             Pane::Actors => self
                 .actor_state
@@ -1176,11 +1233,12 @@ impl Gui {
 mod tests {
     use super::{
         LABEL_W, Pane, actor_detail_text, auth_hdr, clamp_scroll, detail_line, flow_str,
-        fmt_uptime, labeled, move_selection, remaining_str, session_key_summary, sparkline, ts_or,
+        fmt_uptime, labeled, move_selection, remaining_str, service_detail_text,
+        session_key_summary, sparkline, ts_or,
     };
     use admin_api_types::{
-        ActorDescriptor, ApiAttribute, ApiKeySet, NodeRecordBrief, VisaDescriptor,
-        VisaMatchDirection,
+        ActorDescriptor, ApiAttribute, ApiKeySet, NodeRecordBrief, ServiceDescriptor,
+        VisaDescriptor, VisaMatchDirection,
     };
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -1369,6 +1427,27 @@ mod tests {
         assert!(!s.contains("-- node"));
         assert!(s.contains("attributes   (none)"));
         assert!(s.contains("services     (none)"));
+    }
+
+    /// service_detail_text: header carries the service name and every field
+    /// value shows up in the rendered lines.
+    #[test]
+    fn service_detail_text_fields() {
+        let sd = ServiceDescriptor {
+            service_name: "webproxy".into(),
+            actor_cn: "actor-7".into(),
+            zpr_addr: "fd5a:5052::1".into(),
+            dock_zpr_addr: "fd5a:5052::2".into(),
+            service_kind: "https".into(),
+            service_endpoints: "https://host:443".into(),
+        };
+        let s = text_str(&service_detail_text(&sd, 78));
+        assert!(s.contains("service webproxy"));
+        assert!(s.contains("actor-7"));
+        assert!(s.contains("fd5a:5052::1"));
+        assert!(s.contains("fd5a:5052::2"));
+        assert!(s.contains("https"));
+        assert!(s.contains("https://host:443"));
     }
 
     /// clamp_scroll: fits-in-view clamps to 0; past-end clamps to the max;
