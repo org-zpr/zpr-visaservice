@@ -13,6 +13,7 @@ use ratatui::{
 use reqwest::tls::Certificate;
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime};
 
 use admin_api_types::{
@@ -25,6 +26,34 @@ use crate::vsclient::{RoleFilter, VsClient};
 
 /// Do not hit the VS ADMIN api more than this often.
 const REFRESH_RATE: Duration = Duration::from_millis(2000);
+
+/// Minimum sparkline width (bars) when shown; below this the sparkline is dropped.
+const SPARK_MIN: usize = 8;
+/// Maximum sparkline width (bars); history ring buffers hold this many samples.
+const SPARK_MAX: usize = 16;
+
+/// Render `vals` as unicode bars scaled to the slice max; all-min when idle.
+fn sparkline(vals: &[u64]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = vals.iter().copied().max().unwrap_or(0);
+    if max == 0 {
+        return "▁".repeat(vals.len());
+    }
+    vals.iter()
+        .map(|&v| BARS[((v * 7) / max) as usize])
+        .collect()
+}
+
+/// Format seconds as "01d 04h 09m 22s", hours rolling into days.
+fn fmt_uptime(secs: u64) -> String {
+    format!(
+        "{:02}d {:02}h {:02}m {:02}s",
+        secs / 86400,
+        secs % 86400 / 3600,
+        secs % 3600 / 60,
+        secs % 60,
+    )
+}
 
 /// Which content pane is currently selected for keyboard interaction.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -502,6 +531,11 @@ struct Gui {
     zpr_addr_style: Style,
     cn_style: Style,
     visa_id_style: Style,
+    uptime_secs: u64,
+    approved_hist: VecDeque<u64>,
+    denied_hist: VecDeque<u64>,
+    last_approved: u64,
+    last_denied: u64,
 }
 
 /// Fire up the terminal based gui which is just a simple dashboard.
@@ -538,6 +572,13 @@ impl Gui {
             zpr_addr_style: Color::Yellow.into(),
             cn_style: Color::White.into(),
             visa_id_style: Color::White.into(),
+            uptime_secs: 0,
+            // Pre-fill so sparklines render full-width immediately, new samples
+            // pushing in from the right.
+            approved_hist: VecDeque::from(vec![0u64; SPARK_MAX]),
+            denied_hist: VecDeque::from(vec![0u64; SPARK_MAX]),
+            last_approved: 0,
+            last_denied: 0,
         }
     }
 
@@ -676,16 +717,99 @@ impl Gui {
             clamp_state(&mut self.visa_state, self.visas.len());
         }
 
+        // Sample counters/uptime; non-fatal so a stats error never blanks the screen.
+        if let Ok(stats) = self.vs_cli.get_stats() {
+            let get = |k: &str| {
+                stats
+                    .stats
+                    .get(k)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            self.uptime_secs = get("uptime");
+
+            let approved = get("visa_requests_approved");
+            self.approved_hist
+                .push_back(approved.saturating_sub(self.last_approved));
+            while self.approved_hist.len() > SPARK_MAX {
+                self.approved_hist.pop_front();
+            }
+            self.last_approved = approved;
+
+            let denied = get("visa_requests_denied");
+            self.denied_hist
+                .push_back(denied.saturating_sub(self.last_denied));
+            while self.denied_hist.len() > SPARK_MAX {
+                self.denied_hist.pop_front();
+            }
+            self.last_denied = denied;
+        }
+
         self.last_updated = Some(Instant::now());
         Ok(())
     }
 
-    fn render_gui(&mut self, frame: &mut Frame, area: Rect) {
+    /// Compose the header as three independently-aligned lines — title (left),
+    /// counts (centered), uptime (right) — degrading to fit `width`: full →
+    /// shrink sparklines (16→8 bars) → drop sparklines → drop counts → title only.
+    fn build_header(&self, width: usize) -> (Line<'static>, Line<'static>, Line<'static>) {
         let title = Line::from("  ZPR Visa Service".bold());
-        let clock_unix = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
-        let clock = Line::from(
-            format!("{} ", clock_unix.to_rfc3339_opts(SecondsFormat::Secs, true)).cyan(),
-        );
+        let uptime = Line::from(vec![
+            "UPTIME ".cyan(),
+            fmt_uptime(self.uptime_secs).cyan().bold(),
+            " ".into(),
+        ]);
+        let approved = self.last_approved;
+        let denied = self.last_denied;
+        let a_hist: Vec<u64> = self.approved_hist.iter().copied().collect();
+        let d_hist: Vec<u64> = self.denied_hist.iter().copied().collect();
+
+        // One widget: `[LABEL:SPARKLINE:VALUE]` (value bold), colon+spark omitted
+        // when `spark_n == 0`.
+        let block = |label: &str, hist: &[u64], spark_n: usize, value: u64, color: Color| {
+            let plain = Style::default().fg(color);
+            let mut spans = vec![Span::styled(format!("[{label}:"), plain)];
+            if spark_n > 0 {
+                let s = &hist[hist.len().saturating_sub(spark_n)..];
+                spans.push(Span::styled(sparkline(s), plain));
+                spans.push(Span::styled(":", plain));
+            }
+            spans.push(Span::styled(format!("{value}"), plain.bold()));
+            spans.push(Span::styled("]", plain));
+            spans
+        };
+
+        // Centered counts: the two widgets side by side, `spark_n` bars each.
+        let counts = |spark_n: usize| -> Line<'static> {
+            let mut spans = block("APPROVED", &a_hist, spark_n, approved, Color::Green);
+            spans.push(Span::raw(" "));
+            spans.extend(block("DENIED", &d_hist, spark_n, denied, Color::Red));
+            Line::from(spans)
+        };
+
+        // The centered block must clear the wider of title/uptime on both sides
+        // (+2 for a visual gap), else it overlaps the pegged ends.
+        let side = title.width().max(uptime.width());
+        let avail = width.saturating_sub(2 * side + 2);
+
+        // Widest → narrowest; first sparkline width that fits shows all three.
+        for n in (SPARK_MIN..=SPARK_MAX).rev() {
+            let c = counts(n);
+            if c.width() <= avail {
+                return (title, c, uptime);
+            }
+        }
+        let c = counts(0); // no sparklines
+        if c.width() <= avail {
+            return (title, c, uptime);
+        }
+        if title.width() + uptime.width() <= width {
+            return (title, Line::default(), uptime); // drop counts
+        }
+        (title, Line::default(), Line::default()) // title only
+    }
+
+    fn render_gui(&mut self, frame: &mut Frame, area: Rect) {
         let instructions = Line::from(vec![
             " a/s/v/d".blue().bold(),
             " select · ".into(),
@@ -702,12 +826,14 @@ impl Gui {
         ])
         .areas(area);
 
+        let (title, counts, uptime) = self.build_header(header_area.width as usize);
         frame.render_widget(
             Paragraph::new(Text::from(title)).left_aligned(),
             header_area,
         );
+        frame.render_widget(Paragraph::new(Text::from(counts)).centered(), header_area);
         frame.render_widget(
-            Paragraph::new(Text::from(clock)).right_aligned(),
+            Paragraph::new(Text::from(uptime)).right_aligned(),
             header_area,
         );
         frame.render_widget(
@@ -1049,8 +1175,8 @@ impl Gui {
 #[cfg(test)]
 mod tests {
     use super::{
-        LABEL_W, Pane, actor_detail_text, auth_hdr, clamp_scroll, detail_line, flow_str, labeled,
-        move_selection, remaining_str, session_key_summary, ts_or,
+        LABEL_W, Pane, actor_detail_text, auth_hdr, clamp_scroll, detail_line, flow_str,
+        fmt_uptime, labeled, move_selection, remaining_str, session_key_summary, sparkline, ts_or,
     };
     use admin_api_types::{
         ActorDescriptor, ApiAttribute, ApiKeySet, NodeRecordBrief, VisaDescriptor,
@@ -1257,5 +1383,19 @@ mod tests {
         assert_eq!(clamp_scroll(3, 30, 10), 3);
         // Exactly fits → 0.
         assert_eq!(clamp_scroll(4, 10, 10), 0);
+    }
+
+    /// fmt_uptime rolls seconds into d/h/m/s with zero-padding.
+    #[test]
+    fn fmt_uptime_rolls_units() {
+        assert_eq!(fmt_uptime(100162), "01d 03h 49m 22s");
+        assert_eq!(fmt_uptime(0), "00d 00h 00m 00s");
+    }
+
+    /// sparkline: no activity is all-min; a monotonic rise maxes at the top bar.
+    #[test]
+    fn sparkline_idle_and_peak() {
+        assert_eq!(sparkline(&[0, 0]), "▁▁");
+        assert!(sparkline(&[1, 2, 3]).ends_with('█'));
     }
 }
