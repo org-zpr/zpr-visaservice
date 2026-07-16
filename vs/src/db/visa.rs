@@ -226,6 +226,11 @@ impl VisaRepo {
 
     /// Store a new visa, setting its state w.r.t. the requesting node to `nstate`
     /// and any other path nodes to `PendingInstall`.
+    ///
+    /// If the visa is already expired, this is a NOP and returns `Ok`.
+    ///
+    /// ### Errrors
+    /// - Errors if there is a problem writing to Redis or serializing the record.
     pub async fn store_visa(
         &self,
         visa: &Visa,
@@ -235,9 +240,8 @@ impl VisaRepo {
         let visa_id = visa.issuer_id;
         let ttl = seconds_until(visa.expires);
         if ttl == 0 {
-            return Err(StoreError::InvalidData(
-                "attempt to store already expired visa".into(),
-            ));
+            // already expired.
+            return Ok(());
         }
 
         // Build the per-node state map: requesting node gets `nstate`, other path
@@ -749,18 +753,21 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_store_visa_rejects_expired() {
+    async fn test_store_visa_nop_expired() {
         let db = Arc::new(FakeDb::new());
         let repo = VisaRepo::new(db, 1).await.unwrap();
         let node_addr: IpAddr = "fd5a:5052::4".parse().unwrap();
         let mut visa = make_visa(8, Duration::from_secs(1));
         visa.expires = SystemTime::now() - Duration::from_secs(1);
 
-        let err = repo
+        let _res = repo
             .store_visa(&visa, md(node_addr), NodeVisaState::PendingInstall)
             .await
-            .unwrap_err();
-        assert!(matches!(err, StoreError::InvalidData(_)));
+            .unwrap();
+
+        // Not written
+        let store = repo.store.read().await;
+        assert!(!store.visas.contains_key(&8));
     }
 
     #[tokio::test(start_paused = true)]
