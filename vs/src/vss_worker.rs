@@ -298,7 +298,7 @@ async fn do_housekeeping(
     }
 
     // Drop any expired visas from the in-memory store before working the queues.
-    if let Err(e) = asm.visa_mgr.purge_expired_visas().await {
+    if let Err(e) = asm.visa_mgr.purge_expired_visas() {
         warn!(target: VSS, "failed to purge expired visas: {e}");
     }
 

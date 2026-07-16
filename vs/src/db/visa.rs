@@ -21,9 +21,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -105,6 +105,10 @@ struct VisaEntry {
 }
 
 /// The in-memory store guarded by a single `RwLock`.
+///
+/// INVARIANT C: `visas` and `by_node` must be updated under the same `store`
+/// write guard; a reader must never see one without the other. Today the single
+/// `store` lock gives this for free (both live behind one guard).
 #[derive(Default)]
 struct VisaStoreInner {
     visas: HashMap<u64, VisaEntry>,
@@ -113,6 +117,19 @@ struct VisaStoreInner {
 
 pub struct VisaRepo {
     db: Arc<dyn DbConnection>,
+    /// Serializes ALL write paths (store/update/clear/clean_up). Held across the
+    /// Redis I/O so writes commit to Redis and then to memory in one global
+    /// order. Readers never take this lock. `purge_expired` is the sole writer
+    /// exempt (Invariant D: memory-only, no Redis write to order).
+    ///
+    /// INVARIANT A: every mutation that writes Redis must take `backing` before
+    /// touching Redis or the memory image.
+    backing: Mutex<()>,
+    /// Guards the in-memory image. Taken briefly and NEVER held across an
+    /// `.await` — it is a `std::sync::RwLock`, so its `!Send` guard makes holding
+    /// it across `.await` a compile error.
+    ///
+    /// See https://github.com/org-zpr/zpr-visaservice/issues/246
     store: RwLock<VisaStoreInner>,
 }
 
@@ -161,6 +178,7 @@ impl VisaRepo {
         let inner = restore_from_state(&db).await?;
         Ok(VisaRepo {
             db,
+            backing: Mutex::new(()),
             store: RwLock::new(inner),
         })
     }
@@ -176,11 +194,15 @@ impl VisaRepo {
     /// TODO: Will be used by future `remove_visa` function.
     #[allow(dead_code)]
     async fn clean_up(&self, visa_id: u64) -> Result<(), StoreError> {
+        // INVARIANT A: backing held for the whole write.
+        let _backing = self.backing.lock().await;
         let key = visa_key_for_visa(visa_id);
-        let mut store = self.store.write().await;
         // Redis first. On an ApplyThenError-style ambiguous DEL we still return
         // the error and keep the memory entry; a later rewrite recreates the key.
         self.db.del(&key).await?;
+        // Memory second. `remove_entry` is a no-op on a missing row, so a
+        // concurrent `purge_expired` that already dropped the entry is harmless.
+        let mut store = self.store.write().unwrap();
         remove_entry(&mut store, visa_id);
         Ok(())
     }
@@ -191,35 +213,60 @@ impl VisaRepo {
     /// `by_node` index, but the visa record itself is never deleted, even if
     /// `node_states` becomes empty.
     pub async fn clear_node_state(&self, node_addr: &IpAddr) -> Result<(), StoreError> {
-        let mut store = self.store.write().await;
-        let ids: Vec<u64> = store
-            .by_node
-            .get(node_addr)
-            .map(|s| s.iter().copied().collect())
-            .unwrap_or_default();
+        // INVARIANT A: backing held for the whole write.
+        let _backing = self.backing.lock().await;
 
-        for id in ids {
-            let Some(entry) = store.visas.get(&id) else {
-                continue;
-            };
-            if !entry.node_states.contains_key(node_addr) {
-                continue;
+        // Snapshot the work under a short read guard: for each visa referencing
+        // the node, its id and the rewritten JSON to persist (None if the entry
+        // is effectively expired — its TTL has fired / is about to, so we skip
+        // the rewrite but still drop the node from memory below).
+        //
+        // INVARIANT B: dropping this read guard is safe — backing blocks other
+        // writers, so these entries can't change under us before the apply.
+        let writes: Vec<(u64, Option<(String, u64)>)> = {
+            let store = self.store.read().unwrap();
+            let ids: Vec<u64> = store
+                .by_node
+                .get(node_addr)
+                .map(|s| s.iter().copied().collect())
+                .unwrap_or_default();
+            let mut writes = Vec::new();
+            for id in ids {
+                let Some(entry) = store.visas.get(&id) else {
+                    continue;
+                };
+                if !entry.node_states.contains_key(node_addr) {
+                    continue;
+                }
+                let ttl = remaining_secs(entry.deadline);
+                let json = if ttl > 0 {
+                    let mut new_states = entry.node_states.clone();
+                    new_states.remove(node_addr);
+                    let record = build_record(&entry.visa, &entry.metadata, &new_states)?;
+                    Some((serde_json::to_string(&record)?, ttl))
+                } else {
+                    None
+                };
+                writes.push((id, json));
             }
-            let ttl = remaining_secs(entry.deadline);
-            // Rewrite the record without the node (unless it is effectively
-            // expired, in which case its TTL has fired / is about to).
-            if ttl > 0 {
-                let mut new_states = entry.node_states.clone();
-                new_states.remove(node_addr);
-                let record = build_record(&entry.visa, &entry.metadata, &new_states)?;
-                let json = serde_json::to_string(&record)?;
-                self.db.set_ex(&visa_key_for_visa(id), &json, ttl).await?;
+            writes
+        };
+
+        // Redis first.
+        for (id, json) in &writes {
+            if let Some((json, ttl)) = json {
+                self.db.set_ex(&visa_key_for_visa(*id), json, *ttl).await?;
             }
-            // Memory second.
-            if let Some(entry) = store.visas.get_mut(&id) {
+        }
+
+        // Memory second. A concurrent purge may have dropped an entry during the
+        // I/O gap; `get_mut` and `unindex_node` both no-op on a missing row.
+        let mut store = self.store.write().unwrap();
+        for (id, _) in &writes {
+            if let Some(entry) = store.visas.get_mut(id) {
                 entry.node_states.remove(node_addr);
             }
-            unindex_node(&mut store, node_addr, id);
+            unindex_node(&mut store, node_addr, *id);
         }
         Ok(())
     }
@@ -273,7 +320,8 @@ impl VisaRepo {
         let json = serde_json::to_string(&record)?;
         let key = visa_key_for_visa(visa_id);
 
-        let mut store = self.store.write().await;
+        // INVARIANT A: backing held for the whole write.
+        let _backing = self.backing.lock().await;
         // Redis first.
         if let Err(e) = self.db.set_ex(&key, &json, ttl).await {
             // The write may have applied but the reply was lost (ambiguous
@@ -283,13 +331,15 @@ impl VisaRepo {
             let _ = self.db.del(&key).await;
             return Err(e.into());
         }
-        // Memory second.
+        // Memory second. Pure insert: the id does not exist until now and purge
+        // only removes, so there is nothing to re-check.
         let entry = VisaEntry {
             visa: visa.clone(),
             metadata,
             deadline: Instant::now() + Duration::from_secs(ttl),
             node_states,
         };
+        let mut store = self.store.write().unwrap();
         insert_entry(&mut store, visa_id, entry);
 
         debug!(target: DB, "stored visa {visa_id} expires in {ttl} seconds");
@@ -304,44 +354,57 @@ impl VisaRepo {
         visa_id: u64,
         new_state: NodeVisaState,
     ) -> Result<(), StoreError> {
-        let mut store = self.store.write().await;
-        let entry = live_entry(&store, visa_id).ok_or_else(|| {
-            StoreError::NotFound(format!("node-visa record not found: {node_addr} {visa_id}"))
-        })?;
-        if !entry.node_states.contains_key(node_addr) {
-            return Err(StoreError::NotFound(format!(
-                "node-visa record not found: {node_addr} {visa_id}"
-            )));
-        }
-        let ttl = remaining_secs(entry.deadline);
-        if ttl == 0 {
-            return Err(StoreError::NotFound(format!(
-                "node-visa record not found: {node_addr} {visa_id}"
-            )));
-        }
-        let mut new_states = entry.node_states.clone();
-        new_states.get_mut(node_addr).unwrap().state = new_state;
-        let record = build_record(&entry.visa, &entry.metadata, &new_states)?;
-        let json = serde_json::to_string(&record)?;
+        // INVARIANT A: backing held for the whole write.
+        let _backing = self.backing.lock().await;
+
+        // Snapshot + build the record under a short read guard, run the
+        // not-found / ttl==0 checks, then drop the guard for the Redis I/O.
+        //
+        // INVARIANT B: safe to drop the read guard — backing blocks other
+        // writers, so this entry can't change under us before the apply.
+        let (json, ttl, new_states) = {
+            let store = self.store.read().unwrap();
+            let entry = live_entry(&store, visa_id).ok_or_else(|| {
+                StoreError::NotFound(format!("node-visa record not found: {node_addr} {visa_id}"))
+            })?;
+            if !entry.node_states.contains_key(node_addr) {
+                return Err(StoreError::NotFound(format!(
+                    "node-visa record not found: {node_addr} {visa_id}"
+                )));
+            }
+            let ttl = remaining_secs(entry.deadline);
+            if ttl == 0 {
+                return Err(StoreError::NotFound(format!(
+                    "node-visa record not found: {node_addr} {visa_id}"
+                )));
+            }
+            let mut new_states = entry.node_states.clone();
+            new_states.get_mut(node_addr).unwrap().state = new_state;
+            let record = build_record(&entry.visa, &entry.metadata, &new_states)?;
+            (serde_json::to_string(&record)?, ttl, new_states)
+        };
 
         // Redis first.
         self.db
             .set_ex(&visa_key_for_visa(visa_id), &json, ttl)
             .await?;
-        // Memory second.
-        store.visas.get_mut(&visa_id).unwrap().node_states = new_states;
+        // Memory second. If purge_expired dropped the entry during the set_ex
+        // gap the visa expired mid-update; skipping the apply is correct.
+        if let Some(entry) = self.store.write().unwrap().visas.get_mut(&visa_id) {
+            entry.node_states = new_states;
+        }
 
         debug!(target: DB, "updated nodevisa state node={node_addr} visa={visa_id} -> {new_state:?}");
         Ok(())
     }
 
     /// All visas for a node in the given state (blobs cloned from memory).
-    pub async fn get_visas_for_node_by_state(
+    pub fn get_visas_for_node_by_state(
         &self,
         node_addr: &IpAddr,
         state: NodeVisaState,
     ) -> Result<Vec<Visa>, StoreError> {
-        let store = self.store.read().await;
+        let store = self.store.read().unwrap();
         let mut visas = Vec::new();
         if let Some(ids) = store.by_node.get(node_addr) {
             for &id in ids {
@@ -360,12 +423,12 @@ impl VisaRepo {
     }
 
     /// The visa IDs for a node filtered by state, without cloning the visas.
-    pub async fn get_visa_ids_for_node_by_state(
+    pub fn get_visa_ids_for_node_by_state(
         &self,
         node_addr: &IpAddr,
         state: NodeVisaState,
     ) -> Result<Vec<u64>, StoreError> {
-        let store = self.store.read().await;
+        let store = self.store.read().unwrap();
         let mut ids = Vec::new();
         if let Some(node_ids) = store.by_node.get(node_addr) {
             for &id in node_ids {
@@ -384,14 +447,12 @@ impl VisaRepo {
     }
 
     /// Count the visas for a node that are in the given state.
-    pub async fn get_count_visas_for_node_by_state(
+    pub fn get_count_visas_for_node_by_state(
         &self,
         node_addr: &IpAddr,
         state: NodeVisaState,
     ) -> Result<u32, StoreError> {
-        let ids = self
-            .get_visa_ids_for_node_by_state(node_addr, state)
-            .await?;
+        let ids = self.get_visa_ids_for_node_by_state(node_addr, state)?;
         Ok(ids.len() as u32)
     }
 
@@ -399,8 +460,8 @@ impl VisaRepo {
     ///
     /// ## Errors
     /// - [StoreError::NotFound] if the visa does not exist (or has expired).
-    pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Visa, StoreError> {
-        let store = self.store.read().await;
+    pub fn get_visa_by_id(&self, visa_id: u64) -> Result<Visa, StoreError> {
+        let store = self.store.read().unwrap();
         live_entry(&store, visa_id)
             .map(|e| e.visa.clone())
             .ok_or_else(|| StoreError::NotFound(format!("visa not found for ID {visa_id}")))
@@ -410,8 +471,8 @@ impl VisaRepo {
     ///
     /// ## Errors
     /// - [StoreError::NotFound] if the visa metadata does not exist (or has expired).
-    pub async fn get_visa_metadata_by_id(&self, visa_id: u64) -> Result<VisaMetadata, StoreError> {
-        let store = self.store.read().await;
+    pub fn get_visa_metadata_by_id(&self, visa_id: u64) -> Result<VisaMetadata, StoreError> {
+        let store = self.store.read().unwrap();
         live_entry(&store, visa_id)
             .map(|e| e.metadata.clone())
             .ok_or_else(|| {
@@ -420,8 +481,8 @@ impl VisaRepo {
     }
 
     /// Copy all the live visa IDs into a vec.
-    pub async fn list_visa_ids(&self) -> Result<Vec<u64>, StoreError> {
-        let store = self.store.read().await;
+    pub fn list_visa_ids(&self) -> Result<Vec<u64>, StoreError> {
+        let store = self.store.read().unwrap();
         Ok(store
             .visas
             .iter()
@@ -432,8 +493,14 @@ impl VisaRepo {
 
     /// Drop expired entries and their `by_node` index rows. Redis needs no
     /// matching delete since the TTL should have already fired. Called by housekeeping.
-    pub async fn purge_expired(&self) -> Result<(), StoreError> {
-        let mut store = self.store.write().await;
+    pub fn purge_expired(&self) -> Result<(), StoreError> {
+        // INVARIANT D: memory-only writer. purge does NOT take `backing` — it
+        // writes no Redis key (the keys expire on their own TTL), so there is no
+        // Redis/memory order to enforce, and it is exempt from Invariant A.
+        // Because it skips `backing`, it is the one writer that can interleave
+        // inside a read-modify-write's Redis-I/O gap; that is why every writer's
+        // memory-apply tolerates a vanished entry.
+        let mut store = self.store.write().unwrap();
         let expired: Vec<u64> = store
             .visas
             .iter()
@@ -650,7 +717,7 @@ mod test {
     /// Assert the persisted VisaRecord for `id` matches the in-memory entry.
     async fn assert_memory_matches_redis(repo: &VisaRepo, db: &FakeDb, id: u64) {
         let record = read_record(db, id).await;
-        let store = repo.store.read().await;
+        let store = repo.store.read().unwrap();
         let entry = store.visas.get(&id).unwrap();
         assert_eq!(record.node_states.len(), entry.node_states.len());
         for (addr, ns) in &entry.node_states {
@@ -690,7 +757,6 @@ mod test {
 
         let pending = repo
             .get_visas_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
-            .await
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].issuer_id, 42);
@@ -700,13 +766,11 @@ mod test {
             .unwrap();
         let pending = repo
             .get_visas_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
-            .await
             .unwrap();
         assert!(pending.is_empty());
 
         let installed = repo
             .get_visas_for_node_by_state(&node_addr, NodeVisaState::Installed)
-            .await
             .unwrap();
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].issuer_id, 42);
@@ -747,7 +811,7 @@ mod test {
                 .is_none()
         );
         // Memory agrees.
-        let store = repo.store.read().await;
+        let store = repo.store.read().unwrap();
         assert!(store.visas.contains_key(&7));
         assert!(!store.by_node.contains_key(&node_addr));
     }
@@ -766,7 +830,7 @@ mod test {
             .unwrap();
 
         // Not written
-        let store = repo.store.read().await;
+        let store = repo.store.read().unwrap();
         assert!(!store.visas.contains_key(&8));
     }
 
@@ -803,7 +867,7 @@ mod test {
                 .unwrap();
         }
 
-        let mut ids = repo.list_visa_ids().await.unwrap();
+        let mut ids = repo.list_visa_ids().unwrap();
         ids.sort_unstable();
         assert_eq!(ids, vec![1, 5, 42]);
     }
@@ -819,7 +883,7 @@ mod test {
             .await
             .unwrap();
 
-        let loaded = repo.get_visa_by_id(77).await.unwrap();
+        let loaded = repo.get_visa_by_id(77).unwrap();
         assert_eq!(loaded.issuer_id, 77);
         assert_eq!(
             loaded.dock_pep.as_ref().unwrap().source_addr,
@@ -835,7 +899,7 @@ mod test {
     async fn test_get_visa_by_id_missing() {
         let db = Arc::new(FakeDb::new());
         let repo = VisaRepo::new(db, 1).await.unwrap();
-        let err = repo.get_visa_by_id(1234).await.unwrap_err();
+        let err = repo.get_visa_by_id(1234).unwrap_err();
         assert!(matches!(err, StoreError::NotFound(_)));
     }
 
@@ -850,7 +914,7 @@ mod test {
             .await
             .unwrap();
 
-        let metadata = repo.get_visa_metadata_by_id(88).await.unwrap();
+        let metadata = repo.get_visa_metadata_by_id(88).unwrap();
         assert_eq!(metadata.requesting_node, node_addr);
         assert!(metadata.ctime > SystemTime::UNIX_EPOCH);
     }
@@ -859,7 +923,7 @@ mod test {
     async fn test_get_visa_metadata_by_id_missing() {
         let db = Arc::new(FakeDb::new());
         let repo = VisaRepo::new(db, 1).await.unwrap();
-        let err = repo.get_visa_metadata_by_id(999).await.unwrap_err();
+        let err = repo.get_visa_metadata_by_id(999).unwrap_err();
         assert!(matches!(err, StoreError::NotFound(_)));
     }
 
@@ -1045,12 +1109,10 @@ mod test {
 
         let ids = repo
             .get_visa_ids_for_node_by_state(&path_node, NodeVisaState::PendingInstall)
-            .await
             .unwrap();
         assert_eq!(ids, vec![102]);
         assert!(
             repo.get_visa_ids_for_node_by_state(&path_node, NodeVisaState::Installed)
-                .await
                 .unwrap()
                 .is_empty()
         );
@@ -1098,19 +1160,16 @@ mod test {
 
         let pending_ids = repo
             .get_visa_ids_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
-            .await
             .unwrap();
         assert_eq!(pending_ids, vec![10]);
         assert_eq!(
             repo.get_count_visas_for_node_by_state(&node_addr, NodeVisaState::PendingInstall)
-                .await
                 .unwrap(),
             1
         );
 
         let installed_ids = repo
             .get_visa_ids_for_node_by_state(&node_addr, NodeVisaState::Installed)
-            .await
             .unwrap();
         assert_eq!(installed_ids, vec![11]);
     }
@@ -1142,8 +1201,8 @@ mod test {
             .unwrap();
 
         let repo2 = VisaRepo::new(db.clone(), 1).await.unwrap();
-        let s1 = repo1.store.read().await;
-        let s2 = repo2.store.read().await;
+        let s1 = repo1.store.read().unwrap();
+        let s2 = repo2.store.read().unwrap();
         assert_eq!(
             s1.visas.keys().collect::<HashSet<_>>(),
             s2.visas.keys().collect::<HashSet<_>>()
@@ -1191,13 +1250,13 @@ mod test {
             .unwrap();
 
         let repo = VisaRepo::new(db.clone(), 1).await.unwrap();
-        assert!(repo.store.read().await.visas.is_empty());
+        assert!(repo.store.read().unwrap().visas.is_empty());
         assert!(!db.exists("visa:900").await.unwrap());
         assert!(!db.exists("visa:901").await.unwrap());
 
         // A second load has nothing to drop.
         let repo2 = VisaRepo::new(db.clone(), 1).await.unwrap();
-        assert!(repo2.store.read().await.visas.is_empty());
+        assert!(repo2.store.read().unwrap().visas.is_empty());
     }
 
     /// After each mutator the persisted record matches the in-memory image.
@@ -1235,7 +1294,7 @@ mod test {
         assert!(matches!(err, StoreError::Redis(_)));
 
         assert!(!db.exists("visa:400").await.unwrap());
-        assert!(repo.store.read().await.visas.is_empty());
+        assert!(repo.store.read().unwrap().visas.is_empty());
     }
 
     /// Ambiguous store_visa: set_ex applies but errors → the compensating DEL
@@ -1255,7 +1314,7 @@ mod test {
         assert!(matches!(err, StoreError::Redis(_)));
 
         assert!(!db.exists("visa:401").await.unwrap());
-        assert!(repo.store.read().await.visas.is_empty());
+        assert!(repo.store.read().unwrap().visas.is_empty());
     }
 
     /// Ambiguous store_visa where the compensating DEL also fails: the key
@@ -1274,13 +1333,13 @@ mod test {
             .unwrap_err();
 
         assert!(db.exists("visa:402").await.unwrap());
-        assert!(repo.store.read().await.visas.is_empty());
+        assert!(repo.store.read().unwrap().visas.is_empty());
 
         // Reset faults and reload — the orphan comes back.
         db.set_set_ex_fault(FaultMode::None);
         db.set_del_fault(FaultMode::None);
         let repo2 = VisaRepo::new(db.clone(), 1).await.unwrap();
-        assert!(repo2.store.read().await.visas.contains_key(&402));
+        assert!(repo2.store.read().unwrap().visas.contains_key(&402));
     }
 
     /// Ambiguous record rewrite: Redis takes the new state, memory keeps the old
@@ -1302,7 +1361,7 @@ mod test {
 
         // Memory kept the old state; Redis diverged to the new one.
         {
-            let store = repo.store.read().await;
+            let store = repo.store.read().unwrap();
             assert_eq!(
                 store
                     .visas
@@ -1349,7 +1408,7 @@ mod test {
         repo.clean_up(404).await.unwrap_err();
         // Redis key gone, memory keeps the entry.
         assert!(!db.exists("visa:404").await.unwrap());
-        assert!(repo.store.read().await.visas.contains_key(&404));
+        assert!(repo.store.read().unwrap().visas.contains_key(&404));
 
         // A rewrite recreates the key.
         db.set_del_fault(FaultMode::None);
@@ -1386,7 +1445,7 @@ mod test {
             .unwrap();
 
         {
-            let store = repo.store.read().await;
+            let store = repo.store.read().unwrap();
             for n in [req, node_b, node_c] {
                 assert!(store.by_node.get(&n).unwrap().contains(&500));
             }
@@ -1394,7 +1453,7 @@ mod test {
 
         repo.clear_node_state(&node_b).await.unwrap();
         {
-            let store = repo.store.read().await;
+            let store = repo.store.read().unwrap();
             assert!(!store.by_node.contains_key(&node_b));
             assert!(store.by_node.get(&req).unwrap().contains(&500));
             assert!(store.by_node.get(&node_c).unwrap().contains(&500));
@@ -1402,7 +1461,7 @@ mod test {
 
         repo.clean_up(500).await.unwrap();
         {
-            let store = repo.store.read().await;
+            let store = repo.store.read().unwrap();
             assert!(store.visas.is_empty());
             assert!(store.by_node.is_empty());
         }
@@ -1423,15 +1482,15 @@ mod test {
         tokio::time::advance(Duration::from_secs(6)).await;
 
         // Invisible to reads, but still resident until purge.
-        assert!(repo.list_visa_ids().await.unwrap().is_empty());
+        assert!(repo.list_visa_ids().unwrap().is_empty());
         assert!(matches!(
-            repo.get_visa_by_id(600).await.unwrap_err(),
+            repo.get_visa_by_id(600).unwrap_err(),
             StoreError::NotFound(_)
         ));
-        assert!(repo.store.read().await.visas.contains_key(&600));
+        assert!(repo.store.read().unwrap().visas.contains_key(&600));
 
-        repo.purge_expired().await.unwrap();
-        let store = repo.store.read().await;
+        repo.purge_expired().unwrap();
+        let store = repo.store.read().unwrap();
         assert!(store.visas.is_empty());
         assert!(store.by_node.is_empty());
     }
