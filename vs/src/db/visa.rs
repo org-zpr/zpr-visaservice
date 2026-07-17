@@ -33,7 +33,7 @@ use serde_with::{TimestampSeconds, serde_as};
 use zpr::vsapi_types::{PacketDesc, Visa, VsapiFiveTuple};
 use zpr::write_to::WriteTo;
 
-use crate::db::{DbConnection, ZAddr, gen_timestamp};
+use crate::db::{DbConnection, DbOp, ZAddr, gen_timestamp};
 use crate::error::StoreError;
 use crate::logging::targets::DB;
 
@@ -252,11 +252,25 @@ impl VisaRepo {
             writes
         };
 
-        // Redis first.
+        // Redis first, as one atomic pipeline: all rewrites land or none do, so a
+        // mid-flight failure can no longer half-clear Redis while memory keeps the
+        // node (SetBin + Expire per record, matching set_ex semantics).
+        let mut ops = Vec::new();
         for (id, json) in &writes {
             if let Some((json, ttl)) = json {
-                self.db.set_ex(&visa_key_for_visa(*id), json, *ttl).await?;
+                let key = visa_key_for_visa(*id);
+                ops.push(DbOp::SetBin {
+                    key: key.clone(),
+                    value: json.clone().into_bytes(),
+                });
+                ops.push(DbOp::Expire {
+                    key,
+                    seconds: *ttl as i64,
+                });
             }
+        }
+        if !ops.is_empty() {
+            self.db.atomic_pipeline(&ops).await?;
         }
 
         // Memory second. A concurrent purge may have dropped an entry during the
@@ -814,6 +828,47 @@ mod test {
         let store = repo.store.read().unwrap();
         assert!(store.visas.contains_key(&7));
         assert!(!store.by_node.contains_key(&node_addr));
+    }
+
+    /// Regression for the partial-clear divergence (issue #1): a failed Redis
+    /// write must leave Redis and memory consistent. The atomic pipeline rejects
+    /// as a whole, so nothing is cleared on either side — no half-cleared state.
+    #[tokio::test]
+    async fn test_clear_node_state_write_failure_stays_consistent() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db.clone(), 1).await.unwrap();
+        let node_addr: IpAddr = "fd5a:5052::30".parse().unwrap();
+
+        // One node referenced by two visas.
+        for id in [70u64, 71] {
+            let visa = make_visa(id, Duration::from_secs(60));
+            repo.store_visa(&visa, md(node_addr), NodeVisaState::Installed)
+                .await
+                .unwrap();
+        }
+
+        // The clear's pipeline fails atomically.
+        db.set_set_ex_fault(FaultMode::Reject);
+        assert!(repo.clear_node_state(&node_addr).await.is_err());
+
+        // Redis kept the node on both records (pipeline applied nothing)...
+        db.set_set_ex_fault(FaultMode::None);
+        let node_str = ZAddr::from(&node_addr).to_string();
+        for id in [70u64, 71] {
+            assert!(
+                read_record(&db, id)
+                    .await
+                    .node_states
+                    .contains_key(&node_str),
+                "Redis record {id} should be untouched",
+            );
+        }
+
+        // ...and so did memory: the two agree, no divergence.
+        let store = repo.store.read().unwrap();
+        assert!(store.by_node.contains_key(&node_addr));
+        assert!(store.visas[&70].node_states.contains_key(&node_addr));
+        assert!(store.visas[&71].node_states.contains_key(&node_addr));
     }
 
     #[tokio::test]

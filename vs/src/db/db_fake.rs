@@ -494,6 +494,11 @@ impl DbConnection for FakeDb {
     /// To simulate atomic we take a lock that prevents all the other operations
     /// from running.
     async fn atomic_pipeline(&self, ops: &[DbOp]) -> DbResult<()> {
+        // Models Redis MULTI/EXEC atomicity: a Reject fails the whole pipeline
+        // before any op applies, so callers can test the all-or-nothing contract.
+        if *self.set_ex_fault.lock().unwrap() == FaultMode::Reject {
+            return Err(injected_fault_err());
+        }
         let _wlock = self.lock.write().await;
         for op in ops {
             match op {
