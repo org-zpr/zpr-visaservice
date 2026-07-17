@@ -839,6 +839,8 @@ mod test {
         assert!(matches!(err, StoreError::NotFound(_)));
     }
 
+    /// clear_node_state drops the node from a visa's states and the by_node
+    /// index, but keeps the visa record itself (and both Redis and memory agree).
     #[tokio::test]
     async fn test_clear_node_state_only_removes_node_from_record() {
         let db = Arc::new(FakeDb::new());
@@ -907,6 +909,8 @@ mod test {
         assert!(store.visas[&71].node_states.contains_key(&node_addr));
     }
 
+    /// Storing an already-expired visa is a NOP (not an error): it returns Ok
+    /// but writes nothing to memory (nor Redis, since ttl==0 short-circuits).
     #[tokio::test]
     async fn test_store_visa_nop_expired() {
         let db = Arc::new(FakeDb::new());
@@ -1093,6 +1097,8 @@ mod test {
         }
     }
 
+    /// With a path, the requesting node gets the passed state (Installed) and
+    /// every other node on the path gets PendingInstall.
     #[tokio::test]
     async fn test_store_visa_with_path_sets_path_nodes_pending() {
         let db = Arc::new(FakeDb::new());
@@ -1136,6 +1142,8 @@ mod test {
         }
     }
 
+    /// When the requesting node also appears in the path, it keeps its passed
+    /// state (Installed) rather than being downgraded to PendingInstall.
     #[tokio::test]
     async fn test_store_visa_requesting_node_in_path_not_overwritten() {
         let db = Arc::new(FakeDb::new());
@@ -1209,6 +1217,8 @@ mod test {
         );
     }
 
+    /// With no path, only the requesting node gets a state entry; unrelated
+    /// nodes are absent from the record.
     #[tokio::test]
     async fn test_store_visa_no_path_only_requesting_node_gets_state() {
         let db = Arc::new(FakeDb::new());
