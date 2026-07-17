@@ -437,19 +437,7 @@ impl VisaRepo {
     ) -> Result<Vec<Visa>, StoreError> {
         let store = self.store.read().unwrap();
         let mut visas = Vec::new();
-        if let Some(ids) = store.by_node.get(node_addr) {
-            for &id in ids {
-                if let Some(entry) = live_entry(&store, id) {
-                    if entry
-                        .node_states
-                        .get(node_addr)
-                        .is_some_and(|ns| ns.state == state)
-                    {
-                        visas.push(entry.visa.clone());
-                    }
-                }
-            }
-        }
+        for_each_node_visa_in_state(&store, node_addr, state, |_, e| visas.push(e.visa.clone()));
         Ok(visas)
     }
 
@@ -461,19 +449,7 @@ impl VisaRepo {
     ) -> Result<Vec<u64>, StoreError> {
         let store = self.store.read().unwrap();
         let mut ids = Vec::new();
-        if let Some(node_ids) = store.by_node.get(node_addr) {
-            for &id in node_ids {
-                if let Some(entry) = live_entry(&store, id) {
-                    if entry
-                        .node_states
-                        .get(node_addr)
-                        .is_some_and(|ns| ns.state == state)
-                    {
-                        ids.push(id);
-                    }
-                }
-            }
-        }
+        for_each_node_visa_in_state(&store, node_addr, state, |id, _| ids.push(id));
         Ok(ids)
     }
 
@@ -483,8 +459,10 @@ impl VisaRepo {
         node_addr: &IpAddr,
         state: NodeVisaState,
     ) -> Result<u32, StoreError> {
-        let ids = self.get_visa_ids_for_node_by_state(node_addr, state)?;
-        Ok(ids.len() as u32)
+        let store = self.store.read().unwrap();
+        let mut count = 0u32;
+        for_each_node_visa_in_state(&store, node_addr, state, |_, _| count += 1);
+        Ok(count)
     }
 
     /// Get the visa by ID.
@@ -517,7 +495,7 @@ impl VisaRepo {
         Ok(store
             .visas
             .iter()
-            .filter(|(_, e)| remaining_secs(e.deadline) > 0)
+            .filter(|(_, e)| e.is_live())
             .map(|(id, _)| *id)
             .collect())
     }
@@ -548,7 +526,7 @@ impl VisaRepo {
         let expired: Vec<u64> = store
             .visas
             .iter()
-            .filter(|(_, e)| remaining_secs(e.deadline) == 0)
+            .filter(|(_, e)| !e.is_live())
             .map(|(id, _)| *id)
             .collect();
         for id in expired {
@@ -584,7 +562,7 @@ async fn restore_from_state(db: &Arc<dyn DbConnection>) -> Result<VisaStoreInner
             }
         };
         match decode_record(&raw) {
-            Ok(entry) if remaining_secs(entry.deadline) > 0 => {
+            Ok(entry) if entry.is_live() => {
                 node_count += entry.node_states.len();
                 insert_entry(&mut inner, visa_id, entry);
             }
@@ -679,13 +657,41 @@ fn visa_to_capnp_bytes(visa: &Visa) -> Result<Vec<u8>, StoreError> {
     Ok(words)
 }
 
+impl VisaEntry {
+    /// True while the visa has not yet reached its expiry deadline. The single
+    /// liveness rule used by every read/iteration site.
+    fn is_live(&self) -> bool {
+        remaining_secs(self.deadline) > 0
+    }
+}
+
 /// Return the entry only if it is still live (`deadline` in the future).
 /// All reads go through this so expired entries read as absent.
 fn live_entry(inner: &VisaStoreInner, id: u64) -> Option<&VisaEntry> {
-    inner
-        .visas
-        .get(&id)
-        .filter(|e| remaining_secs(e.deadline) > 0)
+    inner.visas.get(&id).filter(|e| e.is_live())
+}
+
+/// Visit each live visa referencing `node_addr` whose per-node state == `state`,
+/// calling `f(id, entry)`. Backs the per-node get/ids/count query methods.
+fn for_each_node_visa_in_state<F: FnMut(u64, &VisaEntry)>(
+    inner: &VisaStoreInner,
+    node_addr: &IpAddr,
+    state: NodeVisaState,
+    mut f: F,
+) {
+    if let Some(ids) = inner.by_node.get(node_addr) {
+        for &id in ids {
+            if let Some(entry) = live_entry(inner, id) {
+                if entry
+                    .node_states
+                    .get(node_addr)
+                    .is_some_and(|ns| ns.state == state)
+                {
+                    f(id, entry);
+                }
+            }
+        }
+    }
 }
 
 /// Insert an entry and index all its nodes in `by_node`.
