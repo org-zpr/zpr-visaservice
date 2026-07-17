@@ -40,6 +40,12 @@ use crate::logging::targets::DB;
 const KEY_VISA: &str = "visa";
 const KEY_NEXT_VISA_ID: &str = "visa:next_visa_id";
 
+/// Minimum wall-gap between actual purge scans. Housekeeping calls
+/// `purge_expired` once per node per heartbeat, so with N nodes it fires N× per
+/// interval; this collapses those to one real scan and spares readers the extra
+/// store-write-lock acquisitions.
+const PURGE_MIN_INTERVAL: Duration = Duration::from_millis(800);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeVisaState {
     PendingInstall,
@@ -138,6 +144,9 @@ pub struct VisaRepo {
     ///
     /// See https://github.com/org-zpr/zpr-visaservice/issues/246
     store: RwLock<VisaStoreInner>,
+    /// Last time `purge_expired` actually scanned. `None` until the first purge.
+    /// Throttles the per-node housekeeping stampede (see `PURGE_MIN_INTERVAL`).
+    last_purge: std::sync::Mutex<Option<Instant>>,
 }
 
 impl VisaMetadata {
@@ -187,6 +196,7 @@ impl VisaRepo {
             db,
             backing: Mutex::new(()),
             store: RwLock::new(inner),
+            last_purge: std::sync::Mutex::new(None),
         })
     }
 
@@ -515,6 +525,19 @@ impl VisaRepo {
     /// Drop expired entries and their `by_node` index rows. Redis needs no
     /// matching delete since the TTL should have already fired. Called by housekeeping.
     pub fn purge_expired(&self) -> Result<(), StoreError> {
+        // Throttle: skip if the last real scan was under PURGE_MIN_INTERVAL ago,
+        // so N node workers ticking together don't each take the store write
+        // lock. Stamped before the scan; a purge at most one interval stale is
+        // fine since reads already filter expired entries.
+        {
+            let mut last = self.last_purge.lock().unwrap();
+            if let Some(t) = *last {
+                if Instant::now().saturating_duration_since(t) < PURGE_MIN_INTERVAL {
+                    return Ok(());
+                }
+            }
+            *last = Some(Instant::now());
+        }
         // INVARIANT D: memory-only writer. purge does NOT take `backing` — it
         // writes no Redis key (the keys expire on their own TTL), so there is no
         // Redis/memory order to enforce, and it is exempt from Invariant A.
