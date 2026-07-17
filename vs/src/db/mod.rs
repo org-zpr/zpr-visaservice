@@ -35,6 +35,7 @@ pub enum LockType {
 
 pub type DbResult<T> = redis::RedisResult<T>;
 
+// TODO: At some point remove this dead code and remove the unused functions.
 #[allow(dead_code)]
 #[async_trait::async_trait]
 pub trait DbConnection: Send + Sync {
