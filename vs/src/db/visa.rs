@@ -98,8 +98,15 @@ struct VisaEntry {
     visa: Visa,
     metadata: VisaMetadata,
     // Expiry moment as a tokio Instant, derived from `visa.expires` at insert /
-    // state_load time. Using the tokio clock (not SystemTime) keeps liveness in
-    // lockstep with Redis/FakeDb TTLs and lets paused-clock tests advance expiry.
+    // state_load time. The tokio (monotonic) clock, not SystemTime, is deliberate:
+    // it lets paused-clock tests drive expiry with tokio::time::advance().
+    //
+    // NOTE: Monotonic deadline can diverge from Redis's wall-clock TTL if the
+    // host suspends or NTP steps the clock — CLOCK_MONOTONIC freezes/ignores those.
+    // Memory may then serve a visa Redis has already dropped, and a rewrite can
+    // resurrect the key with a fresh TTL. Bounded and self-healing: restart
+    // re-hydrates from Redis. If suspend/NTP-step becomes a real deployment
+    // concern, AND-guard liveness with `seconds_until(visa.expires) > 0`.
     deadline: Instant,
     node_states: HashMap<IpAddr, NodeState>,
 }
