@@ -19,6 +19,7 @@ use crate::assembly::Assembly;
 use crate::error::ServiceError;
 use crate::logging::targets::EVENT;
 use crate::policy_mgr::PolicySnapshot;
+use crate::visa_mgr::VisaRecheck;
 
 pub enum VsEvent {
     /// Use _after_ actor has been authenticated and the datastore updated.
@@ -353,11 +354,11 @@ async fn revalidate_visas_against_policy(asm: &Arc<Assembly>, psnap: &PolicySnap
             .recheck_visa_allowed(asm, &metadata, psnap)
             .await
         {
-            Ok(None) => {
+            Ok(VisaRecheck::SkipUnresolvedActor) => {
                 skipped_unresolved += 1;
                 debug!(target: EVENT, "visa sweep: visa {visa_id} actor unresolved, skipping");
             }
-            Ok(Some(true)) => {
+            Ok(VisaRecheck::AllowSameRoute) => {
                 // Allowed. Only apply while target_vinst is still the live policy;
                 // otherwise an older sweep could cancel a newer revoke verdict.
                 if asm.policy_mgr.get_current_snapshot().vinst() != target_vinst {
@@ -375,9 +376,10 @@ async fn revalidate_visas_against_policy(asm: &Arc<Assembly>, psnap: &PolicySnap
                     }
                 }
             }
-            Ok(Some(false)) => {
-                // Denied. Only apply while target_vinst is still the live policy;
-                // otherwise a newer sweep is coming and will make the decision.
+            Ok(VisaRecheck::Revoke) => {
+                // Denied, or allowed but rerouted. Only apply while target_vinst
+                // is still the live policy; otherwise a newer sweep is coming and
+                // will make the decision.
                 if asm.policy_mgr.get_current_snapshot().vinst() != target_vinst {
                     skipped_stale += 1;
                     continue;

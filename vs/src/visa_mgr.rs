@@ -14,6 +14,7 @@ use crate::packet::make_fivetuple_tcp;
 use crate::policy_mgr::PolicySnapshot;
 use crate::visareq_worker::{
     PolicyOutcome, VisaDecision, evaluate_against_policy, request_visa_wait_response,
+    route_for_allow,
 };
 
 use libeval::eval_result::{Direction, Hit};
@@ -41,6 +42,38 @@ enum VCtx {
     Ingress,
     Intermediary,
     Egress,
+}
+
+/// Outcome of re-checking an existing visa against a newer policy snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisaRecheck {
+    /// An actor could not be resolved; skip without bumping `checked_vinst`.
+    SkipUnresolvedActor,
+    /// Still allowed and the selected route is unchanged.
+    AllowSameRoute,
+    /// Denied, or allowed but the selected route changed -- revoke.
+    Revoke,
+}
+
+/// Canonical forward-order (ingress→…→egress) node path for `route`, or `None`
+/// for a direct route. Mirrors exactly what `create_visa` stores in
+/// `metadata.path` so a re-derived path can be compared against a stored one.
+/// `starting_node` is the visa's `requesting_node`; a reverse hit traverses
+/// from the forward-egress node, so we reverse to restore forward orientation.
+fn canonical_path(
+    asm: &Assembly,
+    starting_node: &IpAddr,
+    route: &Route,
+    direction: Direction,
+) -> Result<Option<Vec<IpAddr>>, ServiceError> {
+    if !matches!(route.kind, libeval::route::RouteKind::Multihop) {
+        return Ok(None);
+    }
+    let mut node_id_path = asm.topo_mgr.route_to_path(route, &NodeId(*starting_node))?;
+    if direction == Direction::Reverse {
+        node_id_path.reverse();
+    }
+    Ok(Some(node_id_path.into_iter().map(|id| id.into()).collect()))
 }
 
 impl VisaWithMetadata {
@@ -366,21 +399,7 @@ impl VisaMgr {
 
         let visa_id = self.repo.get_next_visa_id().await?;
 
-        let path: Option<Vec<IpAddr>> = if matches!(route.kind, libeval::route::RouteKind::Multihop)
-        {
-            let starting_node = NodeId(*requesting_node);
-            let mut node_id_path = asm.topo_mgr.route_to_path(route, &starting_node)?;
-            // Normalize to canonical forward order (ingress→…→egress) so that
-            // actualize_visa_for_target_node applies direction logic correctly.
-            // A reverse hit starts traversal from the forward-egress node, so reversing
-            // restores forward orientation.
-            if hit.direction == Direction::Reverse {
-                node_id_path.reverse();
-            }
-            Some(node_id_path.into_iter().map(|id| id.into()).collect())
-        } else {
-            None
-        };
+        let path = canonical_path(asm, requesting_node, route, hit.direction)?;
 
         let mut metadata = db::VisaMetadata::new(
             requesting_node.clone(),
@@ -571,15 +590,21 @@ impl VisaMgr {
     /// is removed by policy.
     ///
     /// ### returns
-    /// - `Ok(None)` = an actor could not be resolved (skip, don't bump)
-    /// - `Ok(Some(true))` = allowed
-    /// - `Ok(Some(false))` = denied (this already folds in an undocked endpoint or missing route)
+    /// - `SkipUnresolvedActor` = an actor could not be resolved (skip, don't bump)
+    /// - `AllowSameRoute` = still allowed on the same route
+    /// - `Revoke` = denied, or allowed but the selected route changed. Denial
+    ///   already folds in an undocked endpoint or missing route.
+    ///
+    /// A still-allowed visa whose newly-selected route differs from the stored
+    /// `metadata.path` is treated as a revoke: rather than migrate a single visa
+    /// id between paths in place, we revoke it and let the next actor comm
+    /// install a fresh visa on the current route.
     pub async fn recheck_visa_allowed(
         &self,
         asm: &Assembly,
         metadata: &VisaMetadata,
         psnap: &PolicySnapshot,
-    ) -> Result<Option<bool>, ServiceError> {
+    ) -> Result<VisaRecheck, ServiceError> {
         // TODO: comm_flags is not persisted; for now default to BiDirectional.
         let pkt = PacketDesc {
             five_tuple: metadata.five_tuple.clone(),
@@ -592,13 +617,31 @@ impl VisaMgr {
             asm.actor_mgr.get_actor_by_zpr_addr(&src_zpr).await,
             asm.actor_mgr.get_actor_by_zpr_addr(&dst_zpr).await,
         ) else {
-            return Ok(None);
+            return Ok(VisaRecheck::SkipUnresolvedActor);
         };
 
         let policy = psnap.policy_arc();
-        match evaluate_against_policy(asm, &src, &dst, &src_zpr, &dst_zpr, &pkt, &policy).await? {
-            PolicyOutcome::Allow { .. } => Ok(Some(true)),
-            PolicyOutcome::Deny(_) => Ok(Some(false)),
+        let (hits, default_route) =
+            match evaluate_against_policy(asm, &src, &dst, &src_zpr, &dst_zpr, &pkt, &policy)
+                .await?
+            {
+                PolicyOutcome::Allow {
+                    hits,
+                    default_route,
+                } => (hits, default_route),
+                PolicyOutcome::Deny(_) => return Ok(VisaRecheck::Revoke),
+            };
+
+        // Still allowed: revoke iff the newly-selected route differs from the
+        // stored path. Derive the new path exactly as create_visa did so the
+        // comparison is apples-to-apples.
+        let route = route_for_allow(&hits, default_route)?;
+        match canonical_path(asm, &metadata.requesting_node, &route, hits[0].direction) {
+            Ok(new_path) if new_path == metadata.path => Ok(VisaRecheck::AllowSameRoute),
+            Ok(_) => Ok(VisaRecheck::Revoke),
+            // The old requesting node is no longer on the new route (topology
+            // moved under us) -- the route definitely changed, so revoke.
+            Err(_) => Ok(VisaRecheck::Revoke),
         }
     }
 
@@ -1450,7 +1493,7 @@ mod tests {
         assert!(mgr.visa_has_node_refs(811).await);
     }
 
-    /// recheck_visa_allowed returns None (skip) when an actor cannot be resolved.
+    /// recheck_visa_allowed skips when an actor cannot be resolved.
     #[tokio::test]
     async fn test_recheck_visa_allowed_unresolved_actor_skips() {
         let asm = Arc::new(new_assembly_for_tests(None).await);
@@ -1469,10 +1512,10 @@ mod tests {
             .recheck_visa_allowed(&asm, &md, &psnap)
             .await
             .unwrap();
-        assert_eq!(res, None);
+        assert_eq!(res, VisaRecheck::SkipUnresolvedActor);
     }
 
-    /// recheck_visa_allowed returns Some(false) when both actors resolve and dock
+    /// recheck_visa_allowed returns Revoke when both actors resolve and dock
     /// but there is no route between their nodes (the sweep would revoke).
     #[tokio::test]
     async fn test_recheck_visa_allowed_no_route_denies() {
@@ -1526,7 +1569,73 @@ mod tests {
             .recheck_visa_allowed(&asm, &md, &psnap)
             .await
             .unwrap();
-        assert_eq!(res, Some(false));
+        assert_eq!(res, VisaRecheck::Revoke);
+    }
+
+    /// canonical_path returns None for a direct (same-node) route in either
+    /// direction -- a direct visa stores `path = None`, so recheck compares
+    /// None == None and stays AllowSameRoute.
+    #[tokio::test]
+    async fn test_canonical_path_direct_is_none() {
+        let asm = new_assembly_for_tests(None).await;
+        let a: IpAddr = "fd5a:5052::1".parse().unwrap();
+        asm.topo_mgr.add_node(a).unwrap();
+        let route = asm.topo_mgr.get_best_route(&a, &a).unwrap();
+        assert_eq!(
+            canonical_path(&asm, &a, &route, Direction::Forward).unwrap(),
+            None
+        );
+        assert_eq!(
+            canonical_path(&asm, &a, &route, Direction::Reverse).unwrap(),
+            None
+        );
+    }
+
+    /// canonical_path yields the forward node order from the requesting node, and
+    /// a reverse hit flips it -- both are deterministic in (requesting_node,
+    /// direction), which is exactly why a re-derived path compares equal to the
+    /// one create_visa stored (same helper, same inputs).
+    #[tokio::test]
+    async fn test_canonical_path_multihop_forward_and_reverse() {
+        let asm = new_assembly_for_tests(None).await;
+        let a: IpAddr = "fd5a:5052::1".parse().unwrap();
+        let b: IpAddr = "fd5a:5052::2".parse().unwrap();
+        let c: IpAddr = "fd5a:5052::3".parse().unwrap();
+        for n in [a, b, c] {
+            asm.topo_mgr.add_node(n).unwrap();
+        }
+        asm.topo_mgr
+            .add_link(a, b, LinkId("ab".into()), vec![], 1)
+            .unwrap();
+        asm.topo_mgr
+            .add_link(b, c, LinkId("bc".into()), vec![], 1)
+            .unwrap();
+        let route = asm.topo_mgr.get_best_route(&a, &c).unwrap();
+        assert_eq!(
+            canonical_path(&asm, &a, &route, Direction::Forward).unwrap(),
+            Some(vec![a, b, c])
+        );
+        assert_eq!(
+            canonical_path(&asm, &a, &route, Direction::Reverse).unwrap(),
+            Some(vec![c, b, a])
+        );
+    }
+
+    /// canonical_path errors when the visa's requesting node is no longer on the
+    /// route (topology moved under us); recheck maps that Err to Revoke.
+    #[tokio::test]
+    async fn test_canonical_path_bogus_start_errors() {
+        let asm = new_assembly_for_tests(None).await;
+        let a: IpAddr = "fd5a:5052::1".parse().unwrap();
+        let b: IpAddr = "fd5a:5052::2".parse().unwrap();
+        asm.topo_mgr.add_node(a).unwrap();
+        asm.topo_mgr.add_node(b).unwrap();
+        asm.topo_mgr
+            .add_link(a, b, LinkId("ab".into()), vec![], 1)
+            .unwrap();
+        let route = asm.topo_mgr.get_best_route(&a, &b).unwrap();
+        let bogus: IpAddr = "fd5a:5052::99".parse().unwrap();
+        assert!(canonical_path(&asm, &bogus, &route, Direction::Forward).is_err());
     }
 
     /// An adapter leaving while its node stays up: the visa on the live node is

@@ -341,6 +341,23 @@ pub(crate) async fn evaluate_against_policy(
     }
 }
 
+/// Pick the route for an allow decision: the first hit's own route if it has
+/// one, else the supplied default route. Shared by the request path
+/// (`visa_from_allow`) and the sweep recheck so route selection stays identical.
+pub(crate) fn route_for_allow(
+    hits: &[Hit],
+    default_route: Option<Route>,
+) -> Result<Route, ServiceError> {
+    match hits[0].route.as_ref() {
+        Some(route) => Ok(route.clone()),
+        None => default_route.ok_or_else(|| {
+            ServiceError::Internal(
+                "policy allowed visa but no route in hit and no default route".into(),
+            )
+        }),
+    }
+}
+
 /// Fabricate an AAA actor for an anonymous endpoint at the given address.
 fn fabricate_aaa_actor(anon_addr: &IpAddr, expiration: SystemTime) -> Actor {
     let mut anon_actor = Actor::new();
@@ -394,14 +411,7 @@ async fn visa_from_allow(
         .unwrap_or("")
         .to_string();
 
-    let allowed_route: Route = match hits[0].route.as_ref() {
-        Some(route) => route.clone(),
-        None => default_route.ok_or_else(|| {
-            ServiceError::Internal(
-                "policy allowed visa but no route in hit and no default route".into(),
-            )
-        })?,
-    };
+    let allowed_route: Route = route_for_allow(hits, default_route)?;
 
     let visawmd = asm
         .visa_mgr
