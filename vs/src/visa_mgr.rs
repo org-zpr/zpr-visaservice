@@ -611,33 +611,78 @@ impl VisaMgr {
 
     /// Remove all visas tied to the given node -- assumes that `node_addr` has departed.
     ///
-    /// TODO: This probably needs a lock on the node address -- like we do not
-    /// want the same node to be reconnecting while we are doing this clean up.
+    /// The node is gone, so for every visa it participates in we mark all as
+    /// `PendingRevoke` (VSS housekeeping revokes the visa from the OTHER, live
+    /// nodes -- including where the departed node was only a multihop
+    /// intermediary), then force-drop the departed node's own refs (it can never
+    /// ack a revoke), then remove any visa left with no node refs.
     ///
-    /// TODO: Sometimes we want to keep track of visas installed on nodes so that
-    /// nodes could restart and we can then just push them state.  TBD.
+    /// TODO: This probably needs a lock on the node address -- we do not want the
+    /// same node reconnecting while this clean-up runs.
     ///
-    /// For each visa that is marked installed or pending-install on the node,
-    /// collect the ID.  Then wipe all the nodevisa records for the node.
-    ///
-    /// Now we have a bunch of visa IDs. For each ID, if the visa is installed
-    /// or pending on some other node, update the state on that node to pending-revoke
-    /// and then remove the visa:ID record.
-    ///
-    /// The housekeeping job will take care of updating the TODO lists and sending
-    /// the revocation messages out to the other nodes.
-    ///
+    /// TODO (reconnect-with-state): this wipes the node's visa state outright. We
+    /// have NOT yet worked out how that interacts with a node reconnecting and
+    /// expecting us to re-push its previously-installed visas rather than making
+    /// it re-request everything. When that story is settled this teardown likely
+    /// needs to preserve or snapshot state instead of dropping it. TBD.
     pub async fn remove_visas_for_node(&self, node_addr: &IpAddr) -> Result<(), ServiceError> {
-        info!(target: VISA, "TODO: remove visas for node {node_addr}");
+        // Capture the referencing visas before clear_node_state unindexes the node.
+        let ids = self.repo.get_all_visa_ids_for_node(node_addr)?;
+
+        // 1. Revoke each from the other nodes still holding it. Log-and-continue
+        //    so one failure can't strand the rest.
+        for &id in &ids {
+            if let Err(e) = self.repo.mark_visa_revoked(id).await {
+                warn!(target: VISA, "failed to mark visa {id} revoked for departed node {node_addr}: {e}");
+            }
+        }
+
+        // 2. Force-drop the departed node's own refs in one atomic pass (no RPC).
+        self.repo.clear_node_state(node_addr).await?;
+
+        // 3. Remove any visa now orphaned (no node refs) rather than wait for TTL.
+        for id in ids {
+            if !self.visa_has_node_refs(id).await {
+                if let Err(e) = self.remove_visa(id).await {
+                    warn!(target: VISA, "failed to remove orphaned visa {id}: {e}");
+                }
+            }
+        }
         Ok(())
     }
 
     /// Remove all visas tied to the listed actors, assumes the actors have departed.
+    ///
+    /// For each visa with a departed endpoint we mark every node `PendingRevoke`
+    /// so VSS housekeeping revokes it from the nodes still holding it, then
+    /// removes the visa on ack. A visa left with no node refs (its only node was
+    /// already cleared by `remove_visas_for_node`) is dropped here instead of
+    /// waiting for TTL.
+    ///
     pub async fn remove_visas_for_actors(
         &self,
-        _actor_addrs: &[IpAddr],
+        actor_addrs: &[IpAddr],
     ) -> Result<(), ServiceError> {
-        info!(target: VISA, "TODO: remove visas for actors now removed");
+        if actor_addrs.is_empty() {
+            return Ok(());
+        }
+        for id in self.get_visa_ids_for_actors(actor_addrs).await? {
+            // Log-and-continue: one failure must not strand the remaining visas.
+            match self.repo.mark_visa_revoked(id).await {
+                Ok(true) => {}
+                Ok(false) => continue, // vanished/expired between query and mark
+                Err(e) => {
+                    warn!(target: VISA, "failed to mark visa {id} revoked for departed actor: {e}");
+                    continue;
+                }
+            }
+            // No node left to revoke to (purely-local visa already cleared) -> drop now.
+            if !self.visa_has_node_refs(id).await {
+                if let Err(e) = self.remove_visa(id).await {
+                    warn!(target: VISA, "failed to remove orphaned visa {id}: {e}");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1482,5 +1527,125 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res, Some(false));
+    }
+
+    /// An adapter leaving while its node stays up: the visa on the live node is
+    /// marked PendingRevoke and left in place (awaiting the revoke ack).
+    #[tokio::test]
+    async fn test_remove_visas_for_actors_marks_live_node_pending_revoke() {
+        let mgr = make_mgr().await;
+        let node: IpAddr = NODE_ADDR.parse().unwrap();
+        let src: IpAddr = SRC_ADDR.parse().unwrap();
+        store_node_visa(&mgr, 900, node, db::NodeVisaState::Installed).await;
+
+        mgr.remove_visas_for_actors(&[src]).await.unwrap();
+
+        let revoke_ids = mgr
+            .repo
+            .get_visa_ids_for_node_by_state(&node, db::NodeVisaState::PendingRevoke)
+            .unwrap();
+        assert_eq!(revoke_ids, vec![900]);
+        // Visa still present -- housekeeping removes it on ack.
+        assert!(mgr.repo.get_visa_by_id(900).is_ok());
+    }
+
+    /// A visa whose only node was already cleared (no refs left) is dropped
+    /// outright rather than waiting for TTL.
+    #[tokio::test]
+    async fn test_remove_visas_for_actors_drops_orphan() {
+        let mgr = make_mgr().await;
+        let node: IpAddr = NODE_ADDR.parse().unwrap();
+        let src: IpAddr = SRC_ADDR.parse().unwrap();
+        store_node_visa(&mgr, 910, node, db::NodeVisaState::Installed).await;
+        // Simulate remove_visas_for_node having cleared the node's only ref.
+        mgr.clear_node_state(&node).await.unwrap();
+        assert!(!mgr.visa_has_node_refs(910).await);
+
+        mgr.remove_visas_for_actors(&[src]).await.unwrap();
+
+        assert!(mgr.repo.get_visa_by_id(910).is_err());
+    }
+
+    /// Empty actor list, and an actor with no visas, are both no-ops.
+    #[tokio::test]
+    async fn test_remove_visas_for_actors_noops() {
+        let mgr = make_mgr().await;
+        mgr.remove_visas_for_actors(&[]).await.unwrap();
+        let unknown: IpAddr = "fd5a:5052::dead".parse().unwrap();
+        mgr.remove_visas_for_actors(&[unknown]).await.unwrap();
+    }
+
+    /// Store a visa across the path [a, b, c] (a is the requesting node, Installed;
+    /// b and c PendingInstall).
+    async fn store_multihop_visa(mgr: &VisaMgr, id: u64, a: IpAddr, b: IpAddr, c: IpAddr) {
+        let visa = make_visa(id, Duration::from_secs(60));
+        let md = db::VisaMetadata::new(
+            a,
+            0,
+            0,
+            String::new(),
+            Direction::Forward,
+            Some(vec![a, b, c]),
+            &make_pdesc(),
+        );
+        mgr.repo
+            .store_visa(&visa, md, db::NodeVisaState::Installed)
+            .await
+            .unwrap();
+    }
+
+    /// Multihop [A, B, C] visa; intermediary B departs. The visa's other nodes go
+    /// PendingRevoke, B is no longer referenced, and the visa survives (awaiting
+    /// the revoke acks from A and C).
+    #[tokio::test]
+    async fn test_remove_visas_for_node_multihop_revokes_others() {
+        let mgr = make_mgr().await;
+        let a: IpAddr = "fd5a:5052::a".parse().unwrap();
+        let b: IpAddr = "fd5a:5052::b".parse().unwrap();
+        let c: IpAddr = "fd5a:5052::c".parse().unwrap();
+        store_multihop_visa(&mgr, 1000, a, b, c).await;
+
+        mgr.remove_visas_for_node(&b).await.unwrap();
+
+        // B no longer referenced.
+        assert!(mgr.repo.get_all_visa_ids_for_node(&b).unwrap().is_empty());
+        // A and C queued for revoke.
+        for n in [a, c] {
+            assert_eq!(
+                mgr.repo
+                    .get_visa_ids_for_node_by_state(&n, db::NodeVisaState::PendingRevoke)
+                    .unwrap(),
+                vec![1000]
+            );
+        }
+        // Visa still present -- housekeeping removes it on ack.
+        assert!(mgr.repo.get_visa_by_id(1000).is_ok());
+    }
+
+    /// A visa referencing only the departed node is captured (snapshot before
+    /// clear) and removed outright once its sole ref is dropped.
+    #[tokio::test]
+    async fn test_remove_visas_for_node_drops_sole_ref_orphan() {
+        let mgr = make_mgr().await;
+        let node: IpAddr = NODE_ADDR.parse().unwrap();
+        store_node_visa(&mgr, 1010, node, db::NodeVisaState::Installed).await;
+
+        mgr.remove_visas_for_node(&node).await.unwrap();
+
+        assert!(
+            mgr.repo
+                .get_all_visa_ids_for_node(&node)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(mgr.repo.get_visa_by_id(1010).is_err());
+    }
+
+    /// A node with no visas is a no-op.
+    #[tokio::test]
+    async fn test_remove_visas_for_node_noop() {
+        let mgr = make_mgr().await;
+        let node: IpAddr = "fd5a:5052::beef".parse().unwrap();
+        mgr.remove_visas_for_node(&node).await.unwrap();
     }
 }

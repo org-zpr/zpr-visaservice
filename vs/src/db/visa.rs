@@ -505,6 +505,42 @@ impl VisaRepo {
         Ok(true)
     }
 
+    /// Mark every node of a live visa `PendingRevoke`, unconditionally (no vinst
+    /// gate, no `checked_vinst` bump). For actor/node departure: the visa is
+    /// invalid regardless of policy, so leave each node's `revoke_vinst`
+    /// untouched -- a fresh revoke keeps `None`, which `record_allow_verdict`'s
+    /// `rv < vinst` test can never cancel, so a later allow cannot resurrect it.
+    /// No-ops (`Ok(false)`) when the visa is absent/expired.
+    pub async fn mark_visa_revoked(&self, visa_id: u64) -> Result<bool, StoreError> {
+        // INVARIANT A: backing held for the whole write.
+        let _backing = self.inner.backing.lock().await;
+
+        let (json, ttl, new_states) = {
+            let store = self.inner.store.read().unwrap();
+            let Some(entry) = live_entry(&store, visa_id) else {
+                return Ok(false);
+            };
+            let ttl = remaining_secs(entry.deadline);
+            let mut new_states = entry.node_states.clone();
+            for ns in new_states.values_mut() {
+                ns.state = NodeVisaState::PendingRevoke; // revoke_vinst left as-is
+            }
+            let record = build_record(&entry.visa, &entry.metadata, &new_states)?;
+            (serde_json::to_string(&record)?, ttl, new_states)
+        };
+        // Redis first.
+        self.inner
+            .db
+            .set_ex(&visa_key_for_visa(visa_id), &json, ttl)
+            .await?;
+        // Memory second. A purge during the I/O gap means the visa expired;
+        // skipping the apply is correct.
+        if let Some(entry) = self.inner.store.write().unwrap().visas.get_mut(&visa_id) {
+            entry.node_states = new_states;
+        }
+        Ok(true)
+    }
+
     /// Compare-and-swap one node's state: apply `new` only if the node is
     /// currently in `expected`. Not-found/expired or state mismatch -> `Ok(false)`.
     pub async fn transition_node_visa_state(
@@ -647,6 +683,23 @@ impl VisaRepo {
             }
         }
         Ok(ids.into_iter().collect())
+    }
+
+    /// All live visa IDs referencing this node, in any per-node state.
+    /// O(matched visas), not O(all visas).
+    pub fn get_all_visa_ids_for_node(&self, node_addr: &IpAddr) -> Result<Vec<u64>, StoreError> {
+        let store = self.inner.store.read().unwrap();
+        let ids = store
+            .by_node
+            .get(node_addr)
+            .map(|set| {
+                set.iter()
+                    .copied()
+                    .filter(|&id| live_entry(&store, id).is_some())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(ids)
     }
 
     /// Count the visas for a node that are in the given state.
@@ -2121,5 +2174,35 @@ mod test {
             repo.get_visa_ids_for_actors(&[actor, actor]).unwrap(),
             vec![220]
         );
+    }
+
+    /// `mark_visa_revoked` flips every node PendingRevoke (leaving revoke_vinst
+    /// untouched), keeps Redis and memory in agreement, and no-ops on a missing
+    /// id.
+    #[tokio::test]
+    async fn test_mark_visa_revoked_write_through() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db.clone(), 1).await.unwrap();
+        let req: IpAddr = "fd5a:5052::f0".parse().unwrap();
+        let b: IpAddr = "fd5a:5052::f1".parse().unwrap();
+        let c: IpAddr = "fd5a:5052::f2".parse().unwrap();
+        store_three_node(&repo, 800, req, b, c, 5).await;
+
+        assert!(repo.mark_visa_revoked(800).await.unwrap());
+        {
+            let store = repo.inner.store.read().unwrap();
+            let e = store.visas.get(&800).unwrap();
+            for n in [req, b, c] {
+                let ns = e.node_states.get(&n).unwrap();
+                assert_eq!(ns.state, NodeVisaState::PendingRevoke);
+                assert_eq!(ns.revoke_vinst, None); // no vinst stamp
+            }
+            // checked_vinst untouched (not a policy event).
+            assert_eq!(e.metadata.checked_vinst, 5);
+        }
+        assert_memory_matches_redis(&repo, &db, 800).await;
+
+        // Missing id is a no-op.
+        assert!(!repo.mark_visa_revoked(999).await.unwrap());
     }
 }
