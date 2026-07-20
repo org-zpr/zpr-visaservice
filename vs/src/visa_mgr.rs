@@ -566,6 +566,10 @@ impl VisaMgr {
     /// the packet from the stored five-tuple, resolves both actors, and
     /// delegates the eval to the shared `evaluate_against_policy` function.
     ///
+    /// Note that AAA-related visas are not re-evaluated by this function.
+    /// TODO: Possibly needs more thought for how to deal with cases where an auth service
+    /// is removed by policy.
+    ///
     /// ### returns
     /// - `Ok(None)` = an actor could not be resolved (skip, don't bump)
     /// - `Ok(Some(true))` = allowed
@@ -649,6 +653,14 @@ impl VisaMgr {
         Ok(visa_ids)
     }
 
+    /// Live visa IDs referencing any of the given actor endpoint addresses.
+    pub async fn get_visa_ids_for_actors(
+        &self,
+        actor_addrs: &[IpAddr],
+    ) -> Result<Vec<u64>, ServiceError> {
+        Ok(self.repo.get_visa_ids_for_actors(actor_addrs)?)
+    }
+
     /// Shorthand and slightly more race-condition safe way of calling `get_visa_by_id` and `get_visa_metadata_by_id`.
     /// Returns None if either the visa or the metadata is not found.
     pub async fn get_visa_with_metadata_by_id(
@@ -668,6 +680,7 @@ impl VisaMgr {
 
     /// Get just the visa (no metadata) using the visa ID.
     /// Returns None if not found.
+    #[allow(dead_code)]
     pub async fn get_visa_by_id(&self, visa_id: u64) -> Result<Option<Visa>, ServiceError> {
         match self.repo.get_visa_by_id(visa_id) {
             Ok(visa) => Ok(Some(visa)),

@@ -119,13 +119,14 @@ struct VisaEntry {
 
 /// The in-memory store guarded by a single `RwLock`.
 ///
-/// INVARIANT C: `visas` and `by_node` must be updated under the same `store`
-/// write guard; a reader must never see one without the other. Today the single
-/// `store` lock gives this for free (both live behind one guard).
+/// INVARIANT C: `visas`, `by_node`, and `by_actor` must be updated under the
+/// same `store` write guard; a reader must never see one without the others.
+/// Today the single `store` lock gives this for free (all live behind one guard).
 #[derive(Default)]
 struct VisaStoreInner {
     visas: HashMap<u64, VisaEntry>,
     by_node: HashMap<IpAddr, HashSet<u64>>, // secondary index for per-node queries
+    by_actor: HashMap<IpAddr, HashSet<u64>>, // five-tuple src/dst endpoints
 }
 
 /// Cheap cloneable handle. `VisaRepo` owns the in-memory store, so it cannot be
@@ -629,6 +630,25 @@ impl VisaRepo {
         Ok(ids)
     }
 
+    /// Live visa IDs having any of `actor_addrs` as a five-tuple endpoint.
+    /// O(matched visas), not O(all visas). Returns `Result` for signature
+    /// consistency with the `get_*` query family though it never errors.
+    pub fn get_visa_ids_for_actors(&self, actor_addrs: &[IpAddr]) -> Result<Vec<u64>, StoreError> {
+        let store = self.inner.store.read().unwrap();
+        // HashSet: a src/dst pair or overlapping input addrs can hit one id twice.
+        let mut ids = HashSet::new();
+        for addr in actor_addrs {
+            if let Some(set) = store.by_actor.get(addr) {
+                ids.extend(
+                    set.iter()
+                        .copied()
+                        .filter(|&id| live_entry(&store, id).is_some()),
+                );
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
+
     /// Count the visas for a node that are in the given state.
     pub fn get_count_visas_for_node_by_state(
         &self,
@@ -870,33 +890,50 @@ fn for_each_node_visa_in_state<F: FnMut(u64, &VisaEntry)>(
     }
 }
 
-/// Insert an entry and index all its nodes in `by_node`.
+/// Insert an entry and index it in `by_node` (path nodes) and `by_actor`
+/// (five-tuple endpoints).
 fn insert_entry(inner: &mut VisaStoreInner, id: u64, entry: VisaEntry) {
     let nodes: Vec<IpAddr> = entry.node_states.keys().copied().collect();
+    let ft = &entry.metadata.five_tuple;
+    let actors = [ft.source_addr, ft.dest_addr];
     inner.visas.insert(id, entry);
     for node in nodes {
         inner.by_node.entry(node).or_default().insert(id);
     }
+    for actor in actors {
+        inner.by_actor.entry(actor).or_default().insert(id);
+    }
 }
 
-/// Remove an entry and unindex all its nodes.
+/// Remove an entry and unindex it from both `by_node` and `by_actor`.
 fn remove_entry(inner: &mut VisaStoreInner, id: u64) {
     if let Some(entry) = inner.visas.remove(&id) {
+        let ft = &entry.metadata.five_tuple;
+        for actor in [ft.source_addr, ft.dest_addr] {
+            unindex(&mut inner.by_actor, &actor, id);
+        }
         let nodes: Vec<IpAddr> = entry.node_states.keys().copied().collect();
         for node in nodes {
-            unindex_node(inner, &node, id);
+            unindex(&mut inner.by_node, &node, id);
         }
     }
 }
 
-/// Drop `id` from the `by_node` row for `node`, removing the row if it empties.
-fn unindex_node(inner: &mut VisaStoreInner, node: &IpAddr, id: u64) {
-    if let Some(set) = inner.by_node.get_mut(node) {
+/// Drop `id` from `index[key]`, removing the row if it empties.
+fn unindex(index: &mut HashMap<IpAddr, HashSet<u64>>, key: &IpAddr, id: u64) {
+    if let Some(set) = index.get_mut(key) {
         set.remove(&id);
         if set.is_empty() {
-            inner.by_node.remove(node);
+            index.remove(key);
         }
     }
+}
+
+/// Drop `id` from the `by_node` row for `node`. Thin wrapper over `unindex` so
+/// the state-mutation call sites (`clear_node_state`, `remove_node_if_pending_revoke`)
+/// don't churn.
+fn unindex_node(inner: &mut VisaStoreInner, node: &IpAddr, id: u64) {
+    unindex(&mut inner.by_node, node, id);
 }
 
 // Get number of seconds until the given SystemTime or zero if in the past.
@@ -2006,5 +2043,83 @@ mod test {
             NodeVisaState::Installed
         );
         assert_eq!(e.metadata.checked_vinst, 0);
+    }
+
+    /// Build metadata whose five-tuple uses the given src/dst endpoint strings.
+    fn md_ft(node: IpAddr, src: &str, dst: &str) -> VisaMetadata {
+        let pdesc = PacketDesc::new_tcp(src, dst, 1234, 443).unwrap();
+        VisaMetadata::new(node, 0, 0, String::new(), Direction::Forward, None, &pdesc)
+    }
+
+    /// Two visas sharing the same endpoints both resolve for either endpoint;
+    /// removing one leaves the other resolvable and the removed id gone.
+    #[tokio::test]
+    async fn test_get_visa_ids_for_actors_shared_endpoint() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db, 1).await.unwrap();
+        let node: IpAddr = "fd5a:5052::100".parse().unwrap();
+        // md() five-tuple endpoints are ::10 (src) and ::20 (dst).
+        let src: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let dst: IpAddr = "fd5a:5052::20".parse().unwrap();
+
+        for id in [200u64, 201] {
+            let visa = make_visa(id, Duration::from_secs(60));
+            repo.store_visa(&visa, md(node), NodeVisaState::Installed)
+                .await
+                .unwrap();
+        }
+
+        for actor in [src, dst] {
+            let mut ids = repo.get_visa_ids_for_actors(&[actor]).unwrap();
+            ids.sort_unstable();
+            assert_eq!(ids, vec![200, 201]);
+        }
+
+        repo.remove_visa(200).await.unwrap();
+        assert_eq!(repo.get_visa_ids_for_actors(&[src]).unwrap(), vec![201]);
+    }
+
+    /// An expired entry still sitting in `by_actor` (purge not yet run) is
+    /// filtered out of the query by the liveness check.
+    #[tokio::test(start_paused = true)]
+    async fn test_get_visa_ids_for_actors_filters_expired() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db, 1).await.unwrap();
+        let node: IpAddr = "fd5a:5052::101".parse().unwrap();
+        let src: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let visa = make_visa(210, Duration::from_secs(60));
+        repo.store_visa(&visa, md(node), NodeVisaState::Installed)
+            .await
+            .unwrap();
+
+        assert_eq!(repo.get_visa_ids_for_actors(&[src]).unwrap(), vec![210]);
+
+        // Age past expiry without running purge; the id lingers in by_actor.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(repo.get_visa_ids_for_actors(&[src]).unwrap().is_empty());
+    }
+
+    /// When one actor is both src and dst of a visa, it resolves to a single id
+    /// (no duplicate from the two by_actor rows collapsing to one).
+    #[tokio::test]
+    async fn test_get_visa_ids_for_actors_dedup() {
+        let db = Arc::new(FakeDb::new());
+        let repo = VisaRepo::new(db, 1).await.unwrap();
+        let node: IpAddr = "fd5a:5052::102".parse().unwrap();
+        let actor: IpAddr = "fd5a:5052::10".parse().unwrap();
+        let visa = make_visa(220, Duration::from_secs(60));
+        repo.store_visa(
+            &visa,
+            md_ft(node, "fd5a:5052::10", "fd5a:5052::10"),
+            NodeVisaState::Installed,
+        )
+        .await
+        .unwrap();
+
+        // Same actor passed twice as well: still exactly one id.
+        assert_eq!(
+            repo.get_visa_ids_for_actors(&[actor, actor]).unwrap(),
+            vec![220]
+        );
     }
 }
