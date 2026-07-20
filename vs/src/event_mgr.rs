@@ -357,16 +357,24 @@ async fn revalidate_visas_against_policy(asm: &Arc<Assembly>, psnap: &PolicySnap
                 skipped_unresolved += 1;
                 debug!(target: EVENT, "visa sweep: visa {visa_id} actor unresolved, skipping");
             }
-            Ok(Some(true)) => match asm
-                .visa_mgr
-                .record_allow_verdict(visa_id, target_vinst)
-                .await
-            {
-                Ok(_) => allowed += 1,
-                Err(e) => {
-                    warn!(target: EVENT, "visa sweep: failed to record allow for visa {visa_id}: {e}")
+            Ok(Some(true)) => {
+                // Allowed. Only apply while target_vinst is still the live policy;
+                // otherwise an older sweep could cancel a newer revoke verdict.
+                if asm.policy_mgr.get_current_snapshot().vinst() != target_vinst {
+                    skipped_stale += 1;
+                    continue;
                 }
-            },
+                match asm
+                    .visa_mgr
+                    .record_allow_verdict(visa_id, target_vinst)
+                    .await
+                {
+                    Ok(_) => allowed += 1,
+                    Err(e) => {
+                        warn!(target: EVENT, "visa sweep: failed to record allow for visa {visa_id}: {e}")
+                    }
+                }
+            }
             Ok(Some(false)) => {
                 // Denied. Only apply while target_vinst is still the live policy;
                 // otherwise a newer sweep is coming and will make the decision.
