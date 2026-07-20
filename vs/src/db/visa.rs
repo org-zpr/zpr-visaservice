@@ -387,59 +387,6 @@ impl VisaRepo {
         Ok(())
     }
 
-    /// Update the state for the given node/visa. Rewrites the record with the
-    /// remaining TTL (Redis first, memory second).
-    pub async fn update_node_visa_state(
-        &self,
-        node_addr: &IpAddr,
-        visa_id: u64,
-        new_state: NodeVisaState,
-    ) -> Result<(), StoreError> {
-        // INVARIANT A: backing held for the whole write.
-        let _backing = self.inner.backing.lock().await;
-
-        // Snapshot + build the record under a short read guard, run the
-        // not-found / ttl==0 checks, then drop the guard for the Redis I/O.
-        //
-        // INVARIANT B: safe to drop the read guard — backing blocks other
-        // writers, so this entry can't change under us before the apply.
-        let (json, ttl, new_states) = {
-            let store = self.inner.store.read().unwrap();
-            let entry = live_entry(&store, visa_id).ok_or_else(|| {
-                StoreError::NotFound(format!("node-visa record not found: {node_addr} {visa_id}"))
-            })?;
-            if !entry.node_states.contains_key(node_addr) {
-                return Err(StoreError::NotFound(format!(
-                    "node-visa record not found: {node_addr} {visa_id}"
-                )));
-            }
-            let ttl = remaining_secs(entry.deadline);
-            if ttl == 0 {
-                return Err(StoreError::NotFound(format!(
-                    "node-visa record not found: {node_addr} {visa_id}"
-                )));
-            }
-            let mut new_states = entry.node_states.clone();
-            new_states.get_mut(node_addr).unwrap().state = new_state;
-            let record = build_record(&entry.visa, &entry.metadata, &new_states)?;
-            (serde_json::to_string(&record)?, ttl, new_states)
-        };
-
-        // Redis first.
-        self.inner
-            .db
-            .set_ex(&visa_key_for_visa(visa_id), &json, ttl)
-            .await?;
-        // Memory second. If purge_expired dropped the entry during the set_ex
-        // gap the visa expired mid-update; skipping the apply is correct.
-        if let Some(entry) = self.inner.store.write().unwrap().visas.get_mut(&visa_id) {
-            entry.node_states = new_states;
-        }
-
-        debug!(target: DB, "updated nodevisa state node={node_addr} visa={visa_id} -> {new_state:?}");
-        Ok(())
-    }
-
     /// Snapshot of `(visa_id, metadata)` for all live entries, cloned under the
     /// read lock. Used by policy-update sweep (when new policy installed).
     pub async fn list_visa_metadata(&self) -> Vec<(u64, VisaMetadata)> {
@@ -1060,19 +1007,6 @@ mod test {
             .unwrap();
         assert_eq!(installed.len(), 1);
         assert_eq!(installed[0].issuer_id, 42);
-    }
-
-    #[tokio::test]
-    async fn test_update_node_visa_state_missing() {
-        let db = Arc::new(FakeDb::new());
-        let repo = VisaRepo::new(db, 1).await.unwrap();
-        let node_addr: IpAddr = "fd5a:5052::2".parse().unwrap();
-
-        let err = repo
-            .update_node_visa_state(&node_addr, 99, NodeVisaState::Installed)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, StoreError::NotFound(_)));
     }
 
     /// clear_node_state drops the node from a visa's states and the by_node
