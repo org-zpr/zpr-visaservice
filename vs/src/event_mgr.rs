@@ -344,9 +344,11 @@ async fn revalidate_visas_against_policy(asm: &Arc<Assembly>, psnap: &PolicySnap
     let mut revoked = 0u32;
     let mut skipped_stale = 0u32;
     let mut skipped_unresolved = 0u32;
+    let mut skipped_current = 0u32;
 
     for (visa_id, metadata) in snapshot {
         if metadata.checked_vinst >= target_vinst {
+            skipped_current += 1;
             continue;
         }
         match asm
@@ -405,7 +407,7 @@ async fn revalidate_visas_against_policy(asm: &Arc<Assembly>, psnap: &PolicySnap
     // actual revocations happen asynchronously in VSS housekeeping.
     info!(
         target: EVENT,
-        "visa sweep vinst={target_vinst}: total={total} allowed={allowed} revoked={revoked} skipped_stale={skipped_stale} skipped_unresolved={skipped_unresolved}"
+        "visa sweep vinst={target_vinst}: total={total} allowed={allowed} revoked={revoked} skipped_stale={skipped_stale} skipped_unresolved={skipped_unresolved} skipped_current={skipped_current}"
     );
 }
 
