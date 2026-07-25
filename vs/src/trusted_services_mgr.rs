@@ -186,7 +186,7 @@ type AttributeValue = String;
 #[derive(Debug, Deserialize, Clone)]
 struct ActorAttributes(BTreeMap<ActorId, BTreeMap<AttributeName, Vec<AttributeValue>>>);
 
-// ponytail: blocking read of a small local JSON file, at most once per `ttl` and always
+// Blocking read of a small local JSON file, at most once per `ttl` and always
 // under the refresh lock. Move to tokio::fs (or spawn_blocking, as actor_mgr.rs does) if
 // the file ever gets big enough to stall the runtime.
 fn load_actor_attributes_from_file(fp: &Path) -> Result<ActorAttributes, ServiceError> {
