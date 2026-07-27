@@ -318,10 +318,8 @@ async fn refresh_expired_attributes(ts_mgr: &TrustedServicesMgr, actor: &mut Act
         None => return false,
     };
 
-    let mut attr_sources = HashSet::new();
     let mut sources = HashSet::new();
     for attr in actor.attrs_iter() {
-        attr_sources.insert(attr.get_source().to_string());
         if attr.is_expired() {
             sources.insert(attr.get_source().to_string());
         }
@@ -330,7 +328,7 @@ async fn refresh_expired_attributes(ts_mgr: &TrustedServicesMgr, actor: &mut Act
     // Sources whose snapshot revision the actor has not caught up with, and the
     // revision to record once a refresh from them succeeds.
     let stale: HashMap<String, u64> = ts_mgr
-        .stale_sources_for_actor(&actor_ident, &attr_sources)
+        .stale_sources_for_actor(&actor_ident)
         .into_iter()
         .collect();
     sources.extend(stale.keys().cloned());
@@ -807,6 +805,7 @@ mod tests {
     use crate::test_helpers::{
         make_actor_with_services_defexp, make_container_bytes, make_node_actor_defexp,
     };
+    use crate::trusted_services::TrustedServiceInterface;
     use libeval::attribute::{AttributeSource, ROLE_ADAPTER, SOURCE_ZPR};
     use libeval::eval_result::Direction;
     use libeval::policy::Policy;
@@ -1362,7 +1361,8 @@ mod tests {
         assert_eq!(*fake.calls.lock().unwrap(), vec!["someone.zpr.org"]);
     }
 
-    /// The hot path: no expired attributes means no trusted-service round trip at all.
+    /// The hot path: nothing expired and every source's revision already recorded means
+    /// no trusted-service round trip at all.
     #[tokio::test]
     async fn test_refresh_expired_attributes_skips_when_nothing_expired() {
         let (mgr, fake) = ts_mgr_with_fake();
@@ -1374,9 +1374,37 @@ mod tests {
                     .value("someone.zpr.org"),
             )
             .unwrap();
+        mgr.record_revision("someone.zpr.org", FAKE_SOURCE, fake.current_revision());
 
         assert!(!refresh_expired_attributes(&mgr, &mut actor).await);
         assert!(fake.calls.lock().unwrap().is_empty());
+    }
+
+    /// An actor holding no attribute from a configured source (the service vended
+    /// nothing at connect time) is still refreshed from it, so attributes that show up
+    /// later are picked up instead of being ignored forever.
+    #[tokio::test]
+    async fn test_refresh_queries_source_with_no_prior_attributes() {
+        let (mgr, fake) = ts_mgr_with_fake();
+        let mut actor = Actor::new();
+        actor
+            .add_attribute(
+                Attribute::builder(key::CN)
+                    .expires_in(Duration::from_secs(600))
+                    .value("someone.zpr.org"),
+            )
+            .unwrap();
+
+        assert!(refresh_expired_attributes(&mgr, &mut actor).await);
+        assert_eq!(
+            actor.get_attribute(FAKE_ATTR_KEY).unwrap().get_value(),
+            ["engineering".to_string()]
+        );
+        assert_eq!(*fake.calls.lock().unwrap(), vec!["someone.zpr.org"]);
+
+        // The revision was recorded, so the next pass is a no-op.
+        assert!(!refresh_expired_attributes(&mgr, &mut actor).await);
+        assert_eq!(fake.calls.lock().unwrap().len(), 1);
     }
 
     /// A trusted service that knows nothing about any actor: every lookup succeeds and
@@ -1426,8 +1454,10 @@ mod tests {
     async fn test_refresh_expired_attributes_handles_unrefreshable() {
         let (mgr, fake) = ts_mgr_with_fake();
 
-        // SOURCE_ZPR is internal -- no trusted service vends it.
+        // SOURCE_ZPR is internal -- no trusted service vends it. The fake's revision is
+        // recorded up front so it is not stale, isolating the unroutable-source path.
         let mut internal = actor_with_attr("someone.zpr.org", SOURCE_ZPR, true);
+        mgr.record_revision("someone.zpr.org", FAKE_SOURCE, fake.current_revision());
         assert!(!refresh_expired_attributes(&mgr, &mut internal).await);
         assert!(fake.calls.lock().unwrap().is_empty());
 
@@ -1462,7 +1492,6 @@ mod tests {
         assert_eq!(fake.calls.lock().unwrap().len(), 1);
 
         // A flush bumps the revision: stale again.
-        use crate::trusted_services::TrustedServiceInterface;
         fake.flush().await.unwrap();
         assert!(refresh_expired_attributes(&mgr, &mut actor).await);
         assert_eq!(fake.calls.lock().unwrap().len(), 2);
