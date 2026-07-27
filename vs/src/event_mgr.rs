@@ -282,6 +282,25 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
         }
     }
 
+    // Reconcile before sweeping, same two-phase order as the trusted-service
+    // handler: the sweep re-reads actors from the store, so their attributes
+    // have to be current first. Installing a policy rebuilds every
+    // trusted-service store with a fresh revision, so every actor is
+    // revision-stale at this point.
+    //
+    // TODO: this refetches every source for every actor holding a live visa, on
+    // every policy update, sequentially. Cheap today -- the only trusted
+    // service is the in-memory file store -- but with network-backed services
+    // and many actors/visas this is an N x M synchronous fan-out on the event
+    // handler's critical path. The root fix is to stop rebuilding unchanged
+    // stores (which is what churns the revisions), not just to parallelize this
+    // loop.
+    let (refreshed, unresolved, failed) = refresh_actors_for_live_visas(asm).await;
+    info!(
+        target: EVENT,
+        "policy updated vinst={vinst}: actors refreshed={refreshed} unresolved={unresolved} failed={failed}"
+    );
+
     // Re-check existing visas against the new policy. Runs last so route checks
     // and the nodes' own link state already reflect the updated topology.
     revalidate_visas(asm, &psnap, SweepReason::PolicyUpdate).await;
@@ -319,6 +338,10 @@ async fn handle_trusted_service_change(asm: &Arc<Assembly>, source_id: &str) {
 /// revision stays mismatched, so its next visa request refreshes it again.
 ///
 /// Returns `(refreshed, unresolved, failed)` counts for logging.
+///
+/// TODO: sequential, and unbounded in the number of live visas. Fine while the only
+/// trusted service is the in-memory file store; revisit once services are network calls
+/// and actor/visa counts are large.
 async fn refresh_actors_for_live_visas(asm: &Arc<Assembly>) -> (u32, u32, u32) {
     let mut zpr_addrs: HashSet<IpAddr> = HashSet::new();
     for (_, md) in asm.visa_mgr.list_visa_metadata().await {
@@ -947,9 +970,8 @@ mod tests {
         svc
     }
 
-    /// Give the stored actor at `zpr_addr` an attribute from [TS_SOURCE], so the source
-    /// counts as relevant to that actor (a source the actor holds nothing from and has no
-    /// revision record for is not refreshed).
+    /// Give the stored actor at `zpr_addr` an attribute from [TS_SOURCE], standing in for
+    /// data the actor picked up from that source under the previous snapshot.
     async fn seed_source_attr(asm: &Arc<Assembly>, zpr_addr: &str, ts_key: &str, value: &str) {
         let addr: IpAddr = zpr_addr.parse().unwrap();
         let mut actor = asm
@@ -1116,6 +1138,34 @@ mod tests {
             stored_attr(&asm, "fd5a:5052:4000::a", TS_KEY).await,
             None,
             "unreachable service must not leave stale attributes in place"
+        );
+    }
+
+    /// A policy update reconciles the actors behind live visas before it sweeps them.
+    /// Installing a policy rebuilds every trusted-service store, so every actor is
+    /// revision-stale; the sweep re-reads actors from the store, and would otherwise
+    /// judge them on the previous store's data.
+    #[tokio::test]
+    async fn test_policy_update_refreshes_stored_actors_before_sweep() {
+        let (asm, node_a) = build_sweep_asm(false).await;
+        // A policy the connected nodes still satisfy, so revalidation keeps them (and
+        // their docked adapters) rather than disconnecting everything out from under us.
+        asm.policy_mgr
+            .update_policy_from_container_bytes(make_node_join_policy(None))
+            .await
+            .unwrap();
+        create_sweep_visa(&asm, &node_a, 0).await;
+        register_ts(&asm, &[(TS_KEY, "engineering")]);
+        // What the actor holds from the previous store's data.
+        seed_source_attr(&asm, "fd5a:5052:4000::a", TS_KEY, "sales").await;
+
+        let vinst = asm.policy_mgr.get_current_snapshot().vinst();
+        handle_policy_updated(&asm, vinst).await.unwrap();
+
+        assert_eq!(
+            stored_attr(&asm, "fd5a:5052:4000::a", TS_KEY).await,
+            Some("engineering".to_string()),
+            "policy update must reconcile attributes before the visa sweep reads actors"
         );
     }
 
