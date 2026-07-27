@@ -287,23 +287,6 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
         }
     }
 
-    // Reconcile before sweeping, same two-phase order as the trusted-service
-    // handler: the sweep re-reads actors from the store, so their attributes
-    // have to be current first. Only actors that are actually stale cost a
-    // fetch: `PolicyMgr::build_state` carries unchanged trusted-service stores
-    // (and their revisions) across a policy install, so this is a no-op unless
-    // the policy changed a trusted-service declaration.
-    //
-    // TODO: when a declaration does change, this refetches every source for
-    // every actor holding a live visa, sequentially -- an N x M synchronous
-    // fan-out on the event handler's critical path once services are
-    // network-backed and actor/visa counts are large.
-    let (refreshed, unresolved, failed) = refresh_actors_for_live_visas(asm).await;
-    info!(
-        target: EVENT,
-        "policy updated vinst={vinst}: actors refreshed={refreshed} unresolved={unresolved} failed={failed}"
-    );
-
     // Re-check existing visas against the new policy. Runs last so route checks
     // and the nodes' own link state already reflect the updated topology.
     revalidate_visas(asm, &psnap, SweepReason::PolicyUpdate).await;
