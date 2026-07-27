@@ -284,17 +284,15 @@ async fn handle_policy_updated(asm: &Arc<Assembly>, vinst: u64) -> Result<(), Se
 
     // Reconcile before sweeping, same two-phase order as the trusted-service
     // handler: the sweep re-reads actors from the store, so their attributes
-    // have to be current first. Installing a policy rebuilds every
-    // trusted-service store with a fresh revision, so every actor is
-    // revision-stale at this point.
+    // have to be current first. Only actors that are actually stale cost a
+    // fetch: `PolicyMgr::build_state` carries unchanged trusted-service stores
+    // (and their revisions) across a policy install, so this is a no-op unless
+    // the policy changed a trusted-service declaration.
     //
-    // TODO: this refetches every source for every actor holding a live visa, on
-    // every policy update, sequentially. Cheap today -- the only trusted
-    // service is the in-memory file store -- but with network-backed services
-    // and many actors/visas this is an N x M synchronous fan-out on the event
-    // handler's critical path. The root fix is to stop rebuilding unchanged
-    // stores (which is what churns the revisions), not just to parallelize this
-    // loop.
+    // TODO: when a declaration does change, this refetches every source for
+    // every actor holding a live visa, sequentially -- an N x M synchronous
+    // fan-out on the event handler's critical path once services are
+    // network-backed and actor/visa counts are large.
     let (refreshed, unresolved, failed) = refresh_actors_for_live_visas(asm).await;
     info!(
         target: EVENT,
@@ -1142,9 +1140,9 @@ mod tests {
     }
 
     /// A policy update reconciles the actors behind live visas before it sweeps them.
-    /// Installing a policy rebuilds every trusted-service store, so every actor is
-    /// revision-stale; the sweep re-reads actors from the store, and would otherwise
-    /// judge them on the previous store's data.
+    /// The actor here is revision-stale against the registered store (it has no recorded
+    /// revision for it); the sweep re-reads actors from the store, and would otherwise
+    /// judge them on the attributes seeded below.
     #[tokio::test]
     async fn test_policy_update_refreshes_stored_actors_before_sweep() {
         let (asm, node_a) = build_sweep_asm(false).await;
