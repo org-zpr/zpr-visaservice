@@ -352,7 +352,10 @@ async fn live_visa_actor_addrs(asm: &Arc<Assembly>) -> HashSet<IpAddr> {
 /// costs nothing.
 ///
 /// A failure is logged and skipped rather than aborting the pass: that actor's recorded
-/// revision stays mismatched, so its next visa request refreshes it again.
+/// revision stays mismatched, so its next visa request refreshes it again. This includes
+/// an unreachable trusted service (`AttributesIndeterminate`) -- the actor has already
+/// been stripped and persisted, and the deny that comes with it belongs to the request
+/// path, not to a background reconcile.
 ///
 /// Returns `(refreshed, unresolved, failed)` counts for logging.
 ///
