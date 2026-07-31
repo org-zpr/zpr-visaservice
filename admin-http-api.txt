@@ -305,7 +305,7 @@ GET /admin/visas/denies
     last_deny_ms and since are epoch MILLISECONDS, unlike the seconds used by
     every other endpoint in this API.
     since is inclusive: an entry is returned when last_deny_ms >= since.
-    The window holds at most DENY_LOG_SIZE (1000) entries; recording a new key
+    The window holds at most DENY_LOG_SIZE (500) entries; recording a new key
     beyond that drops the least recently denied one. A repeat of an existing key
     moves it back to the newest end, so it survives eviction.
     The window is in memory only and starts empty after a visa service restart.
