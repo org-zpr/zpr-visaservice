@@ -48,9 +48,9 @@ use crate::visa_mgr::VisaMgr;
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 
 use admin_api_types::{
-    ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, AuthRevokeDescriptor, CnEntry,
-    ConnectionType, DenyRecord, ListEntry, NamedListEntry, NetworkDetails, NodeConnection,
-    NodeRecordBrief, Revokes, ServiceDescriptor, Stats, VisaDescriptor,
+    ActorDescriptor, ApiAttribute, ApiKeyFormat, ApiKeySet, CnEntry, ConnectionType, DenyRecord,
+    ListEntry, NamedListEntry, NetworkDetails, NodeConnection, NodeRecordBrief, Revokes,
+    ServiceDescriptor, Stats, VisaDescriptor,
 };
 
 // Must use tokio RwLock here becuase we need state to be Send.
@@ -234,13 +234,6 @@ async fn serve(tls_acceptor: TlsAcceptor, listen: SocketAddr, state: SharedState
             }
         });
     }
-}
-
-fn two_elem_list() -> impl IntoResponse {
-    let le0 = ListEntry { id: 0 };
-    let le1 = ListEntry { id: 1 };
-
-    (StatusCode::OK, Json(vec![le0, le1])).into_response()
 }
 
 /// TODO: Placeholder - Only returns ID(0) which is for the current policy.
@@ -945,36 +938,28 @@ fn service_endpoints_to_string(endpoints: &[Scope]) -> String {
 }
 
 async fn get_revokes() -> impl IntoResponse {
-    debug!(target: ADMIN, "GET /admin/authrevoke");
-    two_elem_list()
+    debug!(target: ADMIN, "GET /admin/authrevoke - NOT IMPLEMENTED");
+    (StatusCode::OK, Json(Vec::<ListEntry>::new())).into_response()
 }
 
 async fn get_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    debug!(target: ADMIN, "GET /admin/authrevoke/{}", id);
-    let ard: AuthRevokeDescriptor = AuthRevokeDescriptor {
-        ty: "t".to_string(),
-        cn: "c".to_string(),
-    };
-
-    (StatusCode::OK, Json(ard)).into_response()
+    debug!(target: ADMIN, "GET /admin/authrevoke/{} - NOT IMPLEMENTED", id);
+    (StatusCode::NOT_FOUND, Json(()).into_response())
 }
 
 async fn clear_revokes() -> impl IntoResponse {
-    debug!(target: ADMIN, "POST /admin/authrevoke/clear");
-    two_elem_list()
+    debug!(target: ADMIN, "POST /admin/authrevoke/clear - NOT IMPLEMENTED");
+    (StatusCode::NOT_IMPLEMENTED, Json(()).into_response())
 }
 
 async fn remove_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    debug!(target: ADMIN, "DELETE /admin/authrevoke/{}", id);
-    let le = ListEntry { id: 0 };
-    (StatusCode::OK, Json(le)).into_response()
+    debug!(target: ADMIN, "DELETE /admin/authrevoke/{} - NOT IMPLEMENTED", id);
+    (StatusCode::NOT_IMPLEMENTED, Json(()).into_response())
 }
 
 async fn add_revoke(EPath(id): EPath<String>) -> impl IntoResponse {
-    debug!(target: ADMIN, "POST /admin/authrevoke/{}", id);
-
-    let le = ListEntry { id: 0 };
-    (StatusCode::OK, Json(le)).into_response()
+    debug!(target: ADMIN, "POST /admin/authrevoke/{} - NOT IMPLEMENTED", id);
+    (StatusCode::NOT_IMPLEMENTED, Json(()).into_response())
 }
 
 async fn get_network(
