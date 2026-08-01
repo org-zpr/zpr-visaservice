@@ -29,6 +29,10 @@ const (
 const dataRefreshInterval = 5 * time.Second
 const visaHistoryLimit = 12
 
+// How many deny records to ask for per refresh. Enough to fill any practical
+// dashboard pane, and well under the service's 500-record window.
+const denyFetchLimit = 100
+
 type visaTickMsg struct{}
 
 type visaSnapshotMsg struct {
@@ -136,6 +140,33 @@ func fetchRevocationSnapshotCmd() tea.Cmd {
 	}
 }
 
+type denyTickMsg struct{}
+
+type denySnapshotMsg struct {
+	records []dataplane.DenyRecord
+	err     error
+}
+
+// tickDenyRefresh schedules the next recent-denies refresh.
+func tickDenyRefresh() tea.Cmd {
+	return tea.Tick(dataRefreshInterval, func(time.Time) tea.Msg {
+		return denyTickMsg{}
+	})
+}
+
+// fetchDenySnapshotCmd fetches the most recent denies, newest request first.
+func fetchDenySnapshotCmd() tea.Cmd {
+	return func() tea.Msg {
+		client, err := dataplane.Shared()
+		if err != nil {
+			return denySnapshotMsg{err: err}
+		}
+
+		records, err := client.GetDenies(context.Background(), denyFetchLimit)
+		return denySnapshotMsg{records: records, err: err}
+	}
+}
+
 func appendCapped(history []int, value int, limit int) []int {
 	history = append(history, value)
 	if len(history) > limit {
@@ -151,7 +182,8 @@ func (m Model) isAdminOnline() bool {
 		m.state.actor.fetchErr == nil &&
 		m.state.actor.networkFetchErr == nil &&
 		m.state.policy.fetchErr == nil &&
-		m.state.revocation.fetchErr == nil
+		m.state.revocation.fetchErr == nil &&
+		m.state.deny.fetchErr == nil
 }
 
 func (m *Model) refreshOnlineSince() {
@@ -184,6 +216,7 @@ func (m Model) adminErr() error {
 		m.state.visa.fetchErr,
 		m.state.policy.fetchErr,
 		m.state.revocation.fetchErr,
+		m.state.deny.fetchErr,
 	} {
 		if err != nil {
 			return err
@@ -296,6 +329,7 @@ func (m Model) Init() tea.Cmd {
 		fetchActorsSnapshotCmd(), tickActorRefresh(),
 		fetchPolicySnapshotCmd(), tickPolicyRefresh(),
 		fetchRevocationSnapshotCmd(), tickRevocationRefresh(),
+		fetchDenySnapshotCmd(), tickDenyRefresh(),
 	)
 }
 
@@ -545,6 +579,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case denyTickMsg:
+		return m, tea.Batch(fetchDenySnapshotCmd(), tickDenyRefresh())
+
+	case denySnapshotMsg:
+		m.state.deny.fetchErr = msg.err
+		m.refreshOnlineSince()
+		// Keep the last good rows so a transient failure does not blank the table.
+		if msg.err == nil {
+			m.state.deny.records = msg.records
+		}
+		if m.viewportReady {
+			m.viewport.SetContent(m.Content())
+		}
+		return m, nil
+
 	case tea.MouseMsg:
 		return m.handleCursor(msg)
 
@@ -608,10 +657,10 @@ func (m Model) Content() string {
 			m.state.service.services,
 			m.state.actor.actors,
 			m.state.actor.network,
-			m.state.visa.revokedHistory,
+			m.state.deny.records,
 			m.liveAlerts(),
 			m.state.actor.networkFetchErr,
-			m.state.visa.fetchErr,
+			m.state.deny.fetchErr,
 			m.showStatic,
 		)
 	case tabVisas:

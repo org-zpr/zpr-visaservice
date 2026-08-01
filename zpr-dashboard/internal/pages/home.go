@@ -34,10 +34,10 @@ func HomePage(
 	services []dataplane.ServiceDescriptor,
 	actors []dataplane.ActorDescriptor,
 	network []dataplane.NodeConnection,
-	revokedHistory []int,
+	denies []dataplane.DenyRecord,
 	alerts []components.Alert,
 	networkErr error,
-	visaErr error,
+	denyFetchErr error,
 	showStatic bool,
 ) string {
 	containers := []container{
@@ -108,7 +108,7 @@ func HomePage(
 			height = lastHeight
 		}
 
-		trend := components.VisaDenialRateChart(trendWidth, height, revokedHistory, visaErr)
+		trend := components.DenyList(trendWidth, height, denies, actors, denyFetchErr)
 		if showStatic {
 			trend = lipgloss.JoinHorizontal(
 				lipgloss.Left,

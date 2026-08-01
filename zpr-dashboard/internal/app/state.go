@@ -73,5 +73,10 @@ type state struct {
 		fetchErr    error
 	}
 
+	deny struct {
+		records  []dataplane.DenyRecord
+		fetchErr error
+	}
+
 	dismissedAlerts map[string]bool
 }
