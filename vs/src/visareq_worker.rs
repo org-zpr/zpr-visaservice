@@ -349,8 +349,11 @@ pub(crate) async fn refresh_and_persist_actor(
 /// whose snapshot revision differs from the actor's recorded one (revision
 /// path, e.g. after an admin flush).
 ///
-/// A successful lookup is authoritative for that source: anything the service
-/// did not vend is dropped.
+/// A successful lookup is authoritative for that source, but the two paths drop
+/// different things: the revision path drops every key the service did not just
+/// return (the old snapshot is invalid), while the TTL path only drops leftovers
+/// that are *still* expired after the refresh -- an unexpired attribute the
+/// service omitted survives on its own TTL until the next revision bump.
 ///
 /// A failed TTL lookup changes nothing, so a service outage cannot strip
 /// attributes. The leftovers stay expired, and libeval already refuses to
@@ -417,9 +420,10 @@ async fn refresh_expired_attributes(
                             prune_from_source(actor, source, |a| !returned.contains(a.get_key()));
                         outcome.revisions.push((source.clone(), rev));
                     } else {
-                        // TTL refresh: whatever the service did not just set for this
-                        // source is gone; drop the leftovers rather than carry a
-                        // permanently expired copy.
+                        // TTL refresh: drop the leftovers that are still expired
+                        // rather than carry a permanently expired copy. Unexpired
+                        // attributes the service omitted are left alone -- only a
+                        // revision bump invalidates the whole snapshot.
                         outcome.changed |= prune_from_source(actor, source, |a| a.is_expired());
                     }
                 }
