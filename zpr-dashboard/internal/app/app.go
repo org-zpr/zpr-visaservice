@@ -44,7 +44,7 @@ func tickVisaRefresh() tea.Cmd {
 
 func fetchVisaSnapshotCmd() tea.Cmd {
 	return func() tea.Msg {
-		client, err := dataplane.NewDefault()
+		client, err := dataplane.Shared()
 		if err != nil {
 			return visaSnapshotMsg{err: err}
 		}
@@ -69,7 +69,7 @@ func tickServiceRefresh() tea.Cmd {
 
 func fetchServiceSnapshotCmd() tea.Cmd {
 	return func() tea.Msg {
-		client, err := dataplane.NewDefault()
+		client, err := dataplane.Shared()
 		if err != nil {
 			return serviceSnapshotMsg{err: err}
 		}
@@ -95,7 +95,7 @@ func tickPolicyRefresh() tea.Cmd {
 
 func fetchPolicySnapshotCmd() tea.Cmd {
 	return func() tea.Msg {
-		client, err := dataplane.NewDefault()
+		client, err := dataplane.Shared()
 		if err != nil {
 			return policySnapshotMsg{err: err}
 		}
@@ -126,7 +126,7 @@ func tickRevocationRefresh() tea.Cmd {
 
 func fetchRevocationSnapshotCmd() tea.Cmd {
 	return func() tea.Msg {
-		client, err := dataplane.NewDefault()
+		client, err := dataplane.Shared()
 		if err != nil {
 			return revocationSnapshotMsg{err: err}
 		}
@@ -222,7 +222,7 @@ func tickActorRefresh() tea.Cmd {
 
 func fetchActorsSnapshotCmd() tea.Cmd {
 	return func() tea.Msg {
-		client, err := dataplane.NewDefault()
+		client, err := dataplane.Shared()
 		if err != nil {
 			return actorSnapshotMsg{err: err}
 		}
@@ -242,7 +242,7 @@ func fetchActorsSnapshotCmd() tea.Cmd {
 
 func fetchActorVisasCmd(cn string) tea.Cmd {
 	return func() tea.Msg {
-		client, err := dataplane.NewDefault()
+		client, err := dataplane.Shared()
 		if err != nil {
 			return actorVisasMsg{cn: cn, err: err}
 		}
