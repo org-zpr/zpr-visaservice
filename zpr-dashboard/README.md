@@ -9,7 +9,7 @@ To setup your development environment, run `go mod download` to install the loca
 ## Project layout
 
 ```
-config.toml          Endpoint, timeout and credential file paths
+config.toml.example  Endpoint, timeout and credential file paths
 cmd/zpr-dashboard/   Program entry point (thin main)
 cmd/zpr-sim/         Fills a visa service with seed data
 internal/
@@ -38,6 +38,9 @@ bin/zpr-sim       # the commands
 ```
 
 ## Running it
+
+Copy `config.toml.example` to `config.toml` and edit it.
+
 
 ```sh
 make seed                               # If seeding
