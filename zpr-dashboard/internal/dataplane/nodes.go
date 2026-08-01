@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 )
 
 type ActorDescriptor struct {
@@ -60,16 +59,6 @@ type NodeRecordBrief struct {
 	Visas             []int64 `json:"visas"`          // installed on the node
 	VisasEnqueued     []int64 `json:"visas_enqueued"` // queued for install
 	PendingRevocation int     `json:"pending_revocation"`
-}
-
-const missingCNPrefix = "cn_missing:"
-
-func PeerName(peer string) (name string, resolved bool) {
-	if addr, ok := strings.CutPrefix(peer, missingCNPrefix); ok {
-		return addr, false
-	}
-
-	return peer, true
 }
 
 type VisaIDEntry struct {

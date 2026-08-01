@@ -149,6 +149,7 @@ func (m Model) isAdminOnline() bool {
 	return m.state.visa.fetchErr == nil &&
 		m.state.service.fetchErr == nil &&
 		m.state.actor.fetchErr == nil &&
+		m.state.actor.networkFetchErr == nil &&
 		m.state.policy.fetchErr == nil &&
 		m.state.revocation.fetchErr == nil
 }
@@ -178,6 +179,7 @@ func (m Model) liveAlerts() []components.Alert {
 func (m Model) adminErr() error {
 	for _, err := range []error{
 		m.state.actor.fetchErr,
+		m.state.actor.networkFetchErr,
 		m.state.service.fetchErr,
 		m.state.visa.fetchErr,
 		m.state.policy.fetchErr,
@@ -203,9 +205,10 @@ func (m Model) visaCounts() pages.VisaCounts {
 type actorTickMsg struct{}
 
 type actorSnapshotMsg struct {
-	actors  []dataplane.ActorDescriptor
-	network []dataplane.NodeConnections
-	err     error
+	actors     []dataplane.ActorDescriptor
+	network    []dataplane.NodeConnection
+	actorErr   error
+	networkErr error
 }
 
 type actorVisasMsg struct {
@@ -224,19 +227,16 @@ func fetchActorsSnapshotCmd() tea.Cmd {
 	return func() tea.Msg {
 		client, err := dataplane.Shared()
 		if err != nil {
-			return actorSnapshotMsg{err: err}
+			return actorSnapshotMsg{actorErr: err, networkErr: err}
 		}
 
-		actors, err := client.FetchActors(context.Background())
+		actors, actorErr := client.FetchActors(context.Background())
 
 		// The topology reads from /admin/network rather than each node's
 		// record, which the service only serves for nodes it authenticated.
-		network, netErr := client.GetNetwork(context.Background())
-		if err == nil {
-			err = netErr
-		}
+		network, networkErr := client.GetNetwork(context.Background())
 
-		return actorSnapshotMsg{actors: actors, network: network, err: err}
+		return actorSnapshotMsg{actors: actors, network: network, actorErr: actorErr, networkErr: networkErr}
 	}
 }
 
@@ -477,18 +477,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(fetchActorsSnapshotCmd(), tickActorRefresh())
 
 	case actorSnapshotMsg:
-		m.state.actor.fetchErr = msg.err
+		m.state.actor.fetchErr = msg.actorErr
+		m.state.actor.networkFetchErr = msg.networkErr
 		m.refreshOnlineSince()
 		var visasCmd tea.Cmd
-		if msg.err == nil {
+		// Keep the last good topology when only the network fetch failed,
+		// and vice versa.
+		if msg.actorErr == nil {
 			m.state.actor.actors = msg.actors
-			m.state.actor.network = msg.network
 			if m.state.actor.selectedIndex >= len(m.state.actor.actors) {
 				m.state.actor.selectedIndex = max(0, len(m.state.actor.actors)-1)
 			}
 			if cn, ok := m.selectedActorCN(); ok {
 				visasCmd = fetchActorVisasCmd(cn)
 			}
+		}
+		if msg.networkErr == nil {
+			m.state.actor.network = msg.network
 		}
 		if m.viewportReady {
 			m.viewport.SetContent(m.Content())
@@ -605,7 +610,8 @@ func (m Model) Content() string {
 			m.state.actor.network,
 			m.state.visa.revokedHistory,
 			m.liveAlerts(),
-			m.state.service.fetchErr,
+			m.state.actor.networkFetchErr,
+			m.state.visa.fetchErr,
 			m.showStatic,
 		)
 	case tabVisas:
