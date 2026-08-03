@@ -1,8 +1,10 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -519,6 +521,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and vice versa.
 		if msg.actorErr == nil {
 			m.state.actor.actors = msg.actors
+			// Sort here, not in the view: selectedIndex and the revoke target
+			// index into this slice.
+			slices.SortFunc(m.state.actor.actors, func(a, b dataplane.ActorDescriptor) int {
+				return cmp.Compare(a.CName, b.CName)
+			})
 			if m.state.actor.selectedIndex >= len(m.state.actor.actors) {
 				m.state.actor.selectedIndex = max(0, len(m.state.actor.actors)-1)
 			}

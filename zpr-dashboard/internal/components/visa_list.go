@@ -123,7 +123,7 @@ func activeVisaTable(width int, visas []dataplane.VisaDescriptor, actors []datap
 
 	widths := []int{issuedSize, idSize, cnSize, sourceSize, destSize, expiresSize}
 
-	t := panelTable(size, []string{"Issued", "ID", "CN", "Source", "Destination", "Expires in"}, widths).
+	t := panelTable(size, []string{"Issued", "ID", "Requesting Node", "Source", "Destination", "Expires in"}, widths).
 		StyleFunc(visaRowStyle(widths, selectedIndex, len(visas), 5, func(row int) bool {
 			return expiringSoon(visas[row])
 		}))
@@ -156,7 +156,7 @@ func visaRequestTable(width int, visas []dataplane.VisaDescriptor, actors []data
 
 	widths := []int{timeSize, statusSize, idSize, cnSize, portSize, sourceSize, destSize, expiresSize}
 
-	t := panelTable(size, []string{"Time", "Status", "ID", "CN", "Port", "Source", "Destination", "Expires"}, widths).
+	t := panelTable(size, []string{"Time", "Status", "ID", "Requesting Node", "Port", "Source", "Destination", "Expires"}, widths).
 		StyleFunc(visaRowStyle(widths, -1, len(visas), 7, func(row int) bool {
 			return expiringSoon(visas[row])
 		}))
