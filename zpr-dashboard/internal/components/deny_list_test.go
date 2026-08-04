@@ -69,8 +69,8 @@ func TestDenyEndpointUsesActorCN(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if got := denyEndpoint(c.addr, denyTestActors); got != c.want {
-			t.Errorf("denyEndpoint(%q) = %q, want %q", c.addr, got, c.want)
+		if got := endpointLabel(c.addr, denyTestActors); got != c.want {
+			t.Errorf("endpointLabel(%q) = %q, want %q", c.addr, got, c.want)
 		}
 	}
 }

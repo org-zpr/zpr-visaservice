@@ -11,7 +11,7 @@ import (
 	"neboagency.com/zpr-dashborad/internal/timefmt"
 )
 
-func ActorVisas(width, height int, visas []dataplane.VisaDescriptor, fetchErr error) string {
+func ActorVisas(width, height int, visas []dataplane.VisaDescriptor, actors []dataplane.ActorDescriptor, fetchErr error) string {
 	content := styles.TitleStyle.Render("Assigned Visas") + "\n"
 	content += styles.SubtitleStyle.Render("Visas granted to this actor") + "\n"
 
@@ -75,7 +75,7 @@ func ActorVisas(width, height int, visas []dataplane.VisaDescriptor, fetchErr er
 
 		t.Row(
 			ansi.Truncate(strconv.FormatInt(v.ID, 10), idSize, "..."),
-			ansi.Truncate(orDash(v.Dest()), destinationSize, "..."),
+			ansi.Truncate(endpointLabel(v.Dest(), actors), destinationSize, "..."),
 			ansi.Truncate(v.Proto, protoSize, "..."),
 			ansi.Truncate(expires, expireSize, "..."),
 		)

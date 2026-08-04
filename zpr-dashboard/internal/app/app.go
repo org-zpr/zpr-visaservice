@@ -566,12 +566,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cn, ok := m.selectedActorCN(); ok && cn == msg.cn {
 			m.state.actor.visasFetchErr = msg.err
 			if msg.err == nil {
+				// FetchActorVisas returns them sorted by visa ID descending.
 				m.state.actor.visas = msg.visas
-				// Sort here so both panels that render this slice agree on
-				// row order between refreshes.
-				slices.SortFunc(m.state.actor.visas, func(a, b dataplane.VisaDescriptor) int {
-					return cmp.Or(cmp.Compare(a.Dest(), b.Dest()), cmp.Compare(a.ID, b.ID))
-				})
 				m.state.actor.visaCountHistory = appendCapped(m.state.actor.visaCountHistory, len(msg.visas), visaHistoryLimit)
 			}
 			if m.viewportReady {

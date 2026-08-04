@@ -174,6 +174,7 @@ func (c *Client) FetchActorVisas(ctx context.Context, cn string) ([]VisaDescript
 		}
 		visas = append(visas, visa)
 	}
+	sortVisas(visas)
 
 	return visas, nil
 }

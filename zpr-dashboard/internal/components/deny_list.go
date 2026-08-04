@@ -118,8 +118,8 @@ func denyTable(width int, records []dataplane.DenyRecord, actors []dataplane.Act
 	for _, record := range records {
 		t.Row(
 			ansi.Truncate(formatDenyTime(record.LastDenyMS), whenSize, "..."),
-			ansi.Truncate(denyEndpoint(record.SourceAddr, actors), sourceSize, "..."),
-			ansi.Truncate(denyEndpoint(record.DestAddr, actors), destSize, "..."),
+			ansi.Truncate(endpointLabel(record.SourceAddr, actors), sourceSize, "..."),
+			ansi.Truncate(endpointLabel(record.DestAddr, actors), destSize, "..."),
 			ansi.Truncate(denyProtocol(record.Protocol, record.DestPort), protoSize, "..."),
 			ansi.Truncate(orDash(record.DenyCode), reasonSize, "..."),
 			ansi.Truncate(strconv.FormatUint(record.Count, 10), countSize, "..."),
@@ -129,9 +129,9 @@ func denyTable(width int, records []dataplane.DenyRecord, actors []dataplane.Act
 	return t.Render()
 }
 
-// denyEndpoint labels a ZPR address with its actor CN when the current actor
+// endpointLabel labels a ZPR address with its actor CN when the current actor
 // snapshot knows the address, and returns the address otherwise.
-func denyEndpoint(addr string, actors []dataplane.ActorDescriptor) string {
+func endpointLabel(addr string, actors []dataplane.ActorDescriptor) string {
 	if actor, ok := actorByAddr(actors, addr); ok && actor.CName != "" {
 		return actor.CName
 	}

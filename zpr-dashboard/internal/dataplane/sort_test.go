@@ -33,6 +33,36 @@ func TestGetActorSortsAttrs(t *testing.T) {
 	}
 }
 
+// TestFetchActorVisasSortsByIDDesc checks visa lists come back newest-ID
+// first, the canonical order every visa table renders in.
+func TestFetchActorVisasSortsByIDDesc(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := strings.CutPrefix(r.URL.Path, "/admin/visas/"); ok {
+			w.Write([]byte(`{"id":` + id + `}`))
+			return
+		}
+		w.Write([]byte(`[{"id":3},{"id":7},{"id":2}]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &Client{baseURL: srv.URL, http: srv.Client()}
+
+	visas, err := c.FetchActorVisas(context.Background(), "adapter-a")
+	if err != nil {
+		t.Fatalf("FetchActorVisas: %v", err)
+	}
+
+	want := []int64{7, 3, 2}
+	if len(visas) != len(want) {
+		t.Fatalf("got %d visas, want %d", len(visas), len(want))
+	}
+	for i, id := range want {
+		if visas[i].ID != id {
+			t.Errorf("visa %d = %d, want %d", i, visas[i].ID, id)
+		}
+	}
+}
+
 // TestFetchServicesSortsByName checks services come back sorted by name
 // regardless of the order the admin API lists them in.
 func TestFetchServicesSortsByName(t *testing.T) {

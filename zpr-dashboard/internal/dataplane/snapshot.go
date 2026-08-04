@@ -35,6 +35,7 @@ func (c *Client) FetchVisaSnapshot(ctx context.Context) (VisaSnapshot, error) {
 		}
 		recent = append(recent, visa)
 	}
+	sortVisas(recent)
 
 	snapshot := VisaSnapshot{
 		ActiveCount:  len(ids),

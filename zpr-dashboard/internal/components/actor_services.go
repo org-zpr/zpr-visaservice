@@ -62,6 +62,7 @@ func ActorServicesUsed(
 	width, height int,
 	visas []dataplane.VisaDescriptor,
 	services []dataplane.ServiceDescriptor,
+	actors []dataplane.ActorDescriptor,
 	fetchErr error,
 ) string {
 	const title, subtitle = "Services Used", "Reachable through active visas"
@@ -95,7 +96,7 @@ func ActorServicesUsed(
 	for _, visa := range visas {
 		rows = append(rows, usedRow{
 			name:  serviceAt(services, visa.Dest()),
-			dest:  visa.Dest(),
+			dest:  endpointLabel(visa.Dest(), actors),
 			proto: visa.Proto,
 			id:    visa.ID,
 		})
@@ -113,7 +114,7 @@ func ActorServicesUsed(
 	for _, row := range rows {
 		t.Row(
 			ansi.Truncate(row.name, nameSize, "..."),
-			ansi.Truncate(orDash(row.dest), destSize, "..."),
+			ansi.Truncate(row.dest, destSize, "..."),
 			ansi.Truncate(row.proto, protoSize, "..."),
 		)
 	}
