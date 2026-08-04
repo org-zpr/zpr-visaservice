@@ -64,3 +64,31 @@ func TestNetworkErrorAffectsOnlineState(t *testing.T) {
 		t.Error("expected the network error to surface as the admin error")
 	}
 }
+
+// TestActorVisasAreSorted checks visas are ordered by destination with the ID
+// breaking ties, so both panels that render them stay stable across refreshes.
+func TestActorVisasAreSorted(t *testing.T) {
+	dest := func(s string) *string { return &s }
+
+	m := applySnapshot(t, InitialModel(), actorSnapshotMsg{
+		actors: []dataplane.ActorDescriptor{{CName: "adapter-a"}},
+	})
+
+	next, _ := m.Update(actorVisasMsg{cn: "adapter-a", visas: []dataplane.VisaDescriptor{
+		{ID: 7, DestAddr: dest("fd5a:5052:90de::30")},
+		{ID: 3, DestAddr: dest("fd5a:5052:90de::20")},
+		{ID: 2, DestAddr: dest("fd5a:5052:90de::30")},
+	}})
+
+	updated, ok := next.(Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want Model", next)
+	}
+
+	want := []int64{3, 2, 7}
+	for i, id := range want {
+		if updated.state.actor.visas[i].ID != id {
+			t.Fatalf("visa order = %v, want ids %v", updated.state.actor.visas, want)
+		}
+	}
+}

@@ -1,0 +1,308 @@
+package components
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
+	"neboagency.com/zpr-dashborad/internal/dataplane"
+)
+
+// attrTestNow is the fixed clock the TTL tests measure against.
+var attrTestNow = time.Unix(1_700_000_000, 0)
+
+// attrTestActors is a dock, an actor docked to it, an actor docked to an
+// address no actor holds, and an actor with no connect_via at all.
+var attrTestActors = []dataplane.ActorDescriptor{
+	{CName: "node-nyc", ZprAddress: "fd5a:5052:90de::1", Node: true},
+	{
+		CName:      "adapter-a",
+		ZprAddress: "fd5a:5052:90de::10",
+		Attrs: []dataplane.Attribute{
+			{Key: "zpr.connect_via", Values: []string{"fd5a:5052:90de::1"}},
+		},
+	},
+	{
+		CName:      "adapter-b",
+		ZprAddress: "fd5a:5052:90de::11",
+		Attrs: []dataplane.Attribute{
+			{Key: "zpr.connect_via", Values: []string{"fd5a:5052:90de::99"}},
+		},
+	},
+	{CName: "adapter-c", ZprAddress: "fd5a:5052:90de::12"},
+	{
+		CName:      "adapter-d",
+		ZprAddress: "fd5a:5052:90de::13",
+		Attrs:      []dataplane.Attribute{{Key: "zpr.connect_via"}},
+	},
+}
+
+// TestActorDock checks CN resolution, the raw-address fallback, and that a
+// missing or empty attribute value yields "" without panicking.
+func TestActorDock(t *testing.T) {
+	cases := []struct {
+		actor int
+		want  string
+	}{
+		{1, "node-nyc"},
+		{2, "fd5a:5052:90de::99"},
+		{3, ""},
+		{4, ""},
+	}
+
+	for _, c := range cases {
+		actor := attrTestActors[c.actor]
+		if got := actorDock(attrTestActors, actor); got != c.want {
+			t.Errorf("actorDock(%s) = %q, want %q", actor.CName, got, c.want)
+		}
+	}
+}
+
+// TestFormatTTL checks the native duration rendering plus the no-expiry and
+// already-expired cases.
+func TestFormatTTL(t *testing.T) {
+	cases := []struct {
+		offset time.Duration
+		want   string
+	}{
+		{4*time.Hour + 23*time.Minute + 7*time.Second, "4h23m7s"},
+		{42 * time.Minute, "42m0s"},
+		{26*time.Hour + 3*time.Minute, "26h3m0s"},
+		{-time.Second, "expired"},
+		{0, "expired"},
+	}
+
+	for _, c := range cases {
+		expires := attrTestNow.Add(c.offset).Unix()
+		if got := formatTTL(expires, attrTestNow); got != c.want {
+			t.Errorf("formatTTL(+%s) = %q, want %q", c.offset, got, c.want)
+		}
+	}
+
+	if got := formatTTL(0, attrTestNow); got != "" {
+		t.Errorf("formatTTL(0) = %q, want empty", got)
+	}
+}
+
+// TestDisplayAttrs checks zpr.-prefixed keys are filtered, the result is
+// sorted by key, and the actor's own slice keeps its original order.
+func TestDisplayAttrs(t *testing.T) {
+	actor := dataplane.ActorDescriptor{Attrs: []dataplane.Attribute{
+		{Key: "user.hair_color"},
+		{Key: "zpr.role"},
+		{Key: "org.team"},
+		{Key: "zpr.connect_via"},
+	}}
+
+	got := displayAttrs(actor)
+
+	want := []string{"org.team", "user.hair_color"}
+	if len(got) != len(want) {
+		t.Fatalf("displayAttrs returned %d attrs, want %d", len(got), len(want))
+	}
+	for i, key := range want {
+		if got[i].Key != key {
+			t.Errorf("attr %d = %q, want %q", i, got[i].Key, key)
+		}
+	}
+
+	if actor.Attrs[0].Key != "user.hair_color" {
+		t.Error("displayAttrs must not reorder the actor's own attribute slice")
+	}
+}
+
+// TestFormatAttr checks value joining, the TTL suffix, and its omission for
+// attributes that never expire.
+func TestFormatAttr(t *testing.T) {
+	cases := []struct {
+		attr dataplane.Attribute
+		want string
+	}{
+		{dataplane.Attribute{Key: "user.hair_color", Values: []string{"brown"}}, "user.hair_color brown"},
+		{
+			dataplane.Attribute{
+				Key:       "user.hair_color",
+				Values:    []string{"brown"},
+				ExpiresAt: attrTestNow.Add(4*time.Hour + 23*time.Minute).Unix(),
+			},
+			"user.hair_color brown (4h23m0s)",
+		},
+		{dataplane.Attribute{Key: "org.team", Values: []string{"blue", "green"}}, "org.team blue,green"},
+		{dataplane.Attribute{Key: "org.team"}, "org.team "},
+	}
+
+	for _, c := range cases {
+		if got := ansi.Strip(formatAttr(c.attr, attrTestNow)); got != c.want {
+			t.Errorf("formatAttr(%s) = %q, want %q", c.attr.Key, got, c.want)
+		}
+	}
+}
+
+// renderDetails renders the Actor Details pane with ANSI stripped.
+func renderDetails(t *testing.T, height int, actors []dataplane.ActorDescriptor, selected int, fetchErr error) string {
+	t.Helper()
+	return ansi.Strip(ActorDetails(80, height, actors, selected, fetchErr))
+}
+
+// TestActorDetailsDock checks the Dock line shows the CN when known, the raw
+// address when not, and "unknown" when connect_via is missing.
+func TestActorDetailsDock(t *testing.T) {
+	cases := []struct {
+		actor int
+		want  string
+	}{
+		{1, "Dock node-nyc"},
+		{2, "Dock fd5a:5052:90de::99"},
+		{3, "Dock unknown"},
+		{4, "Dock unknown"},
+	}
+
+	for _, c := range cases {
+		out := renderDetails(t, 30, attrTestActors, c.actor, nil)
+		if !strings.Contains(out, c.want) {
+			t.Errorf("actor %d: expected %q in output:\n%s", c.actor, c.want, out)
+		}
+	}
+}
+
+// TestActorDetailsSubstrateAddress checks the address renders verbatim and the
+// line is dropped when the attribute is missing or carries no value.
+func TestActorDetailsSubstrateAddress(t *testing.T) {
+	actors := []dataplane.ActorDescriptor{
+		{CName: "with", Attrs: []dataplane.Attribute{
+			{Key: "zpr.substrate_addr", Values: []string{"[fd5a:5052::100]:1234"}},
+		}},
+		{CName: "empty-value", Attrs: []dataplane.Attribute{{Key: "zpr.substrate_addr"}}},
+		{CName: "missing"},
+	}
+
+	if out := renderDetails(t, 30, actors, 0, nil); !strings.Contains(out, "Substrate Address [fd5a:5052::100]:1234") {
+		t.Errorf("expected the substrate address verbatim:\n%s", out)
+	}
+
+	for _, i := range []int{1, 2} {
+		if out := renderDetails(t, 30, actors, i, nil); strings.Contains(out, "Substrate Address") {
+			t.Errorf("actor %d: expected no substrate line:\n%s", i, out)
+		}
+	}
+}
+
+// TestActorDetailsConnectedAdapters checks the count for a node, "unknown"
+// when its details are missing, and no line at all for an adapter.
+func TestActorDetailsConnectedAdapters(t *testing.T) {
+	actors := []dataplane.ActorDescriptor{
+		{CName: "node-with", Node: true, NodeDetails: &dataplane.NodeRecordBrief{
+			Adapters: []string{"adapter-a", "adapter-b"},
+		}},
+		{CName: "node-bare", Node: true},
+		{CName: "adapter-a"},
+	}
+
+	if out := renderDetails(t, 30, actors, 0, nil); !strings.Contains(out, "Connected Adapters 2") {
+		t.Errorf("expected the adapter count:\n%s", out)
+	}
+
+	if out := renderDetails(t, 30, actors, 1, nil); !strings.Contains(out, "Connected Adapters unknown") {
+		t.Errorf("expected unknown adapters for a node without details:\n%s", out)
+	}
+
+	if out := renderDetails(t, 30, actors, 2, nil); strings.Contains(out, "Connected Adapters") {
+		t.Errorf("expected no adapter line for an adapter:\n%s", out)
+	}
+}
+
+// TestActorDetailsCustomAttributes checks non-zpr attributes render with their
+// TTL and zpr. ones stay hidden.
+func TestActorDetailsCustomAttributes(t *testing.T) {
+	actors := []dataplane.ActorDescriptor{{CName: "adapter-a", Attrs: []dataplane.Attribute{
+		{Key: "zpr.role", Values: []string{"adapter"}},
+		{Key: "user.hair_color", Values: []string{"brown"}},
+	}}}
+
+	out := renderDetails(t, 30, actors, 0, nil)
+
+	if !strings.Contains(out, "user.hair_color brown") {
+		t.Errorf("expected the custom attribute:\n%s", out)
+	}
+	if strings.Contains(out, "zpr.role") {
+		t.Errorf("expected zpr. attributes to stay hidden:\n%s", out)
+	}
+}
+
+// TestActorDetailsOverflowKeepsFooterAndWarning checks a short pane still
+// shows the "+N more attributes" footer and the refresh warning.
+func TestActorDetailsOverflowKeepsFooterAndWarning(t *testing.T) {
+	var attrs []dataplane.Attribute
+	for _, key := range []string{"a.one", "b.two", "c.three", "d.four", "e.five", "f.six"} {
+		attrs = append(attrs, dataplane.Attribute{Key: key, Values: []string{"v"}})
+	}
+
+	actors := []dataplane.ActorDescriptor{{CName: "adapter-a", Attrs: attrs}}
+
+	out := renderDetails(t, 13, actors, 0, errors.New("stale"))
+
+	if !strings.Contains(out, "more attribute") {
+		t.Errorf("expected the overflow footer:\n%s", out)
+	}
+	if !strings.Contains(out, "last refresh failed") {
+		t.Errorf("expected the refresh warning:\n%s", out)
+	}
+	// Core fields outrank attributes for the space available.
+	if !strings.Contains(out, "Name adapter-a") {
+		t.Errorf("expected core fields to survive:\n%s", out)
+	}
+}
+
+// TestActorServicesOfferedEndpoints checks the Endpoints column renders and
+// rows come out sorted by service name.
+func TestActorServicesOfferedEndpoints(t *testing.T) {
+	actors := []dataplane.ActorDescriptor{{CName: "adapter-a"}}
+	services := []dataplane.ServiceDescriptor{
+		{ServiceName: "zebra", ActorCN: "adapter-a", Endpoints: "UDP/53"},
+		{ServiceName: "alpha", ActorCN: "adapter-a", Endpoints: "TCP/80"},
+		{ServiceName: "other", ActorCN: "adapter-b", Endpoints: "TCP/22"},
+	}
+
+	out := ansi.Strip(ActorServicesOffered(80, 20, actors, 0, services, nil))
+
+	if !strings.Contains(out, "TCP/80") || !strings.Contains(out, "UDP/53") {
+		t.Errorf("expected endpoints in the table:\n%s", out)
+	}
+	if strings.Contains(out, "other") {
+		t.Errorf("expected another actor's service to be excluded:\n%s", out)
+	}
+	if strings.Index(out, "alpha") > strings.Index(out, "zebra") {
+		t.Errorf("expected rows sorted by service name:\n%s", out)
+	}
+}
+
+// TestActorServicesUsedOrder checks rows are ordered by resolved service name,
+// with the destination breaking ties between equal names.
+func TestActorServicesUsedOrder(t *testing.T) {
+	services := []dataplane.ServiceDescriptor{
+		{ServiceName: "zebra", ZprAddress: "fd5a:5052:90de::30"},
+		{ServiceName: "alpha", ZprAddress: "fd5a:5052:90de::31"},
+	}
+
+	visas := []dataplane.VisaDescriptor{
+		{ID: 1, DestAddr: strPtr("fd5a:5052:90de::30"), Proto: "TCP"},
+		{ID: 2, DestAddr: strPtr("fd5a:5052:90de::31"), Proto: "TCP"},
+		{ID: 3, DestAddr: strPtr("fd5a:5052:90de::40"), Proto: "TCP"},
+		{ID: 4, DestAddr: strPtr("fd5a:5052:90de::39"), Proto: "TCP"},
+	}
+
+	out := ansi.Strip(ActorServicesUsed(80, 20, visas, services, nil))
+
+	if strings.Index(out, "alpha") > strings.Index(out, "zebra") {
+		t.Errorf("expected rows sorted by resolved name:\n%s", out)
+	}
+	// Both unregistered rows share a name, so the destination decides.
+	if strings.Index(out, "::39") > strings.Index(out, "::40") {
+		t.Errorf("expected the destination to break the name tie:\n%s", out)
+	}
+}
+
+// strPtr returns a pointer to s, for the optional visa address fields.
+func strPtr(s string) *string { return &s }
