@@ -86,14 +86,14 @@ func TestFormatTTL(t *testing.T) {
 	}
 }
 
-// TestDisplayAttrs checks zpr.-prefixed keys are filtered, the result is
-// sorted by key, and the actor's own slice keeps its original order.
+// TestDisplayAttrs checks zpr.-prefixed keys are filtered and the incoming
+// order is preserved — GetActor already sorts by key.
 func TestDisplayAttrs(t *testing.T) {
 	actor := dataplane.ActorDescriptor{Attrs: []dataplane.Attribute{
-		{Key: "user.hair_color"},
-		{Key: "zpr.role"},
 		{Key: "org.team"},
+		{Key: "user.hair_color"},
 		{Key: "zpr.connect_via"},
+		{Key: "zpr.role"},
 	}}
 
 	got := displayAttrs(actor)
@@ -108,8 +108,8 @@ func TestDisplayAttrs(t *testing.T) {
 		}
 	}
 
-	if actor.Attrs[0].Key != "user.hair_color" {
-		t.Error("displayAttrs must not reorder the actor's own attribute slice")
+	if len(actor.Attrs) != 4 {
+		t.Error("displayAttrs must not modify the actor's own attribute slice")
 	}
 }
 
@@ -255,14 +255,14 @@ func TestActorDetailsOverflowKeepsFooterAndWarning(t *testing.T) {
 	}
 }
 
-// TestActorServicesOfferedEndpoints checks the Endpoints column renders and
-// rows come out sorted by service name.
+// TestActorServicesOfferedEndpoints checks the Endpoints column renders, other
+// actors' services are excluded, and filtering keeps FetchServices' name order.
 func TestActorServicesOfferedEndpoints(t *testing.T) {
 	actors := []dataplane.ActorDescriptor{{CName: "adapter-a"}}
 	services := []dataplane.ServiceDescriptor{
-		{ServiceName: "zebra", ActorCN: "adapter-a", Endpoints: "UDP/53"},
 		{ServiceName: "alpha", ActorCN: "adapter-a", Endpoints: "TCP/80"},
 		{ServiceName: "other", ActorCN: "adapter-b", Endpoints: "TCP/22"},
+		{ServiceName: "zebra", ActorCN: "adapter-a", Endpoints: "UDP/53"},
 	}
 
 	out := ansi.Strip(ActorServicesOffered(80, 20, actors, 0, services, nil))
@@ -274,7 +274,7 @@ func TestActorServicesOfferedEndpoints(t *testing.T) {
 		t.Errorf("expected another actor's service to be excluded:\n%s", out)
 	}
 	if strings.Index(out, "alpha") > strings.Index(out, "zebra") {
-		t.Errorf("expected rows sorted by service name:\n%s", out)
+		t.Errorf("expected the incoming service order to be preserved:\n%s", out)
 	}
 }
 
