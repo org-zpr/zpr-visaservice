@@ -72,6 +72,7 @@ func TestFormatTTL(t *testing.T) {
 		{26*time.Hour + 3*time.Minute, "26h3m0s"},
 		{-time.Second, "expired"},
 		{0, "expired"},
+		{100 * 365 * 24 * time.Hour, "100y"},
 	}
 
 	for _, c := range cases {

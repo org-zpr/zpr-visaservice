@@ -63,7 +63,7 @@ func ServiceVisas(
 			ansi.Truncate(strconv.FormatInt(visa.ID, 10), idSize, "..."),
 			ansi.Truncate(endpointLabel(visa.Source(), actors), sourceSize, "..."),
 			ansi.Truncate(visa.Proto, protoSize, "..."),
-			ansi.Truncate(timefmt.DateTime(visa.Expires), expireSize, "..."),
+			ansi.Truncate(timefmt.Expiry(visa.Expires), expireSize, "..."),
 		)
 	}
 

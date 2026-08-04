@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"neboagency.com/zpr-dashborad/internal/dataplane"
+	"neboagency.com/zpr-dashborad/internal/timefmt"
 )
 
 // actorDock resolves the CN of the dock an actor connects through, from its
@@ -36,6 +37,10 @@ func formatTTL(expiresAt int64, now time.Time) string {
 	remaining := time.Unix(expiresAt, 0).Sub(now)
 	if remaining <= 0 {
 		return "expired"
+	}
+
+	if years, ok := timefmt.FarFuture(expiresAt, now); ok {
+		return years
 	}
 
 	return remaining.String()

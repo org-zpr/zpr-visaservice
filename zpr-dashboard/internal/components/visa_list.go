@@ -282,9 +282,15 @@ func ExpiringVisas(visas []dataplane.VisaDescriptor) int {
 }
 
 func formatRemaining(visa dataplane.VisaDescriptor) string {
-	remaining := time.Until(visaExpiry(visa))
+	now := time.Now()
+
+	remaining := visaExpiry(visa).Sub(now)
 	if remaining <= 0 {
 		return "expired"
+	}
+
+	if years, ok := timefmt.FarFuture(visa.Expires, now); ok {
+		return years
 	}
 
 	hours := int(remaining.Hours())
