@@ -293,7 +293,7 @@ func TestActorServicesUsedOrder(t *testing.T) {
 		{ID: 4, DestAddr: strPtr("fd5a:5052:90de::39"), Proto: "TCP"},
 	}
 
-	out := ansi.Strip(ActorServicesUsed(80, 20, visas, services, nil))
+	out := ansi.Strip(ActorServicesUsed(80, 20, visas, services, nil, nil))
 
 	if strings.Index(out, "alpha") > strings.Index(out, "zebra") {
 		t.Errorf("expected rows sorted by resolved name:\n%s", out)

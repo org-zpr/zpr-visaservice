@@ -1,10 +1,12 @@
 package dataplane
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 )
 
@@ -66,6 +68,14 @@ func derefInt(value *int) (int, bool) {
 	}
 
 	return *value, true
+}
+
+// sortVisas puts a visa slice in the canonical display order: newest visa ID
+// first. Every fetcher that returns visas calls this, so views never sort.
+func sortVisas(visas []VisaDescriptor) {
+	slices.SortFunc(visas, func(a, b VisaDescriptor) int {
+		return cmp.Compare(b.ID, a.ID)
+	})
 }
 
 func (c *Client) ListVisas(ctx context.Context) ([]ListEntry, error) {

@@ -137,8 +137,8 @@ func activeVisaTable(width int, visas []dataplane.VisaDescriptor, actors []datap
 			ansi.Truncate(timefmt.TimeOfDay(visa.Created), issuedSize, "..."),
 			ansi.Truncate(strconv.FormatInt(visa.ID, 10), idSize, "..."),
 			ansi.Truncate(visaSubject(visa, actors), cnSize, "..."),
-			ansi.Truncate(orDash(visa.Source()), sourceSize, "..."),
-			ansi.Truncate(orDash(visa.Dest()), destSize, "..."),
+			ansi.Truncate(endpointLabel(visa.Source(), actors), sourceSize, "..."),
+			ansi.Truncate(endpointLabel(visa.Dest(), actors), destSize, "..."),
 			ansi.Truncate(formatRemaining(visa), expiresSize, "..."),
 		)
 	}
@@ -172,8 +172,8 @@ func visaRequestTable(width int, visas []dataplane.VisaDescriptor, actors []data
 			ansi.Truncate(strconv.FormatInt(visa.ID, 10), idSize, "..."),
 			ansi.Truncate(visaSubject(visa, actors), cnSize, "..."),
 			ansi.Truncate(visaPort(visa), portSize, "..."),
-			ansi.Truncate(orDash(visa.Source()), sourceSize, "..."),
-			ansi.Truncate(orDash(visa.Dest()), destSize, "..."),
+			ansi.Truncate(endpointLabel(visa.Source(), actors), sourceSize, "..."),
+			ansi.Truncate(endpointLabel(visa.Dest(), actors), destSize, "..."),
 			ansi.Truncate(formatRemaining(visa), expiresSize, "..."),
 		)
 	}

@@ -37,13 +37,13 @@ func ActorsPage(
 		),
 		lipgloss.JoinHorizontal(
 			lipgloss.Left,
-			components.ActorVisas(colWidth, chartHeight, visas, visasFetchErr),
+			components.ActorVisas(colWidth, chartHeight, visas, actors, visasFetchErr),
 			components.ActorActivityChart(colWidth, chartHeight, visaCountHistory, visasFetchErr),
 		),
 		lipgloss.JoinHorizontal(
 			lipgloss.Left,
 			components.ActorServicesOffered(colWidth, rowHeight, actors, selectedIndex, services, servicesFetchErr),
-			components.ActorServicesUsed(colWidth, rowHeight, visas, services, servicesFetchErr),
+			components.ActorServicesUsed(colWidth, rowHeight, visas, services, actors, servicesFetchErr),
 		),
 	)
 

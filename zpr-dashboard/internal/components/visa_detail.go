@@ -17,7 +17,7 @@ func visaField(label, value string) string {
 	return styles.SubtitleStyle.Render(fmt.Sprintf("%-*s", 14, label)) + value
 }
 
-func VisaAuthScope(width, height int, visa *dataplane.VisaDescriptor) string {
+func VisaAuthScope(width, height int, visa *dataplane.VisaDescriptor, actors []dataplane.ActorDescriptor) string {
 	if visa == nil {
 		return detailPanel(width, height, "Authorization Scope", "What the visa grants",
 			panelNote("Select an active visa"))
@@ -27,8 +27,8 @@ func VisaAuthScope(width, height int, visa *dataplane.VisaDescriptor) string {
 	remaining := time.Until(visaExpiry(*visa))
 
 	body := "\n" + strings.Join([]string{
-		visaField("Destination", value.Render(orDash(visa.Dest()))),
-		visaField("Source", value.Render(orDash(visa.Source()))),
+		visaField("Destination", value.Render(endpointLabel(visa.Dest(), actors))),
+		visaField("Source", value.Render(endpointLabel(visa.Source(), actors))),
 		visaField("Port / Proto", value.Render(visaPort(*visa))+
 			styles.SubtitleStyle.Render("  /  ")+value.Render(orDash(visa.Proto))),
 		visaField("Direction", value.Render(orDash(visa.Direction))),

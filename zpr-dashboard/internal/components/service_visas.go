@@ -13,6 +13,7 @@ func ServiceVisas(
 	services []dataplane.ServiceDescriptor,
 	selectedIndex int,
 	visas []dataplane.VisaDescriptor,
+	actors []dataplane.ActorDescriptor,
 	fetchErr error,
 ) string {
 	const title, subtitle = "Assigned Visas", "Granted towards this service"
@@ -55,7 +56,7 @@ func ServiceVisas(
 	for _, visa := range inbound {
 		t.Row(
 			ansi.Truncate(strconv.FormatInt(visa.ID, 10), idSize, "..."),
-			ansi.Truncate(orDash(visa.Source()), sourceSize, "..."),
+			ansi.Truncate(endpointLabel(visa.Source(), actors), sourceSize, "..."),
 			ansi.Truncate(visa.Proto, protoSize, "..."),
 			ansi.Truncate(timefmt.DateTime(visa.Expires), expireSize, "..."),
 		)
