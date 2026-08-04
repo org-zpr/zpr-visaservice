@@ -44,12 +44,13 @@ func TestDenyProtocol(t *testing.T) {
 // TestFormatDenyTime checks a known epoch-millisecond value formats in local
 // time, and that a value beyond int64 falls back to raw milliseconds.
 func TestFormatDenyTime(t *testing.T) {
-	// Pin the zone so the expected string does not depend on the test machine.
+	// Pin a non-UTC zone so the expected string does not depend on the test
+	// machine and an accidental .UTC() conversion cannot pass.
 	saved := time.Local
-	time.Local = time.UTC
+	time.Local = time.FixedZone("TEST", 5*60*60+30*60)
 	t.Cleanup(func() { time.Local = saved })
 
-	if got, want := formatDenyTime(1785604630203), "Aug 01 17:17:10.203"; got != want {
+	if got, want := formatDenyTime(1785604630203), "08-01 22:47:10.203"; got != want {
 		t.Errorf("formatDenyTime = %q, want %q", got, want)
 	}
 
@@ -78,7 +79,7 @@ func TestDenyEndpointUsesActorCN(t *testing.T) {
 // reach the output, with addresses replaced by actor CNs where known.
 func TestDenyListRendersRows(t *testing.T) {
 	saved := time.Local
-	time.Local = time.UTC
+	time.Local = time.FixedZone("TEST", 5*60*60+30*60)
 	t.Cleanup(func() { time.Local = saved })
 
 	records := []dataplane.DenyRecord{
@@ -91,7 +92,7 @@ func TestDenyListRendersRows(t *testing.T) {
 	for _, want := range []string{
 		"Visa Denials",
 		"2 recent denials, newest first",
-		"Aug 01 17:17:10.203",
+		"08-01 22:47:10.203",
 		"node-nyc", "node-lon",
 		"fd5a:5052:1000::7", "fd5a:5052:1000::5",
 		"TCP/443", "ICMP/code 0",

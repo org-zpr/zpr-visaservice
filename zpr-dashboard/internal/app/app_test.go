@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"neboagency.com/zpr-dashborad/internal/dataplane"
 )
@@ -90,5 +91,16 @@ func TestActorVisasAreSorted(t *testing.T) {
 		if updated.state.actor.visas[i].ID != id {
 			t.Fatalf("visa order = %v, want ids %v", updated.state.actor.visas, want)
 		}
+	}
+}
+
+// TestFormatHeaderClock checks the header clock renders wall-clock time in the
+// given moment's zone, with the zone abbreviation appended.
+func TestFormatHeaderClock(t *testing.T) {
+	zone := time.FixedZone("IST", 5*60*60+30*60)
+	now := time.Date(2026, 8, 1, 22, 47, 10, 0, zone)
+
+	if got, want := formatHeaderClock(now), "22:47:10 IST"; got != want {
+		t.Errorf("formatHeaderClock = %q, want %q", got, want)
 	}
 }

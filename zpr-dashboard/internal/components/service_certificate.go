@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"neboagency.com/zpr-dashborad/internal/dataplane"
 	"neboagency.com/zpr-dashborad/internal/styles"
+	"neboagency.com/zpr-dashborad/internal/timefmt"
 )
 
 func ServiceCertificate(
@@ -46,7 +47,7 @@ func ServiceCertificate(
 
 	body := "\n"
 	body += styles.ValueStyle.Foreground(styles.ColorDimmed).Render("Expires  ") +
-		lipgloss.NewStyle().Foreground(styles.ColorFg).Render(expires.Format("2006-01-02")) + "\n\n"
+		lipgloss.NewStyle().Foreground(styles.ColorFg).Render(timefmt.DateTime(*owner.AuthExp)) + "\n\n"
 	body += certBar(width-6, days, stateColor) + "\n"
 	body += lipgloss.NewStyle().Foreground(stateColor).Bold(true).Render(icon + " " + status)
 

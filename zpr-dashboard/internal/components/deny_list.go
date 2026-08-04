@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"neboagency.com/zpr-dashborad/internal/dataplane"
 	"neboagency.com/zpr-dashborad/internal/styles"
+	"neboagency.com/zpr-dashborad/internal/timefmt"
 )
 
 // IANA IP protocol numbers, matching admin-api-types.
@@ -21,7 +22,9 @@ const (
 	ipProtoIPv6ICMP = 58
 )
 
-const denyTimeLayout = "Jan 02 15:04:05.000"
+// Precision extension of the shared date-time layout: repeat-rate is the
+// signal in this pane, so denials keep seconds and milliseconds.
+const denyTimeLayout = timefmt.LayoutDateTime + ":05.000"
 
 // DenyList renders the visa service's bounded recent-denials feed.
 func DenyList(width, height int, records []dataplane.DenyRecord, actors []dataplane.ActorDescriptor, fetchErr error) string {
@@ -166,5 +169,5 @@ func formatDenyTime(epochMS uint64) string {
 		return fmt.Sprintf("%dms", epochMS)
 	}
 
-	return time.UnixMilli(int64(epochMS)).Local().Format(denyTimeLayout)
+	return time.UnixMilli(int64(epochMS)).Format(denyTimeLayout)
 }
