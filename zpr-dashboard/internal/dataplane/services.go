@@ -1,11 +1,13 @@
 package dataplane
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -110,6 +112,11 @@ func (c *Client) FetchServices(ctx context.Context) ([]ServiceDescriptor, error)
 		}
 		services = append(services, svc)
 	}
+
+	// Stable order so rows don't reshuffle between polls.
+	slices.SortFunc(services, func(a, b ServiceDescriptor) int {
+		return cmp.Compare(a.ServiceName, b.ServiceName)
+	})
 
 	return services, nil
 }

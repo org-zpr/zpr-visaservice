@@ -27,6 +27,7 @@ func ActorServicesOffered(
 
 	actor := actors[selectedIndex]
 
+	// FetchServices sorts by ServiceName, so the filtered copy stays sorted.
 	var offered []dataplane.ServiceDescriptor
 	for _, svc := range services {
 		if svc.ActorCN == actor.CName {
@@ -37,12 +38,6 @@ func ActorServicesOffered(
 	if len(offered) == 0 {
 		return detailPanel(width, height, title, subtitle, panelNote("No services registered to this actor"))
 	}
-
-	// offered is a private copy, so sorting it does not disturb the caller's
-	// index into services.
-	slices.SortFunc(offered, func(a, b dataplane.ServiceDescriptor) int {
-		return cmp.Compare(a.ServiceName, b.ServiceName)
-	})
 
 	tableWidth := width - 5
 	nameSize := int(float32(tableWidth) * 0.5)

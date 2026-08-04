@@ -1,11 +1,13 @@
 package dataplane
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 )
 
 type ActorDescriptor struct {
@@ -121,6 +123,12 @@ func (c *Client) GetActor(ctx context.Context, cn string) (ActorDescriptor, erro
 	if err := json.NewDecoder(resp.Body).Decode(&actor); err != nil {
 		return ActorDescriptor{}, fmt.Errorf("Decode actor: %w", err)
 	}
+
+	// Stable order so rows don't reshuffle between polls. Every
+	// ActorDescriptor comes from here, so views can assume sorted attributes.
+	slices.SortFunc(actor.Attrs, func(a, b Attribute) int {
+		return cmp.Compare(a.Key, b.Key)
+	})
 
 	return actor, nil
 }

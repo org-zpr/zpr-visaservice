@@ -1,8 +1,6 @@
 package components
 
 import (
-	"cmp"
-	"slices"
 	"strings"
 	"time"
 
@@ -43,8 +41,9 @@ func formatTTL(expiresAt int64, now time.Time) string {
 	return remaining.String()
 }
 
-// displayAttrs returns the actor's non-zpr. attributes sorted by key, leaving
-// the actor's own slice order untouched.
+// displayAttrs returns the actor's non-zpr. attributes, leaving the actor's own
+// slice order untouched. GetActor already sorts Attrs by key, so the filtered
+// copy stays sorted.
 func displayAttrs(actor dataplane.ActorDescriptor) []dataplane.Attribute {
 	var attrs []dataplane.Attribute
 	for _, attr := range actor.Attrs {
@@ -52,10 +51,6 @@ func displayAttrs(actor dataplane.ActorDescriptor) []dataplane.Attribute {
 			attrs = append(attrs, attr)
 		}
 	}
-
-	slices.SortFunc(attrs, func(a, b dataplane.Attribute) int {
-		return cmp.Compare(a.Key, b.Key)
-	})
 
 	return attrs
 }
