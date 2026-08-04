@@ -71,7 +71,7 @@ func ActorVisas(width, height int, visas []dataplane.VisaDescriptor, actors []da
 		})
 
 	for _, v := range visas {
-		expires := timefmt.DateTime(v.Expires)
+		expires := timefmt.Expiry(v.Expires)
 
 		t.Row(
 			ansi.Truncate(strconv.FormatInt(v.ID, 10), idSize, "..."),
