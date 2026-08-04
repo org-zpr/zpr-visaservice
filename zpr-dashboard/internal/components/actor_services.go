@@ -1,8 +1,7 @@
 package components
 
 import (
-	"cmp"
-	"slices"
+	"strconv"
 
 	"github.com/charmbracelet/x/ansi"
 	"neboagency.com/zpr-dashborad/internal/dataplane"
@@ -13,12 +12,14 @@ func ActorServicesOffered(
 	actors []dataplane.ActorDescriptor,
 	selectedIndex int,
 	services []dataplane.ServiceDescriptor,
-	fetchErr error,
+	activeVisas []dataplane.VisaDescriptor,
+	servicesFetchErr error,
+	activeVisasFetchErr error,
 ) string {
 	const title, subtitle = "Services Offered", "Registered to this actor"
 
-	if fetchErr != nil && len(services) == 0 {
-		return detailPanel(width, height, title, subtitle, panelError(fetchErr))
+	if servicesFetchErr != nil && len(services) == 0 {
+		return detailPanel(width, height, title, subtitle, panelError(servicesFetchErr))
 	}
 
 	if selectedIndex < 0 || selectedIndex >= len(actors) {
@@ -40,100 +41,31 @@ func ActorServicesOffered(
 	}
 
 	tableWidth := width - 5
-	nameSize := int(float32(tableWidth) * 0.5)
-	endpointSize := int(float32(tableWidth) * 0.5)
+	visaSize := 6
+	textWidth := tableWidth - visaSize
+	nameSize := int(float32(textWidth) * 0.53)
+	endpointSize := textWidth - nameSize
 
 	t := panelTable(tableWidth,
-		[]string{"Service", "Endpoints"},
-		[]int{nameSize, endpointSize},
+		[]string{"Service", "Endpoints", "Visas"},
+		[]int{nameSize, endpointSize, visaSize},
 	)
 
 	for _, svc := range offered {
+		// A failed visa refresh must not read as a current count of zero.
+		count := "ERR"
+		if activeVisasFetchErr == nil {
+			count = strconv.Itoa(len(inboundVisas(activeVisas, svc)))
+		}
+
 		t.Row(
 			ansi.Truncate(svc.ServiceName, nameSize, "..."),
 			ansi.Truncate(orDash(svc.Endpoints), endpointSize, "..."),
+			ansi.Truncate(count, visaSize, "..."),
 		)
 	}
 
 	return detailPanel(width, height, title, subtitle, t.Render())
-}
-
-func ActorServicesUsed(
-	width, height int,
-	visas []dataplane.VisaDescriptor,
-	services []dataplane.ServiceDescriptor,
-	actors []dataplane.ActorDescriptor,
-	fetchErr error,
-) string {
-	const title, subtitle = "Services Used", "Reachable through active visas"
-
-	if fetchErr != nil && len(visas) == 0 {
-		return detailPanel(width, height, title, subtitle, panelError(fetchErr))
-	}
-
-	if len(visas) == 0 {
-		return detailPanel(width, height, title, subtitle, panelNote("No visas assigned to this actor"))
-	}
-
-	tableWidth := width - 5
-	nameSize := int(float32(tableWidth) * 0.4)
-	destSize := int(float32(tableWidth) * 0.4)
-	protoSize := int(float32(tableWidth) * 0.2)
-
-	t := panelTable(tableWidth,
-		[]string{"Service", "Destination", "Proto"},
-		[]int{nameSize, destSize, protoSize},
-	)
-
-	// Column 1 holds a resolved service name, so visa order is not display
-	// order: sort the rows we are about to render instead.
-	type usedRow struct {
-		name, dest, proto string
-		id                int64
-	}
-
-	rows := make([]usedRow, 0, len(visas))
-	for _, visa := range visas {
-		rows = append(rows, usedRow{
-			name:  serviceAt(services, visa.Dest()),
-			dest:  endpointLabel(visa.Dest(), actors),
-			proto: visa.Proto,
-			id:    visa.ID,
-		})
-	}
-
-	slices.SortFunc(rows, func(a, b usedRow) int {
-		return cmp.Or(
-			cmp.Compare(a.name, b.name),
-			cmp.Compare(a.dest, b.dest),
-			cmp.Compare(a.proto, b.proto),
-			cmp.Compare(a.id, b.id),
-		)
-	})
-
-	for _, row := range rows {
-		t.Row(
-			ansi.Truncate(row.name, nameSize, "..."),
-			ansi.Truncate(row.dest, destSize, "..."),
-			ansi.Truncate(row.proto, protoSize, "..."),
-		)
-	}
-
-	return detailPanel(width, height, title, subtitle, t.Render())
-}
-
-func serviceAt(services []dataplane.ServiceDescriptor, addr string) string {
-	if addr == "" {
-		return "unknown"
-	}
-
-	for _, svc := range services {
-		if svc.ZprAddress == addr || svc.DockZprAddress == addr {
-			return svc.ServiceName
-		}
-	}
-
-	return "unregistered"
 }
 
 func orDash(value string) string {
