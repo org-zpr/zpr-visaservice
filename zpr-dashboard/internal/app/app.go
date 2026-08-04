@@ -15,6 +15,7 @@ import (
 	"neboagency.com/zpr-dashborad/internal/dataplane"
 	"neboagency.com/zpr-dashborad/internal/pages"
 	"neboagency.com/zpr-dashborad/internal/styles"
+	"neboagency.com/zpr-dashborad/internal/timefmt"
 
 	"charm.land/bubbles/v2/viewport"
 )
@@ -323,9 +324,24 @@ func InitialModel() Model {
 	return m
 }
 
+// clockTickMsg drives the header clock. It carries no data; the header reads
+// time.Now() at render.
+type clockTickMsg struct{}
+
+// tickClock re-renders the header once a second so the clock advances.
+func tickClock() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return clockTickMsg{} })
+}
+
+// formatHeaderClock renders a local clock with its timezone abbreviation.
+func formatHeaderClock(now time.Time) string {
+	return now.Format(timefmt.LayoutTimeOfDay + " MST")
+}
+
 // Run all fetch operations in a batch
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
+		tickClock(),
 		fetchVisaSnapshotCmd(), tickVisaRefresh(),
 		fetchServiceSnapshotCmd(), tickServiceRefresh(),
 		fetchActorsSnapshotCmd(), tickActorRefresh(),
@@ -339,6 +355,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+	// View() re-runs Header() every update, so the clock advances without
+	// re-laying out the panes.
+	case clockTickMsg:
+		return m, tickClock()
+
 	case tea.KeyMsg:
 		if m.state.policy.rollbackOpen {
 			switch msg.String() {
@@ -633,7 +654,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) Header() string {
-	title := styles.HeaderStyle.Render("ZPR Dashboard")
+	title := styles.HeaderStyle.Render("ZPR Dashboard " + formatHeaderClock(time.Now()))
 	header := m.renderTabs()
 
 	return lipgloss.JoinVertical(
@@ -868,5 +889,5 @@ func (m Model) renderTabs() string {
 	// Start counting from the right
 	m.state.header.tabStart = m.width - tabsSize
 
-	return styles.TabsWrapper.Width(m.width - 20).Render(lipgloss.JoinHorizontal(lipgloss.Right, tabs...))
+	return styles.TabsWrapper.Width(m.width - styles.HeaderTitleWidth).Render(lipgloss.JoinHorizontal(lipgloss.Right, tabs...))
 }

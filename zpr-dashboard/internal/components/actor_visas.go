@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"neboagency.com/zpr-dashborad/internal/dataplane"
 	"neboagency.com/zpr-dashborad/internal/styles"
+	"neboagency.com/zpr-dashborad/internal/timefmt"
 )
 
 func ActorVisas(width, height int, visas []dataplane.VisaDescriptor, fetchErr error) string {
@@ -70,7 +71,7 @@ func ActorVisas(width, height int, visas []dataplane.VisaDescriptor, fetchErr er
 		})
 
 	for _, v := range visas {
-		expires := visaExpiry(v).Format("01-02 15:04")
+		expires := timefmt.DateTime(v.Expires)
 
 		t.Row(
 			ansi.Truncate(strconv.FormatInt(v.ID, 10), idSize, "..."),

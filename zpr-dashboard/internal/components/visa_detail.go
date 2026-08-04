@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"neboagency.com/zpr-dashborad/internal/dataplane"
 	"neboagency.com/zpr-dashborad/internal/styles"
+	"neboagency.com/zpr-dashborad/internal/timefmt"
 )
 
 func visaField(label, value string) string {
@@ -32,7 +33,7 @@ func VisaAuthScope(width, height int, visa *dataplane.VisaDescriptor) string {
 			styles.SubtitleStyle.Render("  /  ")+value.Render(orDash(visa.Proto))),
 		visaField("Direction", value.Render(orDash(visa.Direction))),
 		"",
-		visaField("Issued", styles.SubtitleStyle.Render(time.Unix(visa.Created, 0).Format("2006-01-02 15:04"))),
+		visaField("Issued", styles.SubtitleStyle.Render(timefmt.DateTime(visa.Created))),
 		visaField("Expires in", lipgloss.NewStyle().Foreground(remainingColor(remaining)).Bold(true).
 			Render(formatRemaining(*visa))),
 	}, "\n")

@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"neboagency.com/zpr-dashborad/internal/dataplane"
 	"neboagency.com/zpr-dashborad/internal/styles"
+	"neboagency.com/zpr-dashborad/internal/timefmt"
 )
 
 func label(text string) string {
@@ -20,7 +21,7 @@ func formatCreated(seconds int64) string {
 	if seconds == 0 {
 		return "not tracked yet"
 	}
-	return time.Unix(seconds, 0).Format("2006-01-02 15:04:05")
+	return timefmt.DateTime(seconds)
 }
 
 func nodeSyncState(node *dataplane.NodeRecordBrief) string {

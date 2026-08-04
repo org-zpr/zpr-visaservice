@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"neboagency.com/zpr-dashborad/internal/dataplane"
+	"neboagency.com/zpr-dashborad/internal/timefmt"
 )
 
 func ServiceVisas(
@@ -56,7 +57,7 @@ func ServiceVisas(
 			ansi.Truncate(strconv.FormatInt(visa.ID, 10), idSize, "..."),
 			ansi.Truncate(orDash(visa.Source()), sourceSize, "..."),
 			ansi.Truncate(visa.Proto, protoSize, "..."),
-			ansi.Truncate(visaExpiry(visa).Format("01-02 15:04"), expireSize, "..."),
+			ansi.Truncate(timefmt.DateTime(visa.Expires), expireSize, "..."),
 		)
 	}
 
