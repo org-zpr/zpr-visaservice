@@ -265,7 +265,7 @@ func TestActorServicesOfferedEndpoints(t *testing.T) {
 		{ServiceName: "zebra", ActorCN: "adapter-a", Endpoints: "UDP/53"},
 	}
 
-	out := ansi.Strip(ActorServicesOffered(80, 20, actors, 0, services, nil))
+	out := ansi.Strip(ActorServicesOffered(80, 20, actors, 0, services, nil, nil, nil))
 
 	if !strings.Contains(out, "TCP/80") || !strings.Contains(out, "UDP/53") {
 		t.Errorf("expected endpoints in the table:\n%s", out)
@@ -276,31 +276,78 @@ func TestActorServicesOfferedEndpoints(t *testing.T) {
 	if strings.Index(out, "alpha") > strings.Index(out, "zebra") {
 		t.Errorf("expected the incoming service order to be preserved:\n%s", out)
 	}
+	// A successful refresh that found no visas is a real count of zero.
+	if got := rowCell(t, out, "alpha"); got != "0" {
+		t.Errorf("alpha count = %q, want 0 for an empty visa set:\n%s", got, out)
+	}
 }
 
-// TestActorServicesUsedOrder checks rows are ordered by resolved service name,
-// with the destination breaking ties between equal names.
-func TestActorServicesUsedOrder(t *testing.T) {
+// offeredFixture returns the actor, services and visas the Visas-column tests
+// share: service alpha answers on two addresses, quiet on one and gets nothing.
+func offeredFixture() ([]dataplane.ActorDescriptor, []dataplane.ServiceDescriptor, []dataplane.VisaDescriptor) {
+	actors := []dataplane.ActorDescriptor{{CName: "alpha-cn"}}
 	services := []dataplane.ServiceDescriptor{
-		{ServiceName: "zebra", ZprAddress: "fd5a:5052:90de::30"},
-		{ServiceName: "alpha", ZprAddress: "fd5a:5052:90de::31"},
+		{ServiceName: "alpha", ActorCN: "alpha-cn", ZprAddress: "fd5a:5052:90de::30", DockZprAddress: "fd5a:5052:90de::99"},
+		{ServiceName: "quiet", ActorCN: "alpha-cn", ZprAddress: "fd5a:5052:90de::31"},
 	}
-
 	visas := []dataplane.VisaDescriptor{
-		{ID: 1, DestAddr: strPtr("fd5a:5052:90de::30"), Proto: "TCP"},
-		{ID: 2, DestAddr: strPtr("fd5a:5052:90de::31"), Proto: "TCP"},
-		{ID: 3, DestAddr: strPtr("fd5a:5052:90de::40"), Proto: "TCP"},
-		{ID: 4, DestAddr: strPtr("fd5a:5052:90de::39"), Proto: "TCP"},
+		{ID: 1, DestAddr: strPtr("fd5a:5052:90de::30")},
+		{ID: 2, DestAddr: strPtr("fd5a:5052:90de::30")},
+		{ID: 3, DestAddr: strPtr("fd5a:5052:90de::99")},
+		{ID: 4, DestAddr: strPtr("fd5a:5052:90de::40")},
+		{ID: 5, SourceAddr: strPtr("fd5a:5052:90de::31"), DestAddr: strPtr("fd5a:5052:90de::40")},
 	}
 
-	out := ansi.Strip(ActorServicesUsed(80, 20, visas, services, nil, nil))
+	return actors, services, visas
+}
 
-	if strings.Index(out, "alpha") > strings.Index(out, "zebra") {
-		t.Errorf("expected rows sorted by resolved name:\n%s", out)
+// rowCell returns the trailing count cell of the rendered row naming svc.
+func rowCell(t *testing.T, out, svc string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, svc) {
+			continue
+		}
+		fields := strings.Fields(strings.Trim(line, " │"))
+		return fields[len(fields)-1]
 	}
-	// Both unregistered rows share a name, so the destination decides.
-	if strings.Index(out, "::39") > strings.Index(out, "::40") {
-		t.Errorf("expected the destination to break the name tie:\n%s", out)
+
+	t.Fatalf("no row for %q:\n%s", svc, out)
+	return ""
+}
+
+// TestActorServicesOfferedVisaCounts checks the Visas column counts visas
+// whose destination is either service address, and ignores everything else.
+func TestActorServicesOfferedVisaCounts(t *testing.T) {
+	actors, services, visas := offeredFixture()
+
+	out := ansi.Strip(ActorServicesOffered(80, 20, actors, 0, services, visas, nil, nil))
+
+	if got := rowCell(t, out, "alpha"); got != "3" {
+		t.Errorf("alpha count = %q, want 3:\n%s", got, out)
+	}
+	// ::31 only ever appears as a source, and ::40 is nobody's service.
+	if got := rowCell(t, out, "quiet"); got != "0" {
+		t.Errorf("quiet count = %q, want 0:\n%s", got, out)
+	}
+}
+
+// TestActorServicesOfferedVisaError checks a failed visa refresh renders ERR
+// instead of counting the retained (now stale) visa slice.
+func TestActorServicesOfferedVisaError(t *testing.T) {
+	actors, services, visas := offeredFixture()
+
+	out := ansi.Strip(ActorServicesOffered(80, 20, actors, 0, services, visas, nil, errors.New("stale")))
+
+	for _, svc := range []string{"alpha", "quiet"} {
+		if got := rowCell(t, out, svc); got != "ERR" {
+			t.Errorf("%s count = %q, want ERR:\n%s", svc, got, out)
+		}
+	}
+	// Service names stay useful even when the counts cannot be trusted.
+	if !strings.Contains(out, "alpha") {
+		t.Errorf("expected the pane to still list services:\n%s", out)
 	}
 }
 

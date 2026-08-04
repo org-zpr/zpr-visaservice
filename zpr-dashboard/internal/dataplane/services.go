@@ -20,6 +20,11 @@ type ServiceDescriptor struct {
 	Endpoints      string `json:"service_endpoints"`
 }
 
+// Hosts reports whether addr is one of the addresses this service answers on.
+func (s ServiceDescriptor) Hosts(addr string) bool {
+	return addr != "" && (addr == s.ZprAddress || addr == s.DockZprAddress)
+}
+
 type Endpoint struct {
 	Proto string
 	Port  string

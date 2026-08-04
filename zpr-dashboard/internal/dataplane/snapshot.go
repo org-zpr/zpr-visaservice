@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -27,11 +28,12 @@ func (c *Client) FetchVisaSnapshot(ctx context.Context) (VisaSnapshot, error) {
 		return VisaSnapshot{}, err
 	}
 
+	// A partial set would undercount, so the whole refresh fails instead.
 	var recent []VisaDescriptor
 	for _, entry := range ids {
 		visa, err := c.GetVisa(ctx, entry.ID)
 		if err != nil {
-			continue
+			return VisaSnapshot{}, fmt.Errorf("fetch active visa %d: %w", entry.ID, err)
 		}
 		recent = append(recent, visa)
 	}

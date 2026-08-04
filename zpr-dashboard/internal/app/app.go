@@ -713,6 +713,8 @@ func (m Model) Content() string {
 			m.state.actor.fetchErr,
 			m.state.actor.visas,
 			m.state.actor.visasFetchErr,
+			m.state.visa.recentVisas,
+			m.state.visa.fetchErr,
 			m.state.actor.visaCountHistory,
 			m.state.service.services,
 			m.state.service.fetchErr,
