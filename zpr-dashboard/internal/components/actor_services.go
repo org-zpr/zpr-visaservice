@@ -1,6 +1,9 @@
 package components
 
 import (
+	"cmp"
+	"slices"
+
 	"github.com/charmbracelet/x/ansi"
 	"neboagency.com/zpr-dashborad/internal/dataplane"
 )
@@ -35,21 +38,25 @@ func ActorServicesOffered(
 		return detailPanel(width, height, title, subtitle, panelNote("No services registered to this actor"))
 	}
 
+	// offered is a private copy, so sorting it does not disturb the caller's
+	// index into services.
+	slices.SortFunc(offered, func(a, b dataplane.ServiceDescriptor) int {
+		return cmp.Compare(a.ServiceName, b.ServiceName)
+	})
+
 	tableWidth := width - 5
-	nameSize := int(float32(tableWidth) * 0.45)
-	addressSize := int(float32(tableWidth) * 0.3)
-	dockSize := int(float32(tableWidth) * 0.25)
+	nameSize := int(float32(tableWidth) * 0.5)
+	endpointSize := int(float32(tableWidth) * 0.5)
 
 	t := panelTable(tableWidth,
-		[]string{"Service", "Address", "Dock"},
-		[]int{nameSize, addressSize, dockSize},
+		[]string{"Service", "Endpoints"},
+		[]int{nameSize, endpointSize},
 	)
 
 	for _, svc := range offered {
 		t.Row(
 			ansi.Truncate(svc.ServiceName, nameSize, "..."),
-			ansi.Truncate(svc.ZprAddress, addressSize, "..."),
-			ansi.Truncate(orDash(svc.DockZprAddress), dockSize, "..."),
+			ansi.Truncate(orDash(svc.Endpoints), endpointSize, "..."),
 		)
 	}
 
@@ -82,11 +89,37 @@ func ActorServicesUsed(
 		[]int{nameSize, destSize, protoSize},
 	)
 
+	// Column 1 holds a resolved service name, so visa order is not display
+	// order: sort the rows we are about to render instead.
+	type usedRow struct {
+		name, dest, proto string
+		id                int64
+	}
+
+	rows := make([]usedRow, 0, len(visas))
 	for _, visa := range visas {
+		rows = append(rows, usedRow{
+			name:  serviceAt(services, visa.Dest()),
+			dest:  visa.Dest(),
+			proto: visa.Proto,
+			id:    visa.ID,
+		})
+	}
+
+	slices.SortFunc(rows, func(a, b usedRow) int {
+		return cmp.Or(
+			cmp.Compare(a.name, b.name),
+			cmp.Compare(a.dest, b.dest),
+			cmp.Compare(a.proto, b.proto),
+			cmp.Compare(a.id, b.id),
+		)
+	})
+
+	for _, row := range rows {
 		t.Row(
-			ansi.Truncate(serviceAt(services, visa.Dest()), nameSize, "..."),
-			ansi.Truncate(orDash(visa.Dest()), destSize, "..."),
-			ansi.Truncate(visa.Proto, protoSize, "..."),
+			ansi.Truncate(row.name, nameSize, "..."),
+			ansi.Truncate(orDash(row.dest), destSize, "..."),
+			ansi.Truncate(row.proto, protoSize, "..."),
 		)
 	}
 
