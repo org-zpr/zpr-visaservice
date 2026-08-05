@@ -129,7 +129,11 @@ pub enum SubCmd {
 fn parse_timespec(spec: &str) -> Result<u64, String> {
     let bad = || format!("invalid time spec '{spec}', expected <N>h, <N>m, or <N>s (eg \"3m\")");
 
-    let (digits, unit) = spec.split_at(spec.len().saturating_sub(1));
+    // split_at_checked, not split_at: a trailing multi-byte char (eg "3µ") would
+    // otherwise land the index inside a char and panic instead of erroring.
+    let Some((digits, unit)) = spec.split_at_checked(spec.len().saturating_sub(1)) else {
+        return Err(bad());
+    };
     let secs_per_unit: u64 = match unit {
         "h" => 3600,
         "m" => 60,
@@ -166,7 +170,8 @@ mod tests {
     fn parse_timespec_rejects_malformed_specs() {
         for bad in [
             "", "m", "3", "-3m", "+3m", " 3m", "3m ", "3 m", "3M", "3H", "3S", "3ms", "3d", "3.5m",
-            "three m",
+            "three m", // Multi-byte trailing chars must error, not panic on a char-boundary split.
+            "3µ", "3秒", "3🕐",
         ] {
             assert!(parse_timespec(bad).is_err(), "should reject {bad:?}");
         }
