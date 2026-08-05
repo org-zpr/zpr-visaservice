@@ -649,6 +649,7 @@ impl NodeConnection {
         NodeConnectionBuilder::new_down(a, b)
     }
 
+    /// True if this connection joins `a` and `b`, in either direction.
     pub fn is_link_between(&self, a: &IpAddr, b: &IpAddr) -> bool {
         (&self.node_a_addr == a && &self.node_b_addr == b)
             || (&self.node_a_addr == b && &self.node_b_addr == a)
