@@ -73,7 +73,9 @@ func New(cfg Config) (*Client, error) {
 	timeout := cmp.Or(cfg.Timeout, 30*time.Second)
 
 	return &Client{
-		baseURL: cfg.BaseURL,
+		// Paths are concatenated onto this, so a configured trailing slash
+		// would produce "//admin/..." and 404 against the admin routes.
+		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		apiKey:  cfg.APIKey,
 		http: &http.Client{
 			Timeout: timeout,
