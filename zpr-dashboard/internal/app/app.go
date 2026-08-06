@@ -541,14 +541,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep the last good topology when only the network fetch failed,
 		// and vice versa.
 		if msg.actorErr == nil {
+			prevCN, hadPrev := m.selectedActorCN()
 			m.state.actor.actors = msg.actors
 			// Sort here, not in the view: selectedIndex and the revoke target
 			// index into this slice.
 			slices.SortFunc(m.state.actor.actors, func(a, b dataplane.ActorDescriptor) int {
 				return cmp.Compare(a.CName, b.CName)
 			})
-			if m.state.actor.selectedIndex >= len(m.state.actor.actors) {
-				m.state.actor.selectedIndex = max(0, len(m.state.actor.actors)-1)
+			// The selection follows the CN, not the row number: an actor that
+			// joins and sorts earlier would otherwise shift the details pane
+			// and the revoke target onto a different actor.
+			idx := slices.IndexFunc(m.state.actor.actors, func(a dataplane.ActorDescriptor) bool {
+				return a.CName == prevCN
+			})
+			switch {
+			case hadPrev && idx >= 0:
+				m.state.actor.selectedIndex = idx
+			case hadPrev:
+				// The selected actor is gone; drop its data and close any
+				// revoke dialogue rather than retarget the clamped neighbour.
+				m.state.actor.visas = nil
+				m.state.actor.visaCountHistory = nil
+				m.state.actor.visasFetchErr = nil
+				m.state.actor.revokeOpen = false
+				m.state.actor.revokeVisas = false
+				fallthrough
+			default:
+				if m.state.actor.selectedIndex >= len(m.state.actor.actors) {
+					m.state.actor.selectedIndex = max(0, len(m.state.actor.actors)-1)
+				}
 			}
 			if cn, ok := m.selectedActorCN(); ok {
 				visasCmd = fetchActorVisasCmd(cn)

@@ -66,6 +66,52 @@ func TestNetworkErrorAffectsOnlineState(t *testing.T) {
 	}
 }
 
+// TestSelectionFollowsActorAcrossRefresh checks the selected actor is tracked
+// by CN, so an actor joining ahead of it in sort order does not shift the
+// selection onto a neighbour.
+func TestSelectionFollowsActorAcrossRefresh(t *testing.T) {
+	m := applySnapshot(t, InitialModel(), actorSnapshotMsg{
+		actors: []dataplane.ActorDescriptor{{CName: "node-b"}, {CName: "node-c"}},
+	})
+	m.state.actor.selectedIndex = 1
+
+	m = applySnapshot(t, m, actorSnapshotMsg{
+		actors: []dataplane.ActorDescriptor{{CName: "node-c"}, {CName: "node-a"}, {CName: "node-b"}},
+	})
+
+	if cn, ok := m.selectedActorCN(); !ok || cn != "node-c" {
+		t.Errorf("selected actor = %q (ok=%v), want node-c", cn, ok)
+	}
+}
+
+// TestDepartedActorClearsSelectionState checks losing the selected actor drops
+// its cached visas and closes the revoke dialogue instead of retargeting it.
+func TestDepartedActorClearsSelectionState(t *testing.T) {
+	m := applySnapshot(t, InitialModel(), actorSnapshotMsg{
+		actors: []dataplane.ActorDescriptor{{CName: "node-b"}, {CName: "node-c"}},
+	})
+	m.state.actor.selectedIndex = 1
+	m.state.actor.visas = []dataplane.VisaDescriptor{{ID: 1}}
+	m.state.actor.visaCountHistory = []int{1}
+	m.state.actor.visasFetchErr = errors.New("stale")
+	m.state.actor.revokeOpen = true
+	m.state.actor.revokeVisas = true
+
+	m = applySnapshot(t, m, actorSnapshotMsg{
+		actors: []dataplane.ActorDescriptor{{CName: "node-a"}, {CName: "node-b"}},
+	})
+
+	if m.state.actor.visas != nil || m.state.actor.visaCountHistory != nil || m.state.actor.visasFetchErr != nil {
+		t.Error("expected the departed actor's visa state to be cleared")
+	}
+	if m.state.actor.revokeOpen || m.state.actor.revokeVisas {
+		t.Error("expected the revoke dialogue to close when its actor disappears")
+	}
+	if m.state.actor.selectedIndex >= len(m.state.actor.actors) {
+		t.Errorf("selectedIndex = %d, out of range for %d actors", m.state.actor.selectedIndex, len(m.state.actor.actors))
+	}
+}
+
 // TestFormatHeaderClock checks the header clock renders wall-clock time in the
 // given moment's zone, with the zone abbreviation appended.
 func TestFormatHeaderClock(t *testing.T) {
