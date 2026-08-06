@@ -4,11 +4,16 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
 )
+
+// ErrVisaGone reports a visa that the service no longer knows about, usually
+// because it expired or was revoked after its ID was listed.
+var ErrVisaGone = errors.New("visa no longer exists")
 
 type ListEntry struct {
 	ID int64 `json:"id"`
@@ -108,6 +113,9 @@ func (c *Client) GetVisa(ctx context.Context, id int64) (VisaDescriptor, error) 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return VisaDescriptor{}, fmt.Errorf("Get visa %d: %w", id, ErrVisaGone)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return VisaDescriptor{}, fmt.Errorf("Get visa %d: %s", id, resp.Status)
 	}

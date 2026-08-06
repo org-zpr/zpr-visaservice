@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -28,10 +29,15 @@ func (c *Client) FetchVisaSnapshot(ctx context.Context) (VisaSnapshot, error) {
 		return VisaSnapshot{}, err
 	}
 
-	// A partial set would undercount, so the whole refresh fails instead.
+	// A visa can expire or be revoked between the list and its detail fetch, so
+	// that loss is expected and simply drops out of the set. Any other failure
+	// would undercount silently, so the whole refresh fails instead.
 	var recent []VisaDescriptor
 	for _, entry := range ids {
 		visa, err := c.GetVisa(ctx, entry.ID)
+		if errors.Is(err, ErrVisaGone) {
+			continue
+		}
 		if err != nil {
 			return VisaSnapshot{}, fmt.Errorf("fetch active visa %d: %w", entry.ID, err)
 		}
@@ -40,7 +46,7 @@ func (c *Client) FetchVisaSnapshot(ctx context.Context) (VisaSnapshot, error) {
 	sortVisas(recent)
 
 	snapshot := VisaSnapshot{
-		ActiveCount:  len(ids),
+		ActiveCount:  len(recent),
 		RevokedCount: len(revocations),
 		RecentVisas:  recent,
 	}
