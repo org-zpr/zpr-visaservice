@@ -18,6 +18,8 @@ check:
 	$(MAKE) -C vs-admin $@
 	$(MAKE) -C zpt $@
 
+build: build-rs build-go
+
 build-rs:
 	cargo build --all-targets
 

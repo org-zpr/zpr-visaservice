@@ -1,4 +1,4 @@
-name: Rust-visaservice
+name: Go dashboard
 
 on:
   push:
