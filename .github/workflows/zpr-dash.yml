@@ -1,0 +1,27 @@
+name: Rust-visaservice
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'zpr-dashboard/**'
+  pull_request:
+    paths:
+      - 'zpr-dashboard/**'
+      - '.github/workflows/zpr-dash.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-dash:
+    name: ${{ matrix.target }}
+    strategy:
+      matrix:
+        target: [zpr-dashboard]
+    uses: org-zpr/zpr-dev-tools/.github/workflows/go-build-test@e232763356307e2d727f28398cbc3cced6bae672
+    with:
+      name: ${{ matrix.target }}
+      path: ./${{ matrix.target }}
+    secrets: inherit
