@@ -401,10 +401,16 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
 
         let vs_connect_request_rdr = params.get()?.get_req()?;
 
-        let vs_connect_request =
-            VSConnectRequest::try_from(vs_connect_request_rdr).map_err(|e| {
-                capnp::Error::failed(format!("failed to parse VSConnectRequest: {}", e))
-            })?;
+        let vs_connect_request = match VSConnectRequest::try_from(vs_connect_request_rdr) {
+            Ok(req) => req,
+            Err(e) => {
+                return self.ok_with_connect_error(
+                    results,
+                    vsapi::ErrorCode::ParamError,
+                    &format!("failed to parse connect request: {e}"),
+                );
+            }
+        };
 
         // There must be at least one param (zpr addr)
         let parsed_params = match vs_connect_request.params {
@@ -494,10 +500,16 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         debug!(target: API, "open call from {}", self.remote);
 
         let vs_connect_request_rdr = params.get()?.get_req()?;
-        let vs_connect_request =
-            VSConnectRequest::try_from(vs_connect_request_rdr).map_err(|e| {
-                capnp::Error::failed(format!("failed to parse VSConnectRequest: {}", e))
-            })?;
+        let vs_connect_request = match VSConnectRequest::try_from(vs_connect_request_rdr) {
+            Ok(req) => req,
+            Err(e) => {
+                return self.ok_with_open_error(
+                    results,
+                    vsapi::ErrorCode::ParamError,
+                    &format!("failed to parse connect request: {e}"),
+                );
+            }
+        };
 
         // TODO: are there any needed params for an Open call?
 
@@ -1448,6 +1460,23 @@ mod tests {
             capnp::serialize::read_message(&mut &buf[..], capnp::message::ReaderOptions::new())
                 .unwrap();
         reader
+    }
+
+    /// A param whose declared type disagrees with the value union must fail conversion,
+    /// which connect()/open() report as ParamError rather than an RPC-level failure.
+    #[test]
+    fn test_connect_request_mistyped_param_fails_conversion() {
+        let message = build_connect_request(|mut req| {
+            req.set_cn("node1");
+            let mut params = req.init_params(1);
+            let mut param = params.reborrow().get(0);
+            param.set_name("test_name");
+            param.set_ptype(vsapi::ParamT::String);
+            param.set_value_u64(42);
+        });
+
+        let reader: vsapi::v_s_connect_request::Reader = message.get_root().unwrap();
+        assert!(VSConnectRequest::try_from(reader).is_err());
     }
 
     mod authenticate_undo {
