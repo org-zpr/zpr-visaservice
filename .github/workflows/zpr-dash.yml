@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         target: [zpr-dashboard]
-    uses: org-zpr/zpr-dev-tools/.github/workflows/go-build-test@e232763356307e2d727f28398cbc3cced6bae672
+    uses: org-zpr/zpr-dev-tools/.github/workflows/go-build-test.yml@e232763356307e2d727f28398cbc3cced6bae672
     with:
       name: ${{ matrix.target }}
       path: ./${{ matrix.target }}
