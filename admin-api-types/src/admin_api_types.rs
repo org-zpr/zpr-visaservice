@@ -4,7 +4,6 @@ use serde_with::base64::Base64;
 use serde_with::{TimestampSeconds, serde_as};
 
 use std::collections::HashMap;
-use std::fmt;
 use std::net::IpAddr;
 use std::time::SystemTime;
 
@@ -25,15 +24,6 @@ pub struct NamedListEntry {
 pub enum VisaMatchDirection {
     Forward,
     Reverse,
-}
-
-impl fmt::Display for VisaMatchDirection {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            VisaMatchDirection::Forward => write!(f, "forward"),
-            VisaMatchDirection::Reverse => write!(f, "reverse"),
-        }
-    }
 }
 
 #[serde_as]
@@ -236,37 +226,6 @@ pub struct NodeRecordBrief {
     pub pending_revocation: u32,
     // Port of the VSS the node is connected to
     pub vss_port: Option<u16>,
-}
-
-#[serde_as]
-#[derive(Debug, Deserialize, Eq)]
-#[allow(dead_code)]
-pub struct ServiceRecord {
-    #[serde_as(as = "TimestampSeconds<i64>")]
-    pub ctime: SystemTime,
-    pub cn: String,
-    pub zpr_addr: String,
-    pub ident: String,
-    pub node: bool,
-    pub services: Vec<String>,
-}
-
-impl PartialEq for ServiceRecord {
-    fn eq(&self, other: &Self) -> bool {
-        self.cn == other.cn
-    }
-}
-
-impl Ord for ServiceRecord {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.cn.cmp(&other.cn)
-    }
-}
-
-impl PartialOrd for ServiceRecord {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 #[derive(Serialize, Deserialize)]
