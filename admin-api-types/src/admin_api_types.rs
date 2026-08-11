@@ -165,35 +165,6 @@ impl PartialOrd for ServiceDescriptor {
 }
 
 #[serde_as]
-#[derive(Debug, Serialize, Deserialize, Eq)]
-pub struct HostRecordBrief {
-    #[serde_as(as = "TimestampSeconds<i64>")]
-    pub ctime: SystemTime,
-    pub cn: String,
-    pub zpr_addr: String,
-    pub ident: String,
-    pub node: bool,
-}
-
-impl PartialEq for HostRecordBrief {
-    fn eq(&self, other: &Self) -> bool {
-        self.cn == other.cn
-    }
-}
-
-impl Ord for HostRecordBrief {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.cn.cmp(&other.cn)
-    }
-}
-
-impl PartialOrd for HostRecordBrief {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[serde_as]
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeRecordBrief {
     // Number of visas pending install on the node
