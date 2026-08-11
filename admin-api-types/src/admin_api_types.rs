@@ -1,4 +1,3 @@
-use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_with::base64::Base64;
 use serde_with::{TimestampSeconds, serde_as};
@@ -203,13 +202,6 @@ pub struct NodeRecordBrief {
 pub struct AuthRevokeDescriptor {
     pub ty: String,
     pub cn: String,
-}
-
-pub fn reason_for(sc: StatusCode) -> String {
-    match sc.canonical_reason() {
-        Some(reason) => reason.to_string(),
-        None => "unknown".to_string(),
-    }
 }
 
 /// Simple struct with a "cn" field.

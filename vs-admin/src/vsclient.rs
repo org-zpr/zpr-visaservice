@@ -8,7 +8,7 @@ use zpr::policy_types::PolicyBundle;
 
 use admin_api_types::{
     ActorDescriptor, AuthRevokeDescriptor, CnEntry, DenyRecord, ListEntry, NamedListEntry,
-    NetworkDetails, Revokes, ServiceDescriptor, Stats, VisaDescriptor, reason_for,
+    NetworkDetails, Revokes, ServiceDescriptor, Stats, VisaDescriptor,
 };
 
 use crate::error::VsaError;
@@ -151,7 +151,7 @@ impl VsClient {
             "{} {}: {}",
             "HTTP Error".red(),
             error_resp.status(),
-            reason_for(error_resp.status())
+            error_resp.status().canonical_reason().unwrap_or("unknown")
         );
         if let Ok(txt) = error_resp.text() {
             eprintln!("       {}", txt);
