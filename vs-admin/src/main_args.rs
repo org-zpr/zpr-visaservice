@@ -22,6 +22,10 @@ pub struct Cmd {
     /// Path to a file containing the API key for the visa service admin API.
     #[arg(long, value_name = "PATH", conflicts_with = "api_key")]
     pub api_key_file: Option<PathBuf>,
+
+    /// Indent the JSON output instead of emitting it on a single line.
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Subcommand)]
