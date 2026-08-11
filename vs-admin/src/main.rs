@@ -64,7 +64,7 @@ fn main() {
         args.svc_url.clone(),
         ca_cert.clone(),
         api_key.clone(),
-        args.pretty,
+        args.format,
     );
 
     match args.command {

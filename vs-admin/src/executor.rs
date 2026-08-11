@@ -9,37 +9,37 @@ use admin_api_types::ListEntry;
 
 use zpr::policy_types::PolicyBundle;
 
+use crate::main_args::OutputFormat;
 use crate::vsclient::{RoleFilter, VsClient};
 
 pub struct Executor {
     vs_cli: VsClient,
-    pretty: bool,
+    format: OutputFormat,
 }
 
 impl Executor {
-    /// Pass `pretty:true` to indent the JSON output.
+    /// `format` selects between indented and single-line JSON output.
     pub fn new(
         api_url: String,
         cert: reqwest::tls::Certificate,
         api_key: String,
-        pretty: bool,
+        format: OutputFormat,
     ) -> Self {
         Executor {
             // Not quiet: the request trace and HTTP error bodies go to stderr, leaving
             // stdout carrying only the JSON response so it can (eg) be piped to jq.
             vs_cli: VsClient::new(api_url, cert, api_key, false),
-            pretty,
+            format,
         }
     }
 
-    /// Renders an admin API response as JSON on stdout; `--pretty` indents it.
+    /// Renders an admin API response as JSON on stdout, honoring `--format`.
     fn print_json<T: serde::Serialize>(&self, v: &T) -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "{}",
-            if self.pretty {
-                serde_json::to_string_pretty(v)?
-            } else {
-                serde_json::to_string(v)?
+            match self.format {
+                OutputFormat::Pretty => serde_json::to_string_pretty(v)?,
+                OutputFormat::Compact => serde_json::to_string(v)?,
             }
         );
         Ok(())
