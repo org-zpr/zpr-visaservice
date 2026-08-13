@@ -355,12 +355,6 @@ impl PolicyMgr {
         self.get_current_snapshot().container()
     }
 
-    /// When policy is updated, all the peer tables have their DNS names resolved and cached.
-    /// Use this to get the links specified by policy for a node.
-    pub fn resolved_links_for_node(&self, node: &IpAddr) -> Vec<Link> {
-        self.get_current_snapshot().links_for_node(node)
-    }
-
     /// Consult policy to get a description of the link between `node_a` and `node_b`.
     /// Both arguments are ZPR addresses. A convenience single-shot wrapper over
     /// [PolicySnapshot::describe_link]; callers needing a consistent multi-step view
@@ -643,7 +637,11 @@ mod tests {
         // Start from a no-topology policy (vinst 1).
         let mgr = make_policy_mgr(policy_no_topology()).await;
         assert_eq!(mgr.get_current().vinst(), 1);
-        assert!(mgr.resolved_links_for_node(&ip("fd5a:5052::1")).is_empty());
+        assert!(
+            mgr.get_current_snapshot()
+                .links_for_node(&ip("fd5a:5052::1"))
+                .is_empty()
+        );
 
         // Update to a policy with topology, all IP-addressed so it resolves.
         let peering = make_peering(ip("fd5a:5052::1"), ip("fd5a:5052::2"), "link-1", vec![]);
@@ -656,7 +654,11 @@ mod tests {
         assert_eq!(vinst, 2);
         assert_eq!(mgr.get_current().vinst(), 2);
         // Topology swapped in: node now has a resolved link.
-        assert!(!mgr.resolved_links_for_node(&ip("fd5a:5052::1")).is_empty());
+        assert!(
+            !mgr.get_current_snapshot()
+                .links_for_node(&ip("fd5a:5052::1"))
+                .is_empty()
+        );
         // Container swapped in and round-trips.
         assert_eq!(
             mgr.get_current_container().as_bytes(),

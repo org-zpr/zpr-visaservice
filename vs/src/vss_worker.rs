@@ -13,6 +13,7 @@ use tokio_rustls::TlsConnector;
 use tokio_util::compat::*;
 use tracing::{debug, error, info, trace, warn};
 
+use libeval::policy::Policy;
 use zpr::vsapi::v1;
 use zpr::vsapi_types::{ApiResponseError, Link, Param, ServiceDescriptor, Visa, VisaOp, pname};
 use zpr::write_to::WriteTo;
@@ -174,9 +175,9 @@ pub async fn vss_worker_loop(
                                 asm.counters.incr(CounterType::VssErrors);
                             }
                         }
-                        VssCmd::SetTopology(links, resp_tx) => {
+                        VssCmd::SetTopology(links, policy, resp_tx) => {
                             state.mark_topology_updated();
-                            if let Err(e) = resp_tx.send(vss_do_set_topology(&vss_handle, asm.clone(), &node_addr.ip(), links).await) {
+                            if let Err(e) = resp_tx.send(vss_do_set_topology(&vss_handle, asm.clone(), &node_addr.ip(), policy, links).await) {
                                 error!(target: VSS, "failed to send response for set-topology command: {:?}", e);
                                 asm.counters.incr(CounterType::VssErrors);
                             }
@@ -460,10 +461,20 @@ async fn send_topology(
     node_addr: &IpAddr,
     vss_handle: &v1::v_s_s_handle::Client,
 ) {
-    let links = asm.policy_mgr.resolved_links_for_node(node_addr);
+    // One snapshot for both the links and the bootstrap-visa peer lookup inside.
+    let psnap = asm.policy_mgr.get_current_snapshot();
+    let links = psnap.links_for_node(node_addr);
 
     debug!(target: VSS, "sending initial topology to VSS at {}", node_addr);
-    if let Err(e) = vss_do_set_topology(vss_handle, asm.clone(), node_addr, links).await {
+    if let Err(e) = vss_do_set_topology(
+        vss_handle,
+        asm.clone(),
+        node_addr,
+        psnap.policy_arc(),
+        links,
+    )
+    .await
+    {
         error!(target: VSS, "failed to send initial topology to VSS at {}: {}", node_addr, e);
         asm.counters.incr(CounterType::VssErrors);
     } else {
@@ -664,10 +675,14 @@ async fn vss_do_configure(
 ///
 /// `node_addr` is the ZPR address of the node on the other end of `vss_handle`; the links are
 /// that node's view of the topology, so the peer lookup below must be keyed by it.
+///
+/// `policy` must be the snapshot `peers` was computed from. Reacquiring the current policy here
+/// would let a newly installed one pair its peers with the older snapshot's links.
 async fn vss_do_set_topology(
     vss_handle: &v1::v_s_s_handle::Client,
     asm: Arc<Assembly>,
     node_addr: &IpAddr,
+    policy: Arc<Policy>,
     mut peers: Vec<Link>,
 ) -> Result<(), VssSyncError> {
     // HACK -> This hack here is to support our intial MULTINODE implementation.
@@ -680,7 +695,6 @@ async fn vss_do_set_topology(
     //
     // TODO: Reevaluate this.
 
-    let policy = asm.policy_mgr.get_current();
     // Both ends of an edge share a link_id, and each end's `remote_zpr_addr` is only
     // meaningful under its own node key -- so resolve the link within `node_addr`'s peers.
     let node_peers = policy.get_peers_for_node(node_addr).unwrap_or_default();
