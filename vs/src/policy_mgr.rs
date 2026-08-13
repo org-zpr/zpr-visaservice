@@ -745,7 +745,7 @@ mod tests {
         Peer {
             link_id: link_id.to_string(),
             remote_zpr_addr: "fd5a:5052::1".parse().unwrap(),
-            // ponytail: local end is irrelevant to peers_to_links, so reuse the remote one.
+            // local end is irrelevant to peers_to_links, so reuse the remote one.
             local_substrate: substrate.clone(),
             remote_substrate: substrate,
         }

@@ -80,6 +80,44 @@ fn canonical_path(
     Ok(Some(node_id_path.into_iter().map(|id| id.into()).collect()))
 }
 
+/// Node path a future peer's VSAPI traffic will take: the peer itself, then `via_node`
+/// (the neighbour carrying the peer's topology message, hence its first hop), then
+/// `via_node`'s route to the node the visa service docks on.
+///
+/// The peer's own link is not in the router yet -- it only comes up when the peer
+/// connects -- so the first hop is stitched on from the peering rather than routed.
+fn bootstrap_path(
+    asm: &Assembly,
+    future_peer: &IpAddr,
+    via_node: &IpAddr,
+) -> Result<Vec<IpAddr>, ServiceError> {
+    let vs_addr = asm.config.get_vs_addr();
+    let vs_dock = asm
+        .actor_mgr
+        .get_docking_node_for_adapter(&vs_addr)
+        .ok_or_else(|| {
+            ServiceError::Internal(format!(
+                "visa service {vs_addr} is not docked to a node: cannot path bootstrap visa for {future_peer}"
+            ))
+        })?;
+    let route = asm
+        .topo_mgr
+        .get_best_route(via_node, &vs_dock)
+        .ok_or_else(|| {
+            ServiceError::Internal(format!(
+                "no route from {via_node} to visa service docking node {vs_dock}"
+            ))
+        })?;
+    let mut path = vec![*future_peer];
+    path.extend(
+        asm.topo_mgr
+            .route_to_path(&route, &NodeId(*via_node))?
+            .into_iter()
+            .map(IpAddr::from),
+    );
+    Ok(path)
+}
+
 impl VisaWithMetadata {
     pub fn new(visa: Visa, metadata: db::VisaMetadata) -> Self {
         VisaWithMetadata { visa, metadata }
@@ -237,9 +275,10 @@ impl VisaMgr {
     /// Mint (or reuse) the bootstrap visa that lets a not-yet-connected peer reach the
     /// visa service's VSAPI port, which is how it connects in the first place.
     ///
-    /// The visa belongs to `future_peer` and is stored pending-install against it. A
-    /// neighbour that is already connected receives a copy inside its topology message
-    /// and hands it off when the peer shows up.
+    /// The visa belongs to `future_peer` and is stored pending-install against it.
+    /// `via_node` is the already-connected neighbour whose topology message carries the
+    /// copy handed off when the peer shows up; it is also the peer's first hop, so the
+    /// path is anchored on it (see [bootstrap_path]).
     ///
     /// This deliberately bypasses policy evaluation. The peer cannot be evaluated --
     /// it has no actor and no route until the link comes up -- and it needs none: a
@@ -250,6 +289,7 @@ impl VisaMgr {
         &self,
         asm: &Assembly,
         future_peer: &IpAddr,
+        via_node: &IpAddr,
     ) -> Result<Visa, ServiceError> {
         let ft = make_fivetuple_tcp(
             future_peer.clone(),      // from future peer
@@ -288,21 +328,20 @@ impl VisaMgr {
                 comm_flags: CommFlag::BiDirectional,
             };
 
-            // A direct route keeps `canonical_path` from consulting the router at all
-            // (it short-circuits on any non-Multihop route), so an unconnected peer
-            // with no route cannot fail here. Forward + BiDirectional gives the ports
-            // we want: any source port -> VSAPI.
+            // The path cannot be routed -- the peer's link is not up -- so hand it in
+            // explicitly. It has to be there: without it the peer's copy gets no fwd_pep
+            // and the relaying nodes get no copy at all, leaving the visa unusable.
+            // Forward + BiDirectional gives the ports we want: any source port -> VSAPI.
             let policy = asm.policy_mgr.get_current();
             let hit = Hit::new_no_signal(0, Direction::Forward);
-            let route = Route::new_direct(NodeId(*future_peer));
+            let path = bootstrap_path(asm, future_peer, via_node)?;
 
             let visawmd = self
-                .create_visa(
-                    asm,
+                .create_visa_with_path(
                     future_peer,
                     &pkt_data,
                     &hit,
-                    &route,
+                    Some(path),
                     BOOTSTRAP_VISA_ZPL,
                     policy.get_version().unwrap_or(0),
                     policy.vinst(),
@@ -438,6 +477,32 @@ impl VisaMgr {
         policy_version: u64,
         vinst: u64,
     ) -> Result<VisaWithMetadata, ServiceError> {
+        let path = canonical_path(asm, requesting_node, route, hit.direction)?;
+        self.create_visa_with_path(
+            requesting_node,
+            pdesc,
+            hit,
+            path,
+            source_zpl,
+            policy_version,
+            vinst,
+        )
+        .await
+    }
+
+    /// As [VisaMgr::create_visa], but with the node path supplied rather than derived from
+    /// a route. For visas whose path cannot be routed -- see
+    /// [VisaMgr::vsapi_bootstrap_visa_for_future_peer].
+    async fn create_visa_with_path(
+        &self,
+        requesting_node: &IpAddr,
+        pdesc: &PacketDesc,
+        hit: &Hit,
+        path: Option<Vec<IpAddr>>,
+        source_zpl: impl Into<String>,
+        policy_version: u64,
+        vinst: u64,
+    ) -> Result<VisaWithMetadata, ServiceError> {
         // TODO: The visa expiration needs to be computed as watever is soonest:
         //   - expiration of authentication of source actor
         //   - expiration of authentication of destination actor
@@ -499,8 +564,6 @@ impl VisaMgr {
         };
 
         let visa_id = self.repo.get_next_visa_id().await?;
-
-        let path = canonical_path(asm, requesting_node, route, hit.direction)?;
 
         let mut metadata = db::VisaMetadata::new(
             requesting_node.clone(),
@@ -1181,21 +1244,34 @@ mod tests {
         assert_eq!(result.expect("pending visa should match").issuer_id, 4);
     }
 
-    /// A bootstrap visa must be mintable for a peer that has no actor and no route --
-    /// that is the entire point, the link is not up yet. Going through the normal visa
-    /// request pipeline would deny NoRoute here. Also asserts the dedup: a second call
-    /// reuses the first visa rather than minting a duplicate.
+    /// Stand up the minimum a bootstrap mint needs: one connected node, which the visa
+    /// service docks on. Returns that node's address, usable as `via_node`.
+    async fn add_vs_docking_node(asm: &Assembly) -> IpAddr {
+        let node_addr: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        asm.topo_mgr.add_node(node_addr).unwrap();
+        asm.actor_mgr
+            .hack_set_vs_docking_node(&node_addr)
+            .await
+            .unwrap();
+        node_addr
+    }
+
+    /// A bootstrap visa must be mintable for a peer that has no actor and no route of its
+    /// own -- that is the entire point, the link is not up yet. Going through the normal
+    /// visa request pipeline would deny NoRoute here. Also asserts the dedup: a second
+    /// call reuses the first visa rather than minting a duplicate.
     #[tokio::test]
     async fn test_vsapi_bootstrap_visa_for_future_peer_no_route_no_actor() {
         let asm = crate::assembly::tests::new_assembly_for_tests(None).await;
+        let via_node = add_vs_docking_node(&asm).await;
         // Never added to actor_mgr or topo_mgr: an unconnected peer.
         let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap();
 
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node)
             .await
-            .expect("bootstrap visa must not need a route");
+            .expect("bootstrap visa must not need a route from the peer itself");
 
         let dock_pep = visa.dock_pep.as_ref().expect("full visa has a dock_pep");
         assert_eq!(dock_pep.source_addr, future_peer);
@@ -1221,13 +1297,59 @@ mod tests {
 
         let again = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node)
             .await
             .unwrap();
         assert_eq!(
             again.issuer_id, visa.issuer_id,
             "second call must reuse the pending visa, not mint a duplicate"
         );
+    }
+
+    /// The peer installs this visa as its own ingress node, so its copy must carry a
+    /// fwd_pep pointing at the neighbour that relays for it -- otherwise it has nowhere to
+    /// send its VSAPI traffic. The relaying neighbour must also be queued a copy.
+    #[tokio::test]
+    async fn test_vsapi_bootstrap_visa_actualizes_with_fwd_pep_to_via_node() {
+        let asm = crate::assembly::tests::new_assembly_for_tests(None).await;
+        let via_node = add_vs_docking_node(&asm).await;
+        let future_peer: IpAddr = "fd5a:5052:3000::9".parse().unwrap();
+
+        let visa = asm
+            .visa_mgr
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node)
+            .await
+            .unwrap();
+        let md = asm
+            .visa_mgr
+            .get_visa_metadata_by_id(visa.issuer_id)
+            .await
+            .unwrap()
+            .expect("metadata for a just-created visa");
+        assert_eq!(
+            md.path,
+            Some(vec![future_peer, via_node]),
+            "path runs from the peer through its first hop to the VS docking node"
+        );
+
+        let actualized = asm
+            .visa_mgr
+            .actualize_visa_for_target_node(visa.clone(), &future_peer)
+            .await
+            .unwrap();
+        let fwd_pep = actualized
+            .fwd_pep
+            .as_ref()
+            .expect("the peer's copy must forward");
+        assert_eq!(fwd_pep.next_hop, via_node);
+
+        // The relaying neighbour needs its own copy to let the traffic through.
+        let pending = asm
+            .visa_mgr
+            .get_pending_visa_ids_for_node(&via_node)
+            .await
+            .unwrap();
+        assert!(pending.contains(&visa.issuer_id));
     }
 
     /// The mint must hold `bootstrap_lock` across its whole check-then-create. Two neighbours
@@ -1237,13 +1359,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_vsapi_bootstrap_visa_mint_is_serialized() {
         let asm = crate::assembly::tests::new_assembly_for_tests(None).await;
+        let via_node = add_vs_docking_node(&asm).await;
         let future_peer: IpAddr = "fd5a:5052:3000::8".parse().unwrap();
 
         let guard = asm.visa_mgr.bootstrap_lock.lock().await;
-        let mut mint = Box::pin(
-            asm.visa_mgr
-                .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer),
-        );
+        let mut mint = Box::pin(asm.visa_mgr.vsapi_bootstrap_visa_for_future_peer(
+            &asm,
+            &future_peer,
+            &via_node,
+        ));
         assert!(
             tokio::time::timeout(Duration::from_secs(1), &mut mint)
                 .await

@@ -714,11 +714,24 @@ async fn vss_do_set_topology(
         // Minting is idempotent (it returns any existing visa), so the retry is free.
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &peer.remote_zpr_addr)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &peer.remote_zpr_addr, node_addr)
             .await
             .map_err(|e| {
                 VssSyncError::Internal(format!(
                     "failed to create bootstrap visa for future peer {}: {e}",
+                    peer.remote_zpr_addr
+                ))
+            })?;
+        // The peer is the ingress node of this visa, so actualizing for it attaches the
+        // fwd_pep it needs to hand its VSAPI traffic to `node_addr` for relaying. Nodes
+        // further along the path get their own copies via the pending-install queue.
+        let visa = asm
+            .visa_mgr
+            .actualize_visa_for_target_node(visa, &peer.remote_zpr_addr)
+            .await
+            .map_err(|e| {
+                VssSyncError::Internal(format!(
+                    "failed to actualize bootstrap visa for future peer {}: {e}",
                     peer.remote_zpr_addr
                 ))
             })?;
