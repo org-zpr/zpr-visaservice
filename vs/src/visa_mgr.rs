@@ -31,6 +31,9 @@ const BOOTSTRAP_VISA_ZPL: &str = "<bootstrap: policy peering>";
 #[derive(Clone)]
 pub struct VisaMgr {
     repo: db::VisaRepo,
+    /// Serializes the check-then-create in [VisaMgr::vsapi_bootstrap_visa_for_future_peer].
+    /// Behind an `Arc` so every clone of the manager shares the one lock.
+    bootstrap_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub struct VisaWithMetadata {
@@ -85,7 +88,10 @@ impl VisaWithMetadata {
 
 impl VisaMgr {
     pub fn new(db: db::VisaRepo) -> Self {
-        VisaMgr { repo: db }
+        VisaMgr {
+            repo: db,
+            bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     /// To "actualize" a visa means to adjust it for the context in which it is deployed.
@@ -251,6 +257,16 @@ impl VisaMgr {
             0,
             asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
         )?;
+        // Every connected neighbour of `future_peer` mints this same visa when it sends its
+        // topology, and those sends run concurrently (the policy-update fan-out, or every
+        // worker's initial sync after a VS restart). Without this the lookup below and the
+        // create further down interleave across their DB awaits and both neighbours mint,
+        // producing two visas with different IDs for one five-tuple.
+        //
+        // NOTE: Using one global lock, not per-peer -- bootstrap minting only runs on topology
+        // sends. (Switch to per-peer if this ever lands on a hot path.)
+        let _guard = self.bootstrap_lock.lock().await;
+
         // A bootstrap visa is delivered inside a neighbour's topology message, so it stays
         // PendingInstall until `future_peer` itself connects and its own worker pushes it.
         // Match on that state too, otherwise every set_topology mints a duplicate.
@@ -1212,6 +1228,31 @@ mod tests {
             again.issuer_id, visa.issuer_id,
             "second call must reuse the pending visa, not mint a duplicate"
         );
+    }
+
+    /// The mint must hold `bootstrap_lock` across its whole check-then-create. Two neighbours
+    /// minting for the same future peer would otherwise interleave at the DB awaits, both see
+    /// no visa, and mint duplicates. Holding the lock here has to stall a concurrent mint;
+    /// with the clock paused the timeout can only fire because the mint is blocked on it.
+    #[tokio::test(start_paused = true)]
+    async fn test_vsapi_bootstrap_visa_mint_is_serialized() {
+        let asm = crate::assembly::tests::new_assembly_for_tests(None).await;
+        let future_peer: IpAddr = "fd5a:5052:3000::8".parse().unwrap();
+
+        let guard = asm.visa_mgr.bootstrap_lock.lock().await;
+        let mut mint = Box::pin(
+            asm.visa_mgr
+                .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut mint)
+                .await
+                .is_err(),
+            "mint must block while the bootstrap lock is held"
+        );
+
+        drop(guard);
+        mint.await.expect("mint completes once the lock is free");
     }
 
     // --- actualize_visa_for_target_node tests ---
