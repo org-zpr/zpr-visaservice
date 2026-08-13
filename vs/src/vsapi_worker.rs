@@ -292,6 +292,60 @@ fn write_error(bldr: &mut vsapi::error::Builder, code: vsapi::ErrorCode, message
     bldr.set_retry_in(0);
 }
 
+/// Install router edges for every policy-declared peering between `node_addr` and a node
+/// that is already connected, persisting each edge.
+///
+/// A node that joins by calling `connect` over a link never passes through its peer's
+/// `authorize_connect`, so nothing else installs its links: it would land in the router
+/// with no edges at all and every visa request involving it would deny `NoRoute`.
+///
+/// Failures are logged, not fatal -- the node is authenticated either way, and the
+/// housekeeping revalidation pass repairs router/state drift later.
+///
+/// TODO: a declared peering between two connected nodes is taken as evidence that the
+/// link is up. VS cannot see which peer forwarded the VSAPI connection, so a node with
+/// more than one connected peer gets edges for all of them. Upgrade path: have the node
+/// report the link it came in over as a connect param.
+///
+/// TODO: Rethink this: do we really node connect and open in VSAPI?
+async fn install_policy_links_for_node(asm: &Assembly, node_actor: &Actor, node_addr: &IpAddr) {
+    let psnap = asm.policy_mgr.get_current_snapshot();
+    let Some(peers) = psnap.policy().get_peers_for_node(node_addr) else {
+        return; // No peerings declared for this node.
+    };
+    let connected = match asm.actor_mgr.list_node_addrs().await {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            warn!(target: API, "cannot install links for node {node_addr}: node list unavailable: {e}");
+            return;
+        }
+    };
+    for peer in peers {
+        if !connected.contains(&peer.remote_zpr_addr) {
+            debug!(target: API, "peer {} of node {node_addr} is not connected: link {} deferred", peer.remote_zpr_addr, peer.link_id);
+            continue;
+        }
+        match asm
+            .topo_mgr
+            .add_linked_node(
+                &psnap,
+                &asm.actor_mgr,
+                node_actor,
+                &peer.remote_zpr_addr,
+                node_addr,
+            )
+            .await
+        {
+            Ok(()) => {
+                info!(target: API, "installed link {} between node {node_addr} and peer {}", peer.link_id, peer.remote_zpr_addr)
+            }
+            Err(e) => {
+                warn!(target: API, "failed to install link {} between node {node_addr} and peer {}: {e} -- node has no route over that link", peer.link_id, peer.remote_zpr_addr)
+            }
+        }
+    }
+}
+
 /// Convert a vsapi schema IpAddr into a rust ip address.
 fn ipaddr_from_capnp(addr: vsapi::ip_addr::Reader) -> Result<std::net::IpAddr, capnp::Error> {
     match addr.which()? {
@@ -436,6 +490,21 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
         };
 
         info!(target: API, "node {} requests zpr addr {} (CONNECT_TYPE={:?})", vs_connect_request.cn, node_zpr_addr, vs_connect_request.ctype);
+
+        // The requested address is an unauthenticated claim. A node that joins over a link
+        // reaches VSAPI from its ZPR address using a bootstrap visa pinned to that address,
+        // so the address it claims must be the one we are talking to. Only the first node
+        // connects over the substrate, where the remote is not a ZPR address and there is
+        // nothing to compare against.
+        let remote_ip = self.remote.ip();
+        if net_mgr::is_zpr_addr(&remote_ip) && remote_ip != node_zpr_addr {
+            warn!(target: API, "node {} connecting from ZPR addr {} claims addr {}: rejected", vs_connect_request.cn, remote_ip, node_zpr_addr);
+            return self.ok_with_connect_error(
+                results,
+                vsapi::ErrorCode::ParamError,
+                "zpr addr does not match connection source",
+            );
+        }
 
         match vs_connect_request.ctype {
             ConnectType::Reset => {}
@@ -699,6 +768,22 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             undo.took_zpr_addr(&node_zpr_addr);
         }
 
+        // Policy can hand back a different address than the node asked for: the requested
+        // address is an unauthenticated claim, scrubbed unless a join policy matched it, in
+        // which case an address is allocated instead. A node that joined over a link is only
+        // reachable at the address it claimed -- its bootstrap visa and its peering are keyed
+        // to it -- so a substitution leaves it unroutable. Fail rather than authenticate it
+        // at an address it cannot use.
+        if node_zpr_addr != self.req_zpr_addr && net_mgr::is_zpr_addr(&self.remote.ip()) {
+            warn!(target: API, "node {} requested addr {} but policy granted {}: rejecting, it joined over a link at the requested addr", self.remote_cn, self.req_zpr_addr, node_zpr_addr);
+            undo.undo(&self.asm).await;
+            return self.ok_with_authenticate_error(
+                results,
+                vsapi::ErrorCode::AuthError,
+                "requested zpr address not granted by policy",
+            );
+        }
+
         let node_cn = match node_actor.get_cn() {
             Some(cn) => cn.to_owned(),
             None => {
@@ -807,6 +892,10 @@ impl vsapi::v_s_gate::Server for VSGateImpl {
             // Node exists already.
             info!(target: API, "node {:?} already present in router on (re)connect; keeping existing node and links", &node_cn);
         }
+
+        // Install the node's policy-declared links to already-connected peers. Must happen
+        // before ActorJoins: that event drives the topology fan-out, which reads the router.
+        install_policy_links_for_node(&self.asm, &node_actor, &node_zpr_addr).await;
 
         let evt = VsEvent::ActorJoins(node_zpr_addr);
         if let Err(e) = self.asm.event_mgr.record_event(evt).await {
@@ -1477,6 +1566,54 @@ mod tests {
 
         let reader: vsapi::v_s_connect_request::Reader = message.get_root().unwrap();
         assert!(VSConnectRequest::try_from(reader).is_err());
+    }
+
+    /// A node joining via `connect` gets router edges for its policy-declared peers that
+    /// are already connected, and none for peers that are not.
+    #[tokio::test]
+    async fn test_install_policy_links_only_for_connected_peers() {
+        use crate::assembly::tests::new_assembly_for_tests;
+        use crate::db::PolicyRepo;
+        use crate::policy_mgr::PolicyMgr;
+        use crate::test_helpers::{
+            FakeResolver, make_node_actor_defexp, make_peering, policy_with_peerings,
+        };
+        use crate::trusted_services::TrustedServicesMgr;
+        use std::path::PathBuf;
+
+        let a: IpAddr = "fd5a:5052:90de:1::1".parse().unwrap(); // connected peer
+        let b: IpAddr = "fd5a:5052:90de:1::2".parse().unwrap(); // the joining node
+        let c: IpAddr = "fd5a:5052:90de:1::3".parse().unwrap(); // declared but absent peer
+
+        let mut asm = new_assembly_for_tests(None).await;
+        asm.policy_mgr = PolicyMgr::new_with_initial_policy(
+            policy_with_peerings(&[
+                make_peering(a, b, "link-ab", vec![]),
+                make_peering(b, c, "link-bc", vec![]),
+            ]),
+            PolicyRepo::new(asm.state_db.clone()),
+            Arc::new(FakeResolver::ip_only()),
+            Arc::new(TrustedServicesMgr::new()),
+            PathBuf::from("."),
+        )
+        .await
+        .unwrap();
+
+        // Both A and B are authenticated nodes in the router; C is not connected at all.
+        for (addr, cn) in [(a, "node-a"), (b, "node-b")] {
+            let actor = make_node_actor_defexp(&addr.to_string(), cn, "[fd5a:5052::100]:1234");
+            asm.actor_mgr.add_node(&actor, false).await.unwrap();
+            asm.topo_mgr.add_node(addr).unwrap();
+        }
+        let actor_b = make_node_actor_defexp(&b.to_string(), "node-b", "[fd5a:5052::100]:1234");
+
+        install_policy_links_for_node(&asm, &actor_b, &b).await;
+
+        assert_eq!(
+            asm.topo_mgr.get_peers(&b),
+            vec![a],
+            "expected exactly the link to the connected peer A"
+        );
     }
 
     mod authenticate_undo {
