@@ -426,6 +426,9 @@ impl PolicyResolver {
                         addr: sock_addr.ip(),
                         port: sock_addr.port(),
                     },
+                    visas: Vec::new(), // this is used only when sending topology messages
+                                       // TODO: Probably should be an option.
+                                       // TODO: Why are use re-using a vsapi type here anyway?
                 })
             })
             .collect()

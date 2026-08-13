@@ -25,6 +25,9 @@ use zpr::vsapi_types::{
 
 use tracing::info;
 
+/// Stands in for the ZPL source on a bootstrap visa, which has no matching com policy.
+const BOOTSTRAP_VISA_ZPL: &str = "<bootstrap: policy peering>";
+
 #[derive(Clone)]
 pub struct VisaMgr {
     repo: db::VisaRepo,
@@ -225,37 +228,116 @@ impl VisaMgr {
         Ok(visas)
     }
 
-    /// Use a linear search of all visas installed on the node to find a match.
-    /// TODO: Need in-memory indexes for this.
+    /// Mint (or reuse) the bootstrap visa that lets a not-yet-connected peer reach the
+    /// visa service's VSAPI port, which is how it connects in the first place.
+    ///
+    /// The visa belongs to `future_peer` and is stored pending-install against it. A
+    /// neighbour that is already connected receives a copy inside its topology message
+    /// and hands it off when the peer shows up.
+    ///
+    /// This deliberately bypasses policy evaluation. The peer cannot be evaluated --
+    /// it has no actor and no route until the link comes up -- and it needs none: a
+    /// peering declared in policy *is* the authorization for that peer to reach VSAPI.
+    ///
+    /// TODO: Added as a HACK to get initial MULTINODE working. Should be re-evaluated later.
+    pub async fn vsapi_bootstrap_visa_for_future_peer(
+        &self,
+        asm: &Assembly,
+        future_peer: &IpAddr,
+    ) -> Result<Visa, ServiceError> {
+        let ft = make_fivetuple_tcp(
+            future_peer.clone(),      // from future peer
+            asm.config.get_vs_addr(), // to the visa service
+            0,
+            asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
+        )?;
+        // A bootstrap visa is delivered inside a neighbour's topology message, so it stays
+        // PendingInstall until `future_peer` itself connects and its own worker pushes it.
+        // Match on that state too, otherwise every set_topology mints a duplicate.
+        if let Some(visa) = self
+            .find_node_visa_by_five_tuple(
+                future_peer,
+                &ft,
+                &[
+                    db::NodeVisaState::Installed,
+                    db::NodeVisaState::PendingInstall,
+                ],
+            )
+            .await?
+        {
+            Ok(visa)
+        } else {
+            let pkt_data = PacketDesc {
+                five_tuple: ft,
+                comm_flags: CommFlag::BiDirectional,
+            };
+
+            // A direct route keeps `canonical_path` from consulting the router at all
+            // (it short-circuits on any non-Multihop route), so an unconnected peer
+            // with no route cannot fail here. Forward + BiDirectional gives the ports
+            // we want: any source port -> VSAPI.
+            let policy = asm.policy_mgr.get_current();
+            let hit = Hit::new_no_signal(0, Direction::Forward);
+            let route = Route::new_direct(NodeId(*future_peer));
+
+            let visawmd = self
+                .create_visa(
+                    asm,
+                    future_peer,
+                    &pkt_data,
+                    &hit,
+                    &route,
+                    BOOTSTRAP_VISA_ZPL,
+                    policy.get_version().unwrap_or(0),
+                    policy.vinst(),
+                )
+                .await?;
+            Ok(visawmd.visa)
+        }
+    }
+
+    /// Find a visa *installed* on the node matching the given five-tuple.
     pub async fn get_node_visa_by_five_tuple(
         &self,
         node_addr: &IpAddr,
         ft: &VsapiFiveTuple,
     ) -> Result<Option<Visa>, ServiceError> {
-        for visa in self
-            .repo
-            .get_visas_for_node_by_state(node_addr, db::NodeVisaState::Installed)?
-        {
-            if visa.dock_pep.is_none() {
-                warn!(target: VISA, "found visa in store with no dock_pep ID={}", visa.issuer_id);
-                continue; // not a full visa -- should not happen as only full visas are stored.
-            }
-            let dock_pep = visa.dock_pep.as_ref().unwrap();
-            let vsource = &dock_pep.source_addr;
-            let vdest = &dock_pep.dest_addr;
-            if vsource == &ft.source_addr && vdest == &ft.dest_addr {
-                // Is from VS -> NODE, check for VSS port match.
-                match &dock_pep.pep {
-                    DockPepType::TCP(tpep) => {
-                        if tpep.dest_port == ft.dest_port && tpep.source_port == ft.source_port {
-                            // Found it
-                            return Ok(Some(visa));
-                        } else {
+        self.find_node_visa_by_five_tuple(node_addr, ft, &[db::NodeVisaState::Installed])
+            .await
+    }
+
+    /// Use a linear search of the node's visas in any of `states` to find a five-tuple match.
+    /// TODO: Need in-memory indexes for this.
+    async fn find_node_visa_by_five_tuple(
+        &self,
+        node_addr: &IpAddr,
+        ft: &VsapiFiveTuple,
+        states: &[db::NodeVisaState],
+    ) -> Result<Option<Visa>, ServiceError> {
+        for state in states {
+            for visa in self.repo.get_visas_for_node_by_state(node_addr, *state)? {
+                if visa.dock_pep.is_none() {
+                    warn!(target: VISA, "found visa in store with no dock_pep ID={}", visa.issuer_id);
+                    continue; // not a full visa -- should not happen as only full visas are stored.
+                }
+                let dock_pep = visa.dock_pep.as_ref().unwrap();
+                let vsource = &dock_pep.source_addr;
+                let vdest = &dock_pep.dest_addr;
+                if vsource == &ft.source_addr && vdest == &ft.dest_addr {
+                    // Is from VS -> NODE, check for VSS port match.
+                    match &dock_pep.pep {
+                        DockPepType::TCP(tpep) => {
+                            if tpep.dest_port == ft.dest_port && tpep.source_port == ft.source_port
+                            {
+                                // Found it
+                                return Ok(Some(visa));
+                            } else {
+                                continue; // not the right visa
+                            }
+                        }
+                        _ => {
                             continue; // not the right visa
                         }
-                    }
-                    _ => {
-                        continue; // not the right visa
                     }
                 }
             }
@@ -1036,6 +1118,100 @@ mod tests {
             .unwrap();
 
         assert!(result.is_none());
+    }
+
+    /// Callers that pass PendingInstall explicitly (the bootstrap-visa dedup) must match a
+    /// created-but-not-yet-delivered visa, otherwise they mint a duplicate on every pass.
+    #[tokio::test]
+    async fn test_find_node_visa_by_five_tuple_matches_pending_when_requested() {
+        let mgr = make_mgr().await;
+        let node_addr: IpAddr = NODE_ADDR.parse().unwrap();
+        let visa = make_visa(4, std::time::Duration::from_secs(60));
+        let metadata = db::VisaMetadata::new(
+            node_addr.clone(),
+            0,
+            0,
+            "zpl".to_string(),
+            Direction::Forward,
+            None,
+            &make_pdesc(),
+        );
+
+        mgr.repo
+            .store_visa(&visa, metadata, db::NodeVisaState::PendingInstall)
+            .await
+            .unwrap();
+
+        let ft = make_fivetuple_tcp(
+            SRC_ADDR.parse().unwrap(),
+            DST_ADDR.parse().unwrap(),
+            1234,
+            443,
+        )
+        .unwrap();
+
+        let result = mgr
+            .find_node_visa_by_five_tuple(
+                &node_addr,
+                &ft,
+                &[
+                    db::NodeVisaState::Installed,
+                    db::NodeVisaState::PendingInstall,
+                ],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.expect("pending visa should match").issuer_id, 4);
+    }
+
+    /// A bootstrap visa must be mintable for a peer that has no actor and no route --
+    /// that is the entire point, the link is not up yet. Going through the normal visa
+    /// request pipeline would deny NoRoute here. Also asserts the dedup: a second call
+    /// reuses the first visa rather than minting a duplicate.
+    #[tokio::test]
+    async fn test_vsapi_bootstrap_visa_for_future_peer_no_route_no_actor() {
+        let asm = crate::assembly::tests::new_assembly_for_tests(None).await;
+        // Never added to actor_mgr or topo_mgr: an unconnected peer.
+        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap();
+
+        let visa = asm
+            .visa_mgr
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer)
+            .await
+            .expect("bootstrap visa must not need a route");
+
+        let dock_pep = visa.dock_pep.as_ref().expect("full visa has a dock_pep");
+        assert_eq!(dock_pep.source_addr, future_peer);
+        assert_eq!(dock_pep.dest_addr, asm.config.get_vs_addr());
+        match &dock_pep.pep {
+            DockPepType::TCP(tpep) => {
+                assert_eq!(tpep.source_port, 0, "any source port");
+                assert_eq!(
+                    tpep.dest_port,
+                    asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT)
+                );
+            }
+            other => panic!("expected a TCP dock pep, got {other:?}"),
+        }
+
+        // Stored pending-install against the peer, so its own worker installs it on connect.
+        let pending = asm
+            .visa_mgr
+            .get_pending_visa_ids_for_node(&future_peer)
+            .await
+            .unwrap();
+        assert_eq!(pending, vec![visa.issuer_id]);
+
+        let again = asm
+            .visa_mgr
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer)
+            .await
+            .unwrap();
+        assert_eq!(
+            again.issuer_id, visa.issuer_id,
+            "second call must reuse the pending visa, not mint a duplicate"
+        );
     }
 
     // --- actualize_visa_for_target_node tests ---
