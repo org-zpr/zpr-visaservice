@@ -18,9 +18,10 @@
 //! `VisaMgr::vsapi_bootstrap_visa_for_future_peer`, which does the actual minting and stays in
 //! [crate::visa_mgr] because it needs the visa store's internals.
 //!
+//! There is also support code in [crate::vss_worker] used when we send the set_topology message.
+//!
 //! TODO: This whole module is a HACK to get initial MULTINODE working, and is meant to be
-//! deleted once peers authenticate and route properly before needing VSAPI. Keeping it together
-//! keeps that deletion to one file plus its three call sites.
+//! deleted once peers authenticate and route properly before needing VSAPI.
 
 use std::net::IpAddr;
 use std::sync::Arc;
