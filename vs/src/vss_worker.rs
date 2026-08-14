@@ -13,7 +13,6 @@ use tokio_rustls::TlsConnector;
 use tokio_util::compat::*;
 use tracing::{debug, error, info, trace, warn};
 
-use libeval::eval_result::Direction;
 use libeval::policy::Policy;
 use zpr::vsapi::v1;
 use zpr::vsapi_types::{ApiResponseError, Link, Param, ServiceDescriptor, Visa, VisaOp, pname};
@@ -25,6 +24,7 @@ use crate::counters::CounterType;
 use crate::error::VssSyncError;
 use crate::logging::targets::VSS;
 use crate::net_mgr;
+use crate::visa_bootstrap;
 use crate::vss::VssCmd;
 
 /// Default timeout for a single Cap'n Proto RPC call.
@@ -687,12 +687,11 @@ async fn vss_do_set_topology(
     mut peers: Vec<Link>,
 ) -> Result<(), VssSyncError> {
     // HACK -> This hack here is to support our intial MULTINODE implementation.
-    // We create "bootstrap" visas for each peer in the topology message.
-    // Every time we send the topology message.
+    // We create "bootstrap" visas for each peer in the topology message, every time we send it.
     //
-    // The visa belongs to the peer, not to this node: this node holds it and hands it
-    // off when the peer connects. Minting bypasses policy evaluation entirely -- see
-    // `VisaMgr::vsapi_bootstrap_visa_for_future_peer`.
+    // The visa belongs to the peer, not to this node: this node holds it and hands it off when
+    // the peer connects. Minting bypasses policy evaluation entirely -- see
+    // [crate::visa_bootstrap], which is where all of this lives and where it gets deleted from.
     //
     // TODO: Reevaluate this.
 
@@ -704,49 +703,19 @@ async fn vss_do_set_topology(
             warn!(target: VSS, "no peer entry for link {} under node {node_addr}; sending it without a bootstrap visa", link.link_id);
             continue;
         };
-        // The link is between `node_addr` and `peer.remote_zpr_addr`.
-        // Both halves of the VSAPI session are needed, one visa each:
-        //
-        //     peer:ANYPORT     -> vs.zpr:VSAPI_PORT TCP    (the peer's SYN)
-        //     vs.zpr:VSAPI_PORT -> peer:ANYPORT TCP        (the visa service's reply)
-        //
-        // Fail the whole call rather than sending the link bare: without both visas the peer
-        // cannot complete a VSAPI session, so the link is useless, and returning Ok would let
-        // `send_topology` mark topology synced and stop housekeeping from ever retrying.
-        // Minting is idempotent (it returns any existing visa), so the retry is free.
-        for direction in [Direction::Forward, Direction::Reverse] {
-            let visa = asm
-                .visa_mgr
-                .vsapi_bootstrap_visa_for_future_peer(
-                    &asm,
-                    &peer.remote_zpr_addr,
-                    node_addr,
-                    direction,
-                )
-                .await
-                .map_err(|e| {
-                    VssSyncError::Internal(format!(
-                        "failed to create {direction:?} bootstrap visa for future peer {}: {e}",
-                        peer.remote_zpr_addr
-                    ))
-                })?;
-            // Actualizing for the peer gives it the copy for its end of the path: ingress with
-            // a fwd_pep handing its VSAPI traffic to `node_addr` on the forward visa, egress
-            // with no forwarding on the reply visa. Nodes further along the path get their own
-            // copies via the pending-install queue.
-            let visa = asm
-                .visa_mgr
-                .actualize_visa_for_target_node(visa, &peer.remote_zpr_addr)
-                .await
-                .map_err(|e| {
-                    VssSyncError::Internal(format!(
-                        "failed to actualize {direction:?} bootstrap visa for future peer {}: {e}",
-                        peer.remote_zpr_addr
-                    ))
-                })?;
-            debug!(target: VSS, "created {direction:?} bootstrap visa for future peer {}: {}", peer.remote_zpr_addr, visa.issuer_id);
-            link.visas.push(visa);
-        }
+        // The link is between `node_addr` and `peer.remote_zpr_addr`. Fail the whole call rather
+        // than sending the link bare: without the visa the peer cannot reach VSAPI, so the link
+        // is useless, and returning Ok would let `send_topology` mark topology synced and stop
+        // housekeeping from ever retrying. Minting is idempotent, so the retry is free.
+        let visa = visa_bootstrap::visa_for_link(&asm, &peer.remote_zpr_addr, node_addr)
+            .await
+            .map_err(|e| {
+                VssSyncError::Internal(format!(
+                    "failed to create bootstrap visa for future peer {}: {e}",
+                    peer.remote_zpr_addr
+                ))
+            })?;
+        link.visas.push(visa);
     }
 
     let mut req = vss_handle.set_topology_request();

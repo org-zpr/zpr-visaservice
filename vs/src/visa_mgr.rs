@@ -12,11 +12,12 @@ use crate::error::{ServiceError, StoreError};
 use crate::logging::targets::VISA;
 use crate::packet::make_fivetuple_tcp;
 use crate::policy_mgr::PolicySnapshot;
+use crate::visa_bootstrap::{BOOTSTRAP_VISA_ZPL, path_for_future_peer};
 use crate::visa_policy::{PolicyOutcome, evaluate_against_policy, route_for_allow};
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval_result::{Direction, Hit};
-use libeval::route::{LinkId, NodeId, Route, RouteKind};
+use libeval::route::{NodeId, Route};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
     CommFlag, DockPep, DockPepType, EndpointT, FwdPep, FwdPepStyle, IcmpPep, KeySet, PacketDesc,
@@ -24,9 +25,6 @@ use zpr::vsapi_types::{
 };
 
 use tracing::info;
-
-/// Stands in for the ZPL source on a bootstrap visa, which has no matching com policy.
-const BOOTSTRAP_VISA_ZPL: &str = "<bootstrap: policy peering>";
 
 #[derive(Clone)]
 pub struct VisaMgr {
@@ -117,82 +115,6 @@ fn path_neighbour_of_endpoint(path: &[IpAddr], node_addr: &IpAddr) -> Option<IpA
     } else {
         None
     }
-}
-
-/// The routed part of a future peer's path to VSAPI: `via_node` to the node the visa service
-/// docks on. The peer's own link is not in the router until it connects, so it is not in here --
-/// [bootstrap_path] and [bootstrap_route] each stitch it on.
-fn bootstrap_vs_segment(
-    asm: &Assembly,
-    future_peer: &IpAddr,
-    via_node: &IpAddr,
-) -> Result<Route, ServiceError> {
-    let vs_addr = asm.config.get_vs_addr();
-    let vs_dock = asm
-        .actor_mgr
-        .get_docking_node_for_adapter(&vs_addr)
-        .ok_or_else(|| {
-            ServiceError::Internal(format!(
-                "visa service {vs_addr} is not docked to a node: cannot path bootstrap visa for {future_peer}"
-            ))
-        })?;
-    asm.topo_mgr
-        .get_best_route(via_node, &vs_dock)
-        .ok_or_else(|| {
-            ServiceError::Internal(format!(
-                "no route from {via_node} to visa service docking node {vs_dock}"
-            ))
-        })
-}
-
-fn bootstrap_path(
-    asm: &Assembly,
-    future_peer: &IpAddr,
-    via_node: &IpAddr,
-) -> Result<Vec<IpAddr>, ServiceError> {
-    let segment = bootstrap_vs_segment(asm, future_peer, via_node)?;
-    let mut path = vec![*future_peer];
-    path.extend(
-        asm.topo_mgr
-            .route_to_path(&segment, &NodeId(*via_node))?
-            .into_iter()
-            .map(IpAddr::from),
-    );
-    Ok(path)
-}
-
-/// The route a future peer's VSAPI traffic takes in the given direction: its own link to
-/// `via_node`, then the routed segment on to the visa service's docking node.
-///
-/// It is always [RouteKind::Multihop] -- at least the peer's link is crossed -- and that link
-/// is described by policy rather than by the router, which does not know it yet.
-/// [Direction::Reverse] walks the same links from the far end, so the order flips.
-pub fn bootstrap_route(
-    asm: &Assembly,
-    future_peer: &IpAddr,
-    via_node: &IpAddr,
-    direction: Direction,
-) -> Result<Route, ServiceError> {
-    let segment = bootstrap_vs_segment(asm, future_peer, via_node)?;
-    let peer_link = asm
-        .policy_mgr
-        .get_current()
-        .describe_link(via_node, future_peer)
-        .map_err(|e| {
-            ServiceError::Internal(format!(
-                "no policy link between {via_node} and future peer {future_peer}: {e}"
-            ))
-        })?;
-    let mut links = vec![LinkId(peer_link.link_id)];
-    links.extend(segment.links);
-    if direction == Direction::Reverse {
-        links.reverse();
-    }
-    Ok(Route {
-        kind: RouteKind::Multihop,
-        links,
-        cost: segment.cost.saturating_add(peer_link.cost),
-    })
 }
 
 impl VisaWithMetadata {
@@ -352,10 +274,13 @@ impl VisaMgr {
     /// Mint (or reuse) one direction of the bootstrap flow that lets a not-yet-connected peer
     /// reach the visa service's VSAPI port, which is how it connects in the first place.
     ///
+    /// The rest of the bootstrap machinery lives in [crate::visa_bootstrap]; only the minting
+    /// is here, because it needs this module's private store and lookup helpers.
+    ///
     /// The visa belongs to `future_peer` and is stored pending-install against it.
     /// `via_node` is the already-connected neighbour whose topology message carries the
     /// copy handed off when the peer shows up; it is also the peer's first hop, so the
-    /// path is anchored on it (see [bootstrap_path]).
+    /// path is anchored on it (see [crate::visa_bootstrap::path_for_future_peer]).
     ///
     /// `direction` picks which half of the flow this visa is for. A visa carries exactly one
     /// dock PEP and one path orientation, so the two halves cannot share one:
@@ -431,14 +356,14 @@ impl VisaMgr {
             // and the relaying nodes get no copy at all, leaving the visa unusable.
             let policy = asm.policy_mgr.get_current();
             let hit = Hit::new_no_signal(0, direction);
-            // [bootstrap_path] is peer-first, which is the forward flow's orientation. The
+            // [path_for_future_peer] is peer-first, which is the forward flow's orientation. The
             // reply ingresses at the other end, so flip it: actualization decides each node's
             // role from the path plus the ingress node, and `path[0]` is that node either way.
-            let mut path = bootstrap_path(asm, future_peer, via_node)?;
+            let mut path = path_for_future_peer(asm, future_peer, via_node)?;
             if direction == Direction::Reverse {
                 path.reverse();
             }
-            let ingress_node = path[0]; // bootstrap_path is never empty
+            let ingress_node = path[0]; // path_for_future_peer is never empty
 
             let visawmd = self
                 .create_visa_with_path(
