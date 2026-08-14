@@ -55,12 +55,29 @@ pub const BOOTSTRAP_VISA_ZPL: &str = "<bootstrap: policy peering>";
 /// visa carries one dock PEP and one path orientation, so neither can stand in for the other --
 /// see `VisaMgr::vsapi_bootstrap_visa_for_future_peer`.
 ///
+/// Returns no visas for a peer that has already connected: it has an actor and a route, so it
+/// asks for what it needs over its own VSAPI session. Minting for it is not just redundant but
+/// wrong -- [path_for_future_peer] stitches the peer on in front of `via_node`'s route to the
+/// visa service, and for a connected peer that route can run back through the peer itself,
+/// producing a path that revisits it (`[peer, via_node, peer]`). Actualization then reads
+/// `via_node` as an intermediary and pushes it a forwarding-only visa for a flow it terminates.
+///
 /// Minting is idempotent, so calling this on every topology send is free after the first.
 pub async fn visas_for_link(
     asm: &Arc<Assembly>,
     future_peer: &IpAddr,
     via_node: &IpAddr,
 ) -> Result<Vec<Visa>, ServiceError> {
+    if asm
+        .actor_mgr
+        .get_actor_by_zpr_addr(future_peer)
+        .await?
+        .is_some()
+    {
+        debug!(target: VSS, "peer {future_peer} of node {via_node} is already connected: no bootstrap visas needed");
+        return Ok(Vec::new());
+    }
+
     let mut visas = Vec::new();
     for direction in [Direction::Forward, Direction::Reverse] {
         let visa = asm
@@ -499,6 +516,48 @@ mod tests {
         assert_eq!(
             resent_ids, ids,
             "re-sending topology must not mint duplicates"
+        );
+    }
+
+    /// A topology send to a node whose peer has already connected carries no bootstrap visas.
+    /// Minting them is not merely redundant: here the connected peer is also the node the visa
+    /// service docks on, so the peer's path would run back through itself
+    /// (`[peer, via_node, peer]`) and stage `via_node` a forwarding-only visa for a flow it is
+    /// an endpoint of -- which its dataplane rejects.
+    #[tokio::test]
+    async fn no_bootstrap_visas_for_an_already_connected_peer() {
+        let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let peer: IpAddr = "fd5a:5052:3000::2".parse().unwrap(); // connected, docks the VS
+
+        let asm = build_bootstrap_test_asm(via_node, peer).await;
+        asm.topo_mgr.add_node(peer).unwrap();
+        asm.topo_mgr
+            .add_link(via_node, peer, LinkId("link-vp".into()), vec![], 1)
+            .unwrap();
+        asm.actor_mgr
+            .add_node(
+                &make_node_actor_defexp(&peer.to_string(), "peer-node", "10.0.0.2:5001"),
+                false,
+            )
+            .await
+            .unwrap();
+        asm.actor_mgr.hack_set_vs_docking_node(&peer).await.unwrap();
+        let asm = Arc::new(asm);
+
+        assert!(
+            visas_for_link(&asm, &peer, &via_node)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a connected peer needs no bootstrap visas"
+        );
+        assert!(
+            asm.visa_mgr
+                .get_pending_visa_ids_for_node(&via_node)
+                .await
+                .unwrap()
+                .is_empty(),
+            "nothing may be staged for the relaying node either"
         );
     }
 

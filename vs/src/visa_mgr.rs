@@ -13,7 +13,9 @@ use crate::logging::targets::VISA;
 use crate::packet::make_fivetuple_tcp;
 use crate::policy_mgr::PolicySnapshot;
 use crate::visa_bootstrap::{BOOTSTRAP_VISA_ZPL, path_for_future_peer};
-use crate::visa_policy::{PolicyOutcome, evaluate_against_policy, route_for_allow};
+use crate::visa_policy::{
+    PolicyOutcome, docking_node_for_addr, evaluate_against_policy, route_for_allow,
+};
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval_result::{Direction, Hit};
@@ -57,24 +59,34 @@ pub enum VisaRecheck {
     Revoke,
 }
 
-/// Canonical forward-order (ingress→…→egress) node path for `route`, or `None`
-/// for a direct route. Mirrors exactly what `create_visa` stores in
-/// `metadata.path` so a re-derived path can be compared against a stored one.
-/// `starting_node` is the visa's `requesting_node`; a reverse hit traverses
-/// from the forward-egress node, so we reverse to restore forward orientation.
-fn canonical_path(
+/// Node path for `route` in flow order: the node the packets enter the fabric at first,
+/// then every node they traverse, ending at the node serving the destination. `None` for a
+/// direct route -- nothing is forwarded, so there is no path worth recording.
+///
+/// Anchored on the docking node of `source_addr` (the actor sending the packets this visa
+/// authorizes), NOT on the node that asked for the visa. Those coincide for an ordinary
+/// request -- a node asks about a packet its own docked actor sent -- but not for visas the
+/// visa service mints pre-emptively on another node's behalf, e.g.
+/// [VisaMgr::post_register_vss_visas_for_node]. Actualization reads each node's role
+/// straight off this ordering, so getting the anchor wrong hands the destination node a
+/// next hop pointing back the way the packets came.
+///
+/// Mirrors exactly what `create_visa` stores in `metadata.path`, so a re-derived path can
+/// be compared against a stored one.
+async fn path_for_flow(
     asm: &Assembly,
-    starting_node: &IpAddr,
+    source_addr: &IpAddr,
     route: &Route,
-    direction: Direction,
 ) -> Result<Option<Vec<IpAddr>>, ServiceError> {
     if !matches!(route.kind, libeval::route::RouteKind::Multihop) {
         return Ok(None);
     }
-    let mut node_id_path = asm.topo_mgr.route_to_path(route, &NodeId(*starting_node))?;
-    if direction == Direction::Reverse {
-        node_id_path.reverse();
-    }
+    let Some(ingress) = docking_node_for_addr(asm, source_addr).await else {
+        return Err(ServiceError::Internal(format!(
+            "cannot orient visa path: source {source_addr} is not docked to any node"
+        )));
+    };
+    let node_id_path = asm.topo_mgr.route_to_path(route, &NodeId(ingress))?;
     Ok(Some(node_id_path.into_iter().map(|id| id.into()).collect()))
 }
 
@@ -154,60 +166,39 @@ impl VisaMgr {
             return Ok(visa);
         }
 
-        // Metadata includes the requesting node addr.
-        // If our `target_node` is first or last then we are in an ingress or egress context.
-        // If target_node is requesting_node then this is ingress, else this is egress.
-
-        let vctx =
-            if (path.first().unwrap() == target_node) || (path.last().unwrap() == target_node) {
-                if target_node == &md.requesting_node {
-                    VCtx::Ingress
-                } else {
-                    VCtx::Egress
-                }
-            } else {
-                VCtx::Intermediary
-            };
+        // The path is in flow order (see [path_for_flow]), so a node's role is its position
+        // on it: packets enter at the front and leave at the back. Deliberately NOT keyed off
+        // `md.requesting_node` -- the requester is not always the ingress node, and treating
+        // it as one told the destination node to forward the flow back towards its source.
+        let vctx = if path.first().unwrap() == target_node {
+            VCtx::Ingress
+        } else if path.last().unwrap() == target_node {
+            VCtx::Egress
+        } else {
+            VCtx::Intermediary
+        };
 
         match vctx {
-            VCtx::Ingress => {
-                // We already know path is at least 2 so there is a forwarding instruction.
-                // We are ingress so we are at one end of the path, so next hop is trivial.
-                let next_hop = if path.first().unwrap() == target_node {
-                    path[1]
-                } else {
-                    path[path.len() - 2]
+            // The flow terminates here, so there is nothing to forward: full visa as-is.
+            VCtx::Egress => Ok(visa),
+
+            // Both other roles forward one hop further along the path -- given [A, B, C, D],
+            // A forwards to B, B to C, C to D. Only the visa contents differ: the ingress
+            // node also docks the flow, an intermediary purely relays it.
+            VCtx::Ingress | VCtx::Intermediary => {
+                let Some(next_hop) = next_hop_in_path(path, target_node) else {
+                    error!(target: VISA, "error actualizing visa for node {target_node} on path {path:?}: no next_hop found");
+                    return Err(ServiceError::Internal(format!("failed to actualize visa")));
                 };
-                let fwd_pep = FwdPep {
-                    next_hop: next_hop,
+                let fpep = FwdPep {
+                    next_hop: *next_hop,
                     style: FwdPepStyle::OneWay, // TODO: Not sure when to set this to symmetric.
                 };
-                visa.fwd_pep = Some(fwd_pep);
-                return Ok(visa);
-            }
-            VCtx::Egress => {
-                // Just return the full visa.
-                return Ok(visa);
-            }
-            VCtx::Intermediary => {
-                // We are an intermediate node, but are we going forward on the path or backwards?
-                //
-                // Given path [A, B, C, D] and and the fact that A requested the visa (and so is ingress) then,
-                // Node D is egress.  Node B needs to forward to C, and C to D.
-
-                // Build a forwardingOnly visa ...
-                match next_hop_in_path(path, target_node, &md.requesting_node) {
-                    Some(next_hop) => {
-                        let fpep = FwdPep {
-                            next_hop: *next_hop,
-                            style: FwdPepStyle::OneWay, // TODO: Not sure when to set this to symmetric.
-                        };
-                        return Ok(to_forwarding_visa(visa, fpep));
-                    }
-                    None => {
-                        error!(target: VISA, "error actualizing visa for ingress node {target_node} on path is {path:?}: no next_hop found");
-                        return Err(ServiceError::Internal(format!("failed to actualize visa")));
-                    }
+                if vctx == VCtx::Ingress {
+                    visa.fwd_pep = Some(fpep);
+                    Ok(visa)
+                } else {
+                    Ok(to_forwarding_visa(visa, fpep))
                 }
             }
         }
@@ -427,13 +418,16 @@ impl VisaMgr {
     }
 
     /// Ask policy for a visa permitting this visa service to talk to the given node VSS addr.
-    /// Creating the visa has side effect of storing it in state and as PENDING on the requesting node.
-    ///
-    /// TODO: Should also be set pending on any intermediary nodes.
+    /// Creating the visa has the side effect of storing it and marking it PENDING on every
+    /// node along the path.
     ///
     /// `node_addr` - node ZPR address hosting the VSS.
     ///
-    /// Returns a visa for the docking node of `node_addr` (based on route of VS->node_addr).
+    /// `node_addr` is passed as the requesting node even though the flow runs the other way:
+    /// it is the node whose reply carries the visa (see
+    /// [VisaMgr::post_register_vss_visas_for_node]), and that is all `requesting_node` still
+    /// selects -- who is excluded from the background push. Path geometry comes from the
+    /// flow's source instead, see [path_for_flow].
     async fn create_vs_to_node_vss_visa(
         &self,
         asm: Arc<Assembly>,
@@ -503,7 +497,7 @@ impl VisaMgr {
         policy_version: u64,
         vinst: u64,
     ) -> Result<VisaWithMetadata, ServiceError> {
-        let path = canonical_path(asm, requesting_node, route, hit.direction)?;
+        let path = path_for_flow(asm, &pdesc.five_tuple.source_addr, route).await?;
         self.create_visa_with_path(
             requesting_node,
             pdesc,
@@ -844,10 +838,10 @@ impl VisaMgr {
         // stored path. Derive the new path exactly as create_visa did so the
         // comparison is apples-to-apples.
         let route = route_for_allow(&hits, default_route)?;
-        match canonical_path(asm, &metadata.requesting_node, &route, hits[0].direction) {
+        match path_for_flow(asm, &src_zpr, &route).await {
             Ok(new_path) if new_path == metadata.path => Ok(VisaRecheck::AllowSameRoute),
             Ok(_) => Ok(VisaRecheck::Revoke),
-            // The old requesting node is no longer on the new route (topology
+            // The source's docking node is no longer on the new route (topology
             // moved under us) -- the route definitely changed, so revoke.
             Err(_) => Ok(VisaRecheck::Revoke),
         }
@@ -1017,23 +1011,11 @@ fn to_forwarding_visa(mut visa: Visa, fwd_pep: FwdPep) -> Visa {
     visa
 }
 
-/// Returns the adjacent node after `target_node` in `path`, stepping forward or backward
-/// according to the specified ingress node.
-///
-/// ### Panics
-/// - if `ingress_node` is not either the first or last node in the path.
-fn next_hop_in_path<'a>(
-    path: &'a [IpAddr],
-    target_node: &IpAddr,
-    ingress_node: &IpAddr,
-) -> Option<&'a IpAddr> {
-    assert!(path.first()? == ingress_node || path.last()? == ingress_node);
+/// The node `target_node` hands off to on `path`: the next one along, since the path runs in
+/// flow order. `None` if `target_node` is the egress node or is not on the path at all.
+fn next_hop_in_path<'a>(path: &'a [IpAddr], target_node: &IpAddr) -> Option<&'a IpAddr> {
     let pos = path.iter().position(|n| n == target_node)?;
-    if path.first()? == ingress_node {
-        path.get(pos + 1)
-    } else {
-        pos.checked_sub(1).and_then(|i| path.get(i))
-    }
+    path.get(pos + 1)
 }
 
 #[cfg(test)]
@@ -1061,9 +1043,8 @@ mod tests {
     #[test]
     fn test_next_hop_empty() {
         let path = vec![];
-        let ingress = "fd5a:5052::1".parse().unwrap();
         let target = "fd5a:5052::2".parse().unwrap();
-        assert_eq!(next_hop_in_path(&path, &target, &ingress), None);
+        assert_eq!(next_hop_in_path(&path, &target), None);
     }
 
     #[test]
@@ -1071,8 +1052,8 @@ mod tests {
         let n0 = "fd5a:5052::1".parse().unwrap();
         let n1 = "fd5a:5052::2".parse().unwrap();
         let path = vec![n0];
-        assert_eq!(next_hop_in_path(&path, &n0, &n0), None);
-        assert_eq!(next_hop_in_path(&path, &n1, &n0), None);
+        assert_eq!(next_hop_in_path(&path, &n0), None);
+        assert_eq!(next_hop_in_path(&path, &n1), None);
     }
 
     #[test]
@@ -1080,10 +1061,9 @@ mod tests {
         let n0 = "fd5a:5052::1".parse().unwrap();
         let n1 = "fd5a:5052::2".parse().unwrap();
         let path = vec![n0, n1];
-        assert_eq!(next_hop_in_path(&path, &n0, &n0), Some(&n1));
-        assert_eq!(next_hop_in_path(&path, &n1, &n0), None);
-        assert_eq!(next_hop_in_path(&path, &n1, &n1), Some(&n0));
-        assert_eq!(next_hop_in_path(&path, &n0, &n1), None);
+        assert_eq!(next_hop_in_path(&path, &n0), Some(&n1));
+        // n1 is the egress end: nothing beyond it.
+        assert_eq!(next_hop_in_path(&path, &n1), None);
     }
 
     #[test]
@@ -1093,15 +1073,11 @@ mod tests {
         let n2 = "fd5a:5052::3".parse().unwrap();
         let unknown = "fd5a:5052::4".parse().unwrap();
         let path = vec![n0, n1, n2];
-        assert_eq!(next_hop_in_path(&path, &n0, &n0), Some(&n1));
-        assert_eq!(next_hop_in_path(&path, &n1, &n0), Some(&n2));
-        assert_eq!(next_hop_in_path(&path, &n2, &n0), None);
+        assert_eq!(next_hop_in_path(&path, &n0), Some(&n1));
+        assert_eq!(next_hop_in_path(&path, &n1), Some(&n2));
+        assert_eq!(next_hop_in_path(&path, &n2), None);
 
-        assert_eq!(next_hop_in_path(&path, &n0, &n2), None);
-        assert_eq!(next_hop_in_path(&path, &n1, &n2), Some(&n0));
-        assert_eq!(next_hop_in_path(&path, &n2, &n2), Some(&n1));
-
-        assert_eq!(next_hop_in_path(&path, &unknown, &n2), None);
+        assert_eq!(next_hop_in_path(&path, &unknown), None);
     }
 
     #[tokio::test]
@@ -1640,14 +1616,16 @@ mod tests {
         assert!(result.dock_pep.is_some(), "egress returns full visa");
     }
 
-    /// Ingress context (last node + Reverse) → full visa with fwd_pep pointing to node before target.
+    /// A reverse-flow visa stores its own flow order [C, B, A], so C is the ingress end:
+    /// full visa with fwd_pep towards B.
     #[tokio::test]
     async fn test_actualize_ingress_reverse_sets_fwd_pep() {
         let mgr = make_mgr().await;
         let node_b: IpAddr = PATH_NODE_B.parse().unwrap();
         let node_c: IpAddr = PATH_NODE_C.parse().unwrap();
-        let visa =
-            store_test_visa_with_reqesting_node(&mgr, 1, Some(three_node_path()), node_c).await;
+        let mut path = three_node_path();
+        path.reverse();
+        let visa = store_test_visa(&mgr, 1, Some(path)).await;
 
         let result = mgr
             .actualize_visa_for_target_node(visa, &node_c)
@@ -1656,7 +1634,6 @@ mod tests {
         let fwd_pep = result
             .fwd_pep
             .expect("expected fwd_pep on ingress-reverse visa");
-        // Traversing in reverse from C, the next hop is B (the node immediately before C).
         assert_eq!(fwd_pep.next_hop, node_b);
         assert!(
             result.dock_pep.is_some(),
@@ -1664,15 +1641,14 @@ mod tests {
         );
     }
 
-    /// Egress context (first node + Reverse) → full visa returned unchanged.
+    /// The other end of that reverse-flow path [C, B, A]: A is egress, full visa unchanged.
     #[tokio::test]
     async fn test_actualize_egress_reverse_returns_full_visa() {
         let mgr = make_mgr().await;
-        let requesting_node: IpAddr = PATH_NODE_C.parse().unwrap();
         let node_a: IpAddr = PATH_NODE_A.parse().unwrap();
-        let visa =
-            store_test_visa_with_reqesting_node(&mgr, 1, Some(three_node_path()), requesting_node)
-                .await;
+        let mut path = three_node_path();
+        path.reverse();
+        let visa = store_test_visa(&mgr, 1, Some(path)).await;
 
         let result = mgr
             .actualize_visa_for_target_node(visa, &node_a)
@@ -1682,6 +1658,41 @@ mod tests {
         assert!(
             result.dock_pep.is_some(),
             "egress-reverse returns full visa"
+        );
+    }
+
+    /// The bug this geometry replaced: a visa the VS mints pre-emptively names the flow's
+    /// *destination* as the requesting node, and the destination must still come out egress.
+    /// Keying the role off `requesting_node` instead handed it a fwd_pep pointing back at the
+    /// node the packets arrived from, which ping-ponged binds between the two nodes.
+    #[tokio::test]
+    async fn test_actualize_role_ignores_requesting_node() {
+        let mgr = make_mgr().await;
+        let node_a: IpAddr = PATH_NODE_A.parse().unwrap();
+        let node_c: IpAddr = PATH_NODE_C.parse().unwrap();
+        // Flow runs A → C, but C is the node that asked for the visa.
+        let visa =
+            store_test_visa_with_reqesting_node(&mgr, 1, Some(three_node_path()), node_c).await;
+
+        let at_c = mgr
+            .actualize_visa_for_target_node(visa.clone(), &node_c)
+            .await
+            .unwrap();
+        assert!(
+            at_c.fwd_pep.is_none(),
+            "destination node must not be told to forward the flow onwards"
+        );
+        assert!(at_c.dock_pep.is_some(), "destination docks the flow");
+
+        let at_a = mgr
+            .actualize_visa_for_target_node(visa, &node_a)
+            .await
+            .unwrap();
+        assert_eq!(
+            at_a.fwd_pep
+                .expect("source node forwards into the fabric")
+                .next_hop,
+            PATH_NODE_B.parse::<IpAddr>().unwrap()
         );
     }
 
@@ -1739,12 +1750,16 @@ mod tests {
     use crate::assembly::tests::new_assembly_for_tests;
     use libeval::route::LinkId;
 
-    // Three nodes forming a linear chain: SRC → MID → DST (no direct SRC–DST link).
+    // Three nodes forming a linear chain: SRC → MID → DST (no direct SRC–DST link),
+    // with one adapter docked at each end.
     const MH_SRC: &str = "fd5a:5052::a1";
     const MH_MID: &str = "fd5a:5052::b1";
     const MH_DST: &str = "fd5a:5052::c1";
+    const MH_SRC_ADAPTER: &str = "fd5a:5052:1234::a100";
+    const MH_DST_ADAPTER: &str = "fd5a:5052:1234::a200";
 
-    /// Build an assembly with topology SRC→MID→DST and no direct SRC–DST link.
+    /// Build an assembly with topology SRC→MID→DST and no direct SRC–DST link. The end
+    /// adapters are docked so that [path_for_flow] can orient a flow between them.
     async fn make_multihop_assembly() -> Assembly {
         let asm = new_assembly_for_tests(None).await;
         let src: IpAddr = MH_SRC.parse().unwrap();
@@ -1759,6 +1774,15 @@ mod tests {
         asm.topo_mgr
             .add_link(mid, dst, LinkId("link-mid-dst".into()), vec![], 1)
             .unwrap();
+        for (adapter, node, cn) in [
+            (MH_SRC_ADAPTER, src, "mh-src-adapter"),
+            (MH_DST_ADAPTER, dst, "mh-dst-adapter"),
+        ] {
+            asm.actor_mgr
+                .add_adapter_via_node(&make_adapter_actor_defexp(adapter, cn), &node)
+                .await
+                .unwrap();
+        }
         asm
     }
 
@@ -1770,8 +1794,8 @@ mod tests {
         let mid: IpAddr = MH_MID.parse().unwrap();
         let dst: IpAddr = MH_DST.parse().unwrap();
 
-        let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
-        let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
+        let src_adapter: IpAddr = MH_SRC_ADAPTER.parse().unwrap();
+        let dst_adapter: IpAddr = MH_DST_ADAPTER.parse().unwrap();
 
         let pdesc = PacketDesc::new_tcp_with_addr(src_adapter, dst_adapter, 12345, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
@@ -1798,8 +1822,8 @@ mod tests {
         let src: IpAddr = MH_SRC.parse().unwrap();
         let mid: IpAddr = MH_MID.parse().unwrap();
         let dst: IpAddr = MH_DST.parse().unwrap();
-        let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
-        let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
+        let src_adapter: IpAddr = MH_SRC_ADAPTER.parse().unwrap();
+        let dst_adapter: IpAddr = MH_DST_ADAPTER.parse().unwrap();
         let pdesc = PacketDesc::new_tcp_with_addr(src_adapter, dst_adapter, 12345, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
@@ -1828,22 +1852,16 @@ mod tests {
         assert!(pending_dst.iter().any(|v| v.issuer_id == visa_id));
     }
 
-    /// For a reverse multihop visa the requesting node is the reverse-direction ingress and
-    /// must receive fwd_pep pointing to the next hop toward the forward source.
-    ///
-    /// The bug: create_visa always passes requesting_node as starting_node to route_to_path,
-    /// so for a reverse hit where requesting_node == forward-egress (dst) the stored path is
-    /// [dst, mid, src].  actualize_visa_for_target_node then sees path.first()==dst with
-    /// Direction::Reverse → VCtx::Egress → no fwd_pep.  The fix is to reverse the stored
-    /// path for reverse hits so it is always in canonical forward order [src, mid, dst].
+    /// A reverse-direction visa covers packets sent by the forward flow's destination, so its
+    /// path starts at that end: dst is the ingress node and must get a fwd_pep towards mid.
     #[tokio::test]
     async fn test_create_visa_reverse_multihop_requesting_node_gets_fwd_pep() {
         let asm = make_multihop_assembly().await;
         let src: IpAddr = MH_SRC.parse().unwrap();
         let mid: IpAddr = MH_MID.parse().unwrap();
         let dst: IpAddr = MH_DST.parse().unwrap();
-        let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
-        let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
+        let src_adapter: IpAddr = MH_SRC_ADAPTER.parse().unwrap();
+        let dst_adapter: IpAddr = MH_DST_ADAPTER.parse().unwrap();
 
         // Reverse packet: dst is the sender, src is the destination.
         let pdesc = PacketDesc::new_tcp_with_addr(dst_adapter, src_adapter, 54321, 80).unwrap();
@@ -1883,8 +1901,8 @@ mod tests {
         let src: IpAddr = MH_SRC.parse().unwrap();
         let mid: IpAddr = MH_MID.parse().unwrap();
         let dst: IpAddr = MH_DST.parse().unwrap();
-        let src_adapter: IpAddr = "fd5a:5052:1234::a100".parse().unwrap();
-        let dst_adapter: IpAddr = "fd5a:5052:1234::a200".parse().unwrap();
+        let src_adapter: IpAddr = MH_SRC_ADAPTER.parse().unwrap();
+        let dst_adapter: IpAddr = MH_DST_ADAPTER.parse().unwrap();
         let pdesc = PacketDesc::new_tcp_with_addr(src_adapter, dst_adapter, 12345, 80).unwrap();
         let hit = Hit::new_no_signal(0, Direction::Forward);
         let route = asm.topo_mgr.get_best_route(&src, &dst).unwrap();
@@ -2059,31 +2077,19 @@ mod tests {
         assert_eq!(res, VisaRecheck::Revoke);
     }
 
-    /// canonical_path returns None for a direct (same-node) route in either
-    /// direction -- a direct visa stores `path = None`, so recheck compares
-    /// None == None and stays AllowSameRoute.
+    /// path_for_flow returns None for a direct (same-node) route -- a direct visa
+    /// stores `path = None`, so recheck compares None == None and stays AllowSameRoute.
     #[tokio::test]
-    async fn test_canonical_path_direct_is_none() {
+    async fn test_path_for_flow_direct_is_none() {
         let asm = new_assembly_for_tests(None).await;
         let a: IpAddr = "fd5a:5052::1".parse().unwrap();
         asm.topo_mgr.add_node(a).unwrap();
         let route = asm.topo_mgr.get_best_route(&a, &a).unwrap();
-        assert_eq!(
-            canonical_path(&asm, &a, &route, Direction::Forward).unwrap(),
-            None
-        );
-        assert_eq!(
-            canonical_path(&asm, &a, &route, Direction::Reverse).unwrap(),
-            None
-        );
+        assert_eq!(path_for_flow(&asm, &a, &route).await.unwrap(), None);
     }
 
-    /// canonical_path yields the forward node order from the requesting node, and
-    /// a reverse hit flips it -- both are deterministic in (requesting_node,
-    /// direction), which is exactly why a re-derived path compares equal to the
-    /// one create_visa stored (same helper, same inputs).
-    #[tokio::test]
-    async fn test_canonical_path_multihop_forward_and_reverse() {
+    /// Build a—b—c with node actors for a and c, plus an adapter docked on c.
+    async fn make_abc_assembly() -> (Assembly, IpAddr, IpAddr, IpAddr) {
         let asm = new_assembly_for_tests(None).await;
         let a: IpAddr = "fd5a:5052::1".parse().unwrap();
         let b: IpAddr = "fd5a:5052::2".parse().unwrap();
@@ -2097,32 +2103,73 @@ mod tests {
         asm.topo_mgr
             .add_link(b, c, LinkId("bc".into()), vec![], 1)
             .unwrap();
-        let route = asm.topo_mgr.get_best_route(&a, &c).unwrap();
+        for (addr, cn) in [(a, "node-a"), (c, "node-c")] {
+            asm.actor_mgr
+                .add_node(
+                    &make_node_actor_defexp(&addr.to_string(), cn, "10.0.0.1:10001"),
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+        (asm, a, b, c)
+    }
+
+    /// The path runs in flow order from wherever the *source* docks: from a it is
+    /// [a, b, c], from c it is [c, b, a], and an adapter docked on c is oriented
+    /// like c. This is what makes a node's actualization role positional.
+    #[tokio::test]
+    async fn test_path_for_flow_orients_on_source_dock() {
+        let (asm, a, b, c) = make_abc_assembly().await;
+        let adapter_on_c: IpAddr = "fd5a:5052:1234::c1".parse().unwrap();
+        asm.actor_mgr
+            .add_adapter_via_node(
+                &make_adapter_actor_defexp(&adapter_on_c.to_string(), "adapter-c"),
+                &c,
+            )
+            .await
+            .unwrap();
+
+        // A route's links are ordered from the source's end, exactly as the policy eval
+        // builds it (get_best_route(source dock, dest dock)), so each direction gets its own.
+        let a_to_c = asm.topo_mgr.get_best_route(&a, &c).unwrap();
+        let c_to_a = asm.topo_mgr.get_best_route(&c, &a).unwrap();
         assert_eq!(
-            canonical_path(&asm, &a, &route, Direction::Forward).unwrap(),
+            path_for_flow(&asm, &a, &a_to_c).await.unwrap(),
             Some(vec![a, b, c])
         );
         assert_eq!(
-            canonical_path(&asm, &a, &route, Direction::Reverse).unwrap(),
+            path_for_flow(&asm, &c, &c_to_a).await.unwrap(),
             Some(vec![c, b, a])
+        );
+        assert_eq!(
+            path_for_flow(&asm, &adapter_on_c, &c_to_a).await.unwrap(),
+            Some(vec![c, b, a]),
+            "an adapter's flow enters the fabric at its docking node"
         );
     }
 
-    /// canonical_path errors when the visa's requesting node is no longer on the
-    /// route (topology moved under us); recheck maps that Err to Revoke.
+    /// Two ways the path cannot be oriented, both of which recheck maps to Revoke:
+    /// an undocked source, and a source docked off the route (topology moved under us).
     #[tokio::test]
-    async fn test_canonical_path_bogus_start_errors() {
-        let asm = new_assembly_for_tests(None).await;
-        let a: IpAddr = "fd5a:5052::1".parse().unwrap();
-        let b: IpAddr = "fd5a:5052::2".parse().unwrap();
-        asm.topo_mgr.add_node(a).unwrap();
-        asm.topo_mgr.add_node(b).unwrap();
-        asm.topo_mgr
-            .add_link(a, b, LinkId("ab".into()), vec![], 1)
-            .unwrap();
+    async fn test_path_for_flow_unorientable_source_errors() {
+        let (asm, a, b, _c) = make_abc_assembly().await;
         let route = asm.topo_mgr.get_best_route(&a, &b).unwrap();
-        let bogus: IpAddr = "fd5a:5052::99".parse().unwrap();
-        assert!(canonical_path(&asm, &bogus, &route, Direction::Forward).is_err());
+
+        let undocked: IpAddr = "fd5a:5052:1234::99".parse().unwrap();
+        assert!(path_for_flow(&asm, &undocked, &route).await.is_err());
+
+        // Node d is docked (on itself) but the a—b route does not touch it.
+        let d: IpAddr = "fd5a:5052::4".parse().unwrap();
+        asm.topo_mgr.add_node(d).unwrap();
+        asm.actor_mgr
+            .add_node(
+                &make_node_actor_defexp(&d.to_string(), "node-d", "10.0.0.4:10001"),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(path_for_flow(&asm, &d, &route).await.is_err());
     }
 
     /// An adapter leaving while its node stays up: the visa on the live node is

@@ -712,6 +712,9 @@ async fn vss_do_set_topology(
         // than sending the link bare: without the visas the peer cannot reach VSAPI, so the link
         // is useless, and returning Ok would let `send_topology` mark topology synced and stop
         // housekeeping from ever retrying. Minting is idempotent, so the retry is free.
+        //
+        // An already-connected peer is the exception and yields no visas -- it has a VSAPI
+        // session of its own and asks for what it needs.
         let visas = visa_bootstrap::visas_for_link(&asm, &peer.remote_zpr_addr, node_addr)
             .await
             .map_err(|e| {
