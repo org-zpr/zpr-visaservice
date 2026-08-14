@@ -30,11 +30,12 @@ use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
 use libeval::eval_result::Hit;
 use libeval::policy::Policy;
-use libeval::route::Route;
+use libeval::route::{NodeId, Route};
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, warn};
+use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{DenyCode, PacketDesc, Visa};
 
 use crate::actor_attributes::refresh_and_persist_actor;
@@ -206,6 +207,18 @@ async fn process_visa_request_job(asm: Arc<Assembly>, job: VisaRequestJob) {
 /// Run visa request.
 async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaRequestResult {
     let (source_actor, dest_actor) = get_actors(&asm, job).await?;
+
+    // An endpoint with no actor may be a peer that has not connected yet, on either end of a
+    // VSAPI flow: the peer's own SYN, or the reply direction of it. Policy cannot answer
+    // either; the pre-minted bootstrap visa can.
+    if source_actor.is_none() || dest_actor.is_none() {
+        if let Some(decision) =
+            bootstrap_visa_for_future_peer_request(&asm, job, &source_actor, &dest_actor).await
+        {
+            return Ok(decision);
+        }
+    }
+
     let (mut source_actor, mut dest_actor) =
         match resolve_actors_or_deny(&asm, job, source_actor, dest_actor).await {
             Ok(actors) => actors,
@@ -266,6 +279,101 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
         } => visa_from_allow(asm.clone(), job, &hits, &policy, default_route).await,
         PolicyOutcome::Deny(code) => Ok(VisaDecision::Deny(code)),
     }
+}
+
+/// Answer a request for a not-yet-connected peer's VSAPI bootstrap flow from the visa we
+/// already minted, instead of from policy.
+///
+/// `vss_do_set_topology` pushes this visa to the peer's neighbours inside `Link.visas`, but a
+/// neighbour whose dataplane sees the peer's SYN before it installs that copy asks for it
+/// instead. Policy cannot answer: the peer has no actor and no route until it connects, and
+/// reaching VSAPI is how it connects. A peering declared in policy *is* the authorization --
+/// the same argument that justifies minting at topology-send time -- so hand the visa back.
+/// Minting is idempotent, so this returns the same visa the neighbours were pushed.
+///
+/// Either orientation counts: the peer's own SYN (`peer:any -> vs:VSAPI`) and the reply
+/// direction (`vs:VSAPI -> peer:any`) are one bidirectional flow covered by one visa, and a
+/// node may request for whichever it sees first.
+///
+/// Returns `None` when this is not that flow (including on a mint failure), leaving the
+/// request to normal evaluation.
+async fn bootstrap_visa_for_future_peer_request(
+    asm: &Arc<Assembly>,
+    job: &VisaRequestJob,
+    source_actor: &Option<Actor>,
+    dest_actor: &Option<Actor>,
+) -> Option<VisaDecision> {
+    let ft = &job.packet_desc.five_tuple;
+    if ft.l4_protocol != ip_proto::TCP {
+        return None;
+    }
+    let vs_addr = asm.config.get_vs_addr();
+    let vsapi_port = asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT);
+
+    // Which end is the peer, and is its actor the missing one? A connected peer's VSAPI
+    // traffic must go through policy like anything else.
+    let (peer_addr, peer_actor_missing) = if ft.dest_addr == vs_addr && ft.dest_port == vsapi_port {
+        (ft.source_addr, source_actor.is_none())
+    } else if ft.source_addr == vs_addr && ft.source_port == vsapi_port {
+        (ft.dest_addr, dest_actor.is_none())
+    } else {
+        return None;
+    };
+    if !peer_actor_missing {
+        return None;
+    }
+
+    // Only for a peer the *requesting* node is declared to link with: that node is the one
+    // that would be handed the visa by a topology send, so it is the one allowed to pull it.
+    let policy = asm.policy_mgr.get_current();
+    let peers = policy
+        .get_peers_for_node(&job.requesting_node)
+        .unwrap_or(&[]);
+    if !peers.iter().any(|p| p.remote_zpr_addr == peer_addr) {
+        debug!(target: VREQ, "node {} asked about VSAPI flow with {peer_addr}, which is not one of its {} declared peers: not a bootstrap request", job.requesting_node, peers.len());
+        return None;
+    }
+
+    // The requesting node relays for the peer, so it is `via_node` of the minted path, and
+    // what it needs is its own actualized copy (forwarding-only, or full if it is the egress
+    // node) -- not the ingress copy the peer gets pushed in `Link.visas`.
+    let visa = match asm
+        .visa_mgr
+        .vsapi_bootstrap_visa_for_future_peer(asm, &peer_addr, &job.requesting_node)
+        .await
+    {
+        Ok(visa) => visa,
+        Err(e) => {
+            warn!(target: VREQ, "failed to mint bootstrap visa for future peer {peer_addr} requested by node {}: {e}", job.requesting_node);
+            return None;
+        }
+    };
+    match asm
+        .visa_mgr
+        .actualize_visa_for_target_node(visa, &job.requesting_node)
+        .await
+    {
+        Ok(visa) => {
+            debug!(target: VREQ, "node {} requested the bootstrap visa for future peer {peer_addr}: returning visa {}", job.requesting_node, visa.issuer_id);
+            Some(VisaDecision::Allow(
+                visa,
+                Route::new_direct(NodeId(peer_addr)),
+            ))
+        }
+        Err(e) => {
+            warn!(target: VREQ, "failed to actualize bootstrap visa for node {} relaying future peer {peer_addr}: {e}", job.requesting_node);
+            None
+        }
+    }
+}
+
+/// One-line `src:port -> dst:port proto` for logging a request's flow.
+fn describe_five_tuple(pdesc: &PacketDesc) -> String {
+    let ft = &pdesc.five_tuple;
+    format!(
+        "{}:{} -> {}:{} proto {}",
+        ft.source_addr, ft.source_port, ft.dest_addr, ft.dest_port, ft.l4_protocol
+    )
 }
 
 /// Fabricate an AAA actor for an anonymous endpoint at the given address.
@@ -464,8 +572,11 @@ async fn resolve_actors_or_deny(
     {
         Some(actor) => actor,
         None => {
+            // Names the requesting node and the flow: without them a denial for an
+            // unconnected peer is indistinguishable from a genuine AAA miss.
             warn!(target: VREQ,
-                "visa denied: {anon_addr} is not a registered AAA address (peer {candidate_addr})"
+                "visa denied ({deny:?}) for node {}: {anon_addr} has no actor and is not a registered AAA address (peer {candidate_addr}, flow {})",
+                job.requesting_node, describe_five_tuple(&job.packet_desc)
             );
             return Err(VisaDecision::Deny(deny));
         }
@@ -1060,6 +1171,130 @@ mod tests {
         assert!(
             matches!(result, VisaDecision::Deny(DenyCode::NoMatch)),
             "expected NoMatch (policy eval reached)"
+        );
+    }
+
+    /// A visa request from a connected node on behalf of a policy-declared peer that has not
+    /// connected yet is answered from the pre-minted bootstrap visa. Policy cannot answer it:
+    /// the peer has no actor and no route, which is exactly what reaching VSAPI would fix.
+    #[tokio::test]
+    async fn bootstrap_visa_request_for_future_peer_is_allowed() {
+        use crate::db::PolicyRepo;
+        use crate::policy_mgr::PolicyMgr;
+        use crate::test_helpers::{FakeResolver, make_peering, policy_with_peerings};
+        use crate::trusted_services::TrustedServicesMgr;
+        use std::path::PathBuf;
+
+        let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap(); // connected, docks the VS
+        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap(); // no actor, no route
+
+        let mut asm = new_assembly_for_tests(None).await;
+        asm.policy_mgr = PolicyMgr::new_with_initial_policy(
+            policy_with_peerings(&[make_peering(via_node, future_peer, "link-vp", vec![])]),
+            PolicyRepo::new(asm.state_db.clone()),
+            Arc::new(FakeResolver::ip_only()),
+            Arc::new(TrustedServicesMgr::new()),
+            PathBuf::from("."),
+        )
+        .await
+        .unwrap();
+        asm.topo_mgr.add_node(via_node).unwrap();
+        asm.actor_mgr
+            .hack_set_vs_docking_node(&via_node)
+            .await
+            .unwrap();
+        let asm = Arc::new(asm);
+
+        let pkt = PacketDesc::new_tcp(
+            &future_peer.to_string(),
+            &asm.config.get_vs_addr().to_string(),
+            40000,
+            asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
+        )
+        .unwrap();
+        let (job, _rx) = VisaRequestJob::new(via_node, pkt);
+
+        let visa = match process_visa_request(asm.clone(), &job).await.unwrap() {
+            VisaDecision::Allow(visa, _) => visa,
+            VisaDecision::Deny(code) => panic!("expected allow, got deny {code:?}"),
+        };
+
+        // It is the peer's own visa, held pending-install until the peer connects.
+        let pending = asm
+            .visa_mgr
+            .get_pending_visa_ids_for_node(&future_peer)
+            .await
+            .unwrap();
+        assert_eq!(pending, vec![visa.issuer_id]);
+
+        // The reply direction is the same flow and must resolve to the same visa: the node
+        // may see and ask about either direction first.
+        let reply_pkt = PacketDesc::new_tcp(
+            &asm.config.get_vs_addr().to_string(),
+            &future_peer.to_string(),
+            asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
+            40000,
+        )
+        .unwrap();
+        let (reply_job, _rx) = VisaRequestJob::new(via_node, reply_pkt);
+        match process_visa_request(asm.clone(), &reply_job).await.unwrap() {
+            VisaDecision::Allow(reply_visa, _) => {
+                assert_eq!(reply_visa.issuer_id, visa.issuer_id)
+            }
+            VisaDecision::Deny(code) => panic!("expected allow for reply direction, got {code:?}"),
+        }
+    }
+
+    /// A connected peer's VSAPI traffic is not a bootstrap request: it has an actor, so it
+    /// goes through policy like anything else.
+    #[tokio::test]
+    async fn bootstrap_visa_request_declined_for_connected_peer() {
+        use crate::db::PolicyRepo;
+        use crate::policy_mgr::PolicyMgr;
+        use crate::test_helpers::{FakeResolver, make_peering, policy_with_peerings};
+        use crate::trusted_services::TrustedServicesMgr;
+        use std::path::PathBuf;
+
+        let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap();
+
+        let mut asm = new_assembly_for_tests(None).await;
+        asm.policy_mgr = PolicyMgr::new_with_initial_policy(
+            policy_with_peerings(&[make_peering(via_node, peer, "link-vp", vec![])]),
+            PolicyRepo::new(asm.state_db.clone()),
+            Arc::new(FakeResolver::ip_only()),
+            Arc::new(TrustedServicesMgr::new()),
+            PathBuf::from("."),
+        )
+        .await
+        .unwrap();
+        asm.topo_mgr.add_node(via_node).unwrap();
+        asm.actor_mgr
+            .hack_set_vs_docking_node(&via_node)
+            .await
+            .unwrap();
+        // The peer is connected now, so it has an actor.
+        let peer_actor = make_node_actor_defexp(&peer.to_string(), "peer-node", "10.0.0.7:5001");
+        asm.actor_mgr.add_node(&peer_actor, false).await.unwrap();
+        let asm = Arc::new(asm);
+
+        let pkt = PacketDesc::new_tcp(
+            &peer.to_string(),
+            &asm.config.get_vs_addr().to_string(),
+            40000,
+            asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
+        )
+        .unwrap();
+        let (job, _rx) = VisaRequestJob::new(via_node, pkt);
+
+        // Reaches policy evaluation (which has no matching comm policy) rather than being
+        // short-circuited into an allow.
+        assert!(
+            matches!(
+                process_visa_request(asm, &job).await.unwrap(),
+                VisaDecision::Deny(_)
+            ),
+            "a connected peer must not get a bootstrap visa"
         );
     }
 }

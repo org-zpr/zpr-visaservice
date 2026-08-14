@@ -654,6 +654,14 @@ impl VisaRepo {
         Ok(visas)
     }
 
+    /// The state a live visa is in on one node, or `None` when the visa is unknown/expired or
+    /// was never staged for that node. Read-only, for explaining a failed state transition.
+    pub fn get_node_visa_state(&self, visa_id: u64, node_addr: &IpAddr) -> Option<NodeVisaState> {
+        let store = self.inner.store.read().unwrap();
+        let entry = live_entry(&store, visa_id)?;
+        entry.node_states.get(node_addr).map(|ns| ns.state)
+    }
+
     /// The visa IDs for a node filtered by state, without cloning the visas.
     pub fn get_visa_ids_for_node_by_state(
         &self,

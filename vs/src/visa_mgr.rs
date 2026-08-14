@@ -676,7 +676,18 @@ impl VisaMgr {
             )
             .await?;
         if !applied {
-            debug!(target: VISA, "visa {visa_id} install ack for node {node_addr} did not apply (not PendingInstall); leaving state");
+            // The CAS misses for two very different reasons; say which. An already-Installed
+            // or PendingRevoke state is expected (a re-ack, or the sweep won the race), but a
+            // node with no entry at all means the visa was never staged for it -- e.g. the
+            // node is not on the visa's path, or the stored visa predates it being there.
+            match self.repo.get_node_visa_state(visa_id, node_addr) {
+                Some(state) => {
+                    debug!(target: VISA, "visa {visa_id} install ack for node {node_addr} did not apply: state is {state:?}, not PendingInstall; leaving it")
+                }
+                None => {
+                    warn!(target: VISA, "visa {visa_id} install ack for node {node_addr} did not apply: the visa is not staged for that node at all")
+                }
+            }
         }
         Ok(())
     }
@@ -1303,6 +1314,42 @@ mod tests {
         assert_eq!(
             again.issuer_id, visa.issuer_id,
             "second call must reuse the pending visa, not mint a duplicate"
+        );
+    }
+
+    /// The relaying node is on the bootstrap visa's path, so it is staged PendingInstall too
+    /// and its install ack applies. Without that staging the ack would find no entry and the
+    /// VS would never learn the relay installed the visa.
+    #[tokio::test]
+    async fn test_bootstrap_visa_stages_the_relaying_node() {
+        let asm = crate::assembly::tests::new_assembly_for_tests(None).await;
+        let via_node = add_vs_docking_node(&asm).await;
+        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap();
+
+        let visa = asm
+            .visa_mgr
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            asm.visa_mgr
+                .repo
+                .get_node_visa_state(visa.issuer_id, &via_node),
+            Some(db::NodeVisaState::PendingInstall),
+            "the relaying node must be staged for the visa it forwards"
+        );
+
+        asm.visa_mgr
+            .visa_installed(visa.issuer_id, &via_node)
+            .await
+            .unwrap();
+        assert_eq!(
+            asm.visa_mgr
+                .repo
+                .get_node_visa_state(visa.issuer_id, &via_node),
+            Some(db::NodeVisaState::Installed),
+            "the relay's install ack must apply"
         );
     }
 
