@@ -687,11 +687,16 @@ async fn vss_do_set_topology(
     mut peers: Vec<Link>,
 ) -> Result<(), VssSyncError> {
     // HACK -> This hack here is to support our intial MULTINODE implementation.
-    // We create "bootstrap" visas for each peer in the topology message, every time we send it.
+    // We create "bootstrap" visas for each peer in the topology message, every
+    // time we send it: one for the peer's own SYN to VSAPI, one for the visa
+    // service's reply to it.
     //
-    // The visa belongs to the peer, not to this node: this node holds it and hands it off when
-    // the peer connects. Minting bypasses policy evaluation entirely -- see
-    // [crate::visa_bootstrap], which is where all of this lives and where it gets deleted from.
+    // The visas belong to the peer, not to the node to whom we are sending the
+    // message: that node holds them and hands them off when the peer connects.
+    //
+    // Minting bypasses policy evaluation entirely -- see
+    // [crate::visa_bootstrap], which is where all of this lives and where it
+    // gets deleted from.
     //
     // TODO: Reevaluate this.
 
@@ -700,22 +705,22 @@ async fn vss_do_set_topology(
     let node_peers = policy.get_peers_for_node(node_addr).unwrap_or_default();
     for link in &mut peers {
         let Some(peer) = node_peers.iter().find(|p| p.link_id == link.link_id) else {
-            warn!(target: VSS, "no peer entry for link {} under node {node_addr}; sending it without a bootstrap visa", link.link_id);
+            warn!(target: VSS, "no peer entry for link {} under node {node_addr}; sending it without bootstrap visas", link.link_id);
             continue;
         };
         // The link is between `node_addr` and `peer.remote_zpr_addr`. Fail the whole call rather
-        // than sending the link bare: without the visa the peer cannot reach VSAPI, so the link
+        // than sending the link bare: without the visas the peer cannot reach VSAPI, so the link
         // is useless, and returning Ok would let `send_topology` mark topology synced and stop
         // housekeeping from ever retrying. Minting is idempotent, so the retry is free.
-        let visa = visa_bootstrap::visa_for_link(&asm, &peer.remote_zpr_addr, node_addr)
+        let visas = visa_bootstrap::visas_for_link(&asm, &peer.remote_zpr_addr, node_addr)
             .await
             .map_err(|e| {
                 VssSyncError::Internal(format!(
-                    "failed to create bootstrap visa for future peer {}: {e}",
+                    "failed to create bootstrap visas for future peer {}: {e}",
                     peer.remote_zpr_addr
                 ))
             })?;
-        link.visas.push(visa);
+        link.visas.extend(visas);
     }
 
     let mut req = vss_handle.set_topology_request();

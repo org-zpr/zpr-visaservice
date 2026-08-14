@@ -6,13 +6,12 @@
 //! the policy-declared peering, which *is* the authorization.
 //!
 //! There are two ways a bootstrap visa gets to where it is needed, and both live here:
-//! - [visa_for_link] mints the peer's own visa for a topology send, which carries it to the
-//!   peer's neighbour inside `Link.visas` for hand-off when the peer shows up. This one has to
-//!   be pushed: the peer cannot ask for a visa until it has a VSAPI session, and this visa is
-//!   what lets it open one.
+//! - [visas_for_link] mints the peer's own visas for a topology send, which carries them to the
+//!   peer's neighbour inside `Link.visas` for hand-off when the peer shows up. These have to be
+//!   pushed: the peer cannot ask for a visa until it has a VSAPI session, and these are what let
+//!   it open one.
 //! - [visa_for_future_peer_request] answers a *connected* node that saw the peer's traffic --
-//!   the SYN it relays, or the visa service's reply to it -- and has no visa for it. Nothing is
-//!   pre-minted for these: the node has VSAPI up, so it can ask, like it would for any flow.
+//!   the SYN it relays, or the visa service's reply to it -- before its own queued copy landed.
 //!
 //! Each direction of the session is its own visa -- see
 //! `VisaMgr::vsapi_bootstrap_visa_for_future_peer`, which does the actual minting and stays in
@@ -42,36 +41,40 @@ use crate::visareq_worker::{VisaDecision, VisaRequestJob};
 /// Stands in for the ZPL source on a bootstrap visa, which has no matching com policy.
 pub const BOOTSTRAP_VISA_ZPL: &str = "<bootstrap: policy peering>";
 
-/// The peer's own SYN visa, actualized for `future_peer`, for `via_node` to carry in the
-/// `Link.visas` of its topology message.
+/// Both directions of the peer's VSAPI flow, actualized for `future_peer`, for `via_node` to
+/// carry in the `Link.visas` of its topology message.
 ///
-/// The visa belongs to the peer, not to `via_node`: it holds it and hands it off when the peer
-/// connects. Actualizing for the peer gives it the copy for its end of the path -- ingress with
-/// a fwd_pep handing its VSAPI traffic to `via_node`. Nodes further along the path get their own
-/// copies via the pending-install queue.
+/// The visas belong to the peer, not to `via_node`: it holds them and hands them off when the
+/// peer connects. Actualizing for the peer gives it the copy for its end of each path -- the SYN
+/// visa ingresses at the peer, so it gets a fwd_pep handing its VSAPI traffic to `via_node`,
+/// while on the reply visa the peer is egress and forwards nothing. Nodes further along either
+/// path get their own copies via the pending-install queue.
 ///
-/// Only the forward direction is pushed. The peer is the client of the session, so its own visa
-/// covers the reply it gets back, and nothing else it holds is needed for the handshake. The
-/// reverse visa is for whichever *connected* node the visa service's reply ingresses at, and
-/// that node can ask for it -- it has a working VSAPI session, which is the whole difference
-/// between it and the peer. See [visa_for_future_peer_request], which answers that ask.
+/// Both directions are pushed because the peer needs both before it has a session to ask over:
+/// the SYN visa to reach VSAPI, and the reply visa so the visa service's answer is admitted. A
+/// visa carries one dock PEP and one path orientation, so neither can stand in for the other --
+/// see `VisaMgr::vsapi_bootstrap_visa_for_future_peer`.
 ///
 /// Minting is idempotent, so calling this on every topology send is free after the first.
-pub async fn visa_for_link(
+pub async fn visas_for_link(
     asm: &Arc<Assembly>,
     future_peer: &IpAddr,
     via_node: &IpAddr,
-) -> Result<Visa, ServiceError> {
-    let visa = asm
-        .visa_mgr
-        .vsapi_bootstrap_visa_for_future_peer(asm, future_peer, via_node, Direction::Forward)
-        .await?;
-    let visa = asm
-        .visa_mgr
-        .actualize_visa_for_target_node(visa, future_peer)
-        .await?;
-    debug!(target: VSS, "created bootstrap visa for future peer {future_peer}: {}", visa.issuer_id);
-    Ok(visa)
+) -> Result<Vec<Visa>, ServiceError> {
+    let mut visas = Vec::new();
+    for direction in [Direction::Forward, Direction::Reverse] {
+        let visa = asm
+            .visa_mgr
+            .vsapi_bootstrap_visa_for_future_peer(asm, future_peer, via_node, direction)
+            .await?;
+        let visa = asm
+            .visa_mgr
+            .actualize_visa_for_target_node(visa, future_peer)
+            .await?;
+        debug!(target: VSS, "created {direction:?} bootstrap visa for future peer {future_peer}: {}", visa.issuer_id);
+        visas.push(visa);
+    }
+    Ok(visas)
 }
 
 /// Answer a request for a not-yet-connected peer's VSAPI bootstrap flow from the visa we
@@ -79,13 +82,12 @@ pub async fn visa_for_link(
 ///
 /// Policy cannot answer: the peer has no actor and no route until it connects, and reaching
 /// VSAPI is how it connects. A peering declared in policy *is* the authorization -- the same
-/// argument that justifies [visa_for_link] minting at topology-send time -- so hand a visa back.
+/// argument that justifies [visas_for_link] minting at topology-send time -- so hand a visa back.
 ///
-/// Either orientation counts, and both really happen:
-/// - `peer:any -> vs:VSAPI`, the SYN this node relays, if it sees it before installing the copy
-///   [visa_for_link] staged for it.
-/// - `vs:VSAPI -> peer:any`, the visa service's reply, which is never pre-minted -- this is the
-///   only place that visa comes from.
+/// Either orientation counts, and both really happen -- this node saw the traffic before the copy
+/// [visas_for_link] staged for it was installed:
+/// - `peer:any -> vs:VSAPI`, the SYN this node relays.
+/// - `vs:VSAPI -> peer:any`, the visa service's reply to it.
 ///
 /// They are two visas, not one: a visa's dock PEP names a source and a destination, and its path
 /// has an ingress end, so the forward visa matches neither the reply's addresses nor its
@@ -432,6 +434,71 @@ mod tests {
             reply_route.links,
             vec![LinkId("link-vd".into()), LinkId("link-vp".into())],
             "the reply crosses the same links from the other end"
+        );
+    }
+
+    /// A topology send carries both directions of the peer's VSAPI flow, and re-sending
+    /// topology reuses them rather than minting a fresh pair every heartbeat.
+    #[tokio::test]
+    async fn topology_send_carries_both_bootstrap_directions_and_dedups() {
+        use zpr::vsapi_types::DockPepType;
+
+        let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap(); // connected, docks the VS
+        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap(); // no actor, no route
+        let asm = Arc::new(build_bootstrap_test_asm(via_node, future_peer).await);
+        let vs_addr = asm.config.get_vs_addr();
+        let vsapi_port = asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT);
+
+        let visas = visas_for_link(&asm, &future_peer, &via_node).await.unwrap();
+        assert_eq!(visas.len(), 2, "one visa per direction of the flow");
+        assert_ne!(
+            visas[0].issuer_id, visas[1].issuer_id,
+            "the two directions are distinct visas"
+        );
+
+        // The dock PEPs are the two orientations, with the wildcard on the peer's side: it is
+        // the client, so its port is unknown until it picks one.
+        let peps: Vec<_> = visas
+            .iter()
+            .map(|v| {
+                let pep = v.dock_pep.as_ref().expect("bootstrap visas are full visas");
+                let DockPepType::TCP(tpep) = &pep.pep else {
+                    panic!("expected a TCP dock PEP, got {:?}", pep.pep)
+                };
+                (
+                    pep.source_addr,
+                    tpep.source_port,
+                    pep.dest_addr,
+                    tpep.dest_port,
+                )
+            })
+            .collect();
+        assert_eq!(
+            peps,
+            vec![
+                (future_peer, 0, vs_addr, vsapi_port),
+                (vs_addr, vsapi_port, future_peer, 0),
+            ],
+            "the peer's SYN to VSAPI, then the visa service's reply"
+        );
+
+        // Both are held for the peer until it connects, and a second send reuses them.
+        let mut pending = asm
+            .visa_mgr
+            .get_pending_visa_ids_for_node(&future_peer)
+            .await
+            .unwrap();
+        pending.sort();
+        let mut ids: Vec<u64> = visas.iter().map(|v| v.issuer_id).collect();
+        ids.sort();
+        assert_eq!(pending, ids);
+
+        let resent = visas_for_link(&asm, &future_peer, &via_node).await.unwrap();
+        let mut resent_ids: Vec<u64> = resent.iter().map(|v| v.issuer_id).collect();
+        resent_ids.sort();
+        assert_eq!(
+            resent_ids, ids,
+            "re-sending topology must not mint duplicates"
         );
     }
 
