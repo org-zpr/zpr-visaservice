@@ -86,6 +86,25 @@ fn canonical_path(
 ///
 /// The peer's own link is not in the router yet -- it only comes up when the peer
 /// connects -- so the first hop is stitched on from the peering rather than routed.
+/// True if the visa's dock PEP is for exactly this five-tuple: both addresses and both TCP
+/// ports. A visa with no dock PEP cannot match -- only full visas are stored, so that is a bug
+/// worth logging.
+fn dock_pep_matches_five_tuple(visa: &Visa, ft: &VsapiFiveTuple) -> bool {
+    let Some(dock_pep) = visa.dock_pep.as_ref() else {
+        warn!(target: VISA, "found visa in store with no dock_pep ID={}", visa.issuer_id);
+        return false;
+    };
+    if dock_pep.source_addr != ft.source_addr || dock_pep.dest_addr != ft.dest_addr {
+        return false;
+    }
+    match &dock_pep.pep {
+        DockPepType::TCP(tpep) => {
+            tpep.dest_port == ft.dest_port && tpep.source_port == ft.source_port
+        }
+        _ => false,
+    }
+}
+
 fn bootstrap_path(
     asm: &Assembly,
     future_peer: &IpAddr,
@@ -297,19 +316,24 @@ impl VisaMgr {
             0,
             asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
         )?;
-        // Every connected neighbour of `future_peer` mints this same visa when it sends its
-        // topology, and those sends run concurrently (the policy-update fan-out, or every
-        // worker's initial sync after a VS restart). Without this the lookup below and the
-        // create further down interleave across their DB awaits and both neighbours mint,
-        // producing two visas with different IDs for one five-tuple.
+        // One neighbour can mint for the same peer from several places concurrently -- its
+        // topology sends (the policy-update fan-out, or every worker's initial sync after a VS
+        // restart) and a visa request pulling the visa. Without this the lookup below and the
+        // create further down interleave across their DB awaits and both mint, producing two
+        // visas with different IDs for one (peer, via_node).
         //
-        // NOTE: Using one global lock, not per-peer -- bootstrap minting only runs on topology
-        // sends. (Switch to per-peer if this ever lands on a hot path.)
+        // NOTE: Using one global lock, not per-peer -- bootstrap minting only happens while a
+        // peer is unconnected. (Switch to per-peer if this ever lands on a hot path.)
         let _guard = self.bootstrap_lock.lock().await;
 
         // A bootstrap visa is delivered inside a neighbour's topology message, so it stays
         // PendingInstall until `future_peer` itself connects and its own worker pushes it.
         // Match on that state too, otherwise every set_topology mints a duplicate.
+        //
+        // Dedup is per (peer, via_node), not per five-tuple: the path is baked into the visa,
+        // so a peer with two connected neighbours needs one visa per neighbour. Sharing one
+        // would leave the second neighbour off the visa's path -- its own copy could not be
+        // actualized, and the peer's copy would forward over the wrong link.
         if let Some(visa) = self
             .find_node_visa_by_five_tuple(
                 future_peer,
@@ -318,6 +342,7 @@ impl VisaMgr {
                     db::NodeVisaState::Installed,
                     db::NodeVisaState::PendingInstall,
                 ],
+                Some(via_node),
             )
             .await?
         {
@@ -357,44 +382,38 @@ impl VisaMgr {
         node_addr: &IpAddr,
         ft: &VsapiFiveTuple,
     ) -> Result<Option<Visa>, ServiceError> {
-        self.find_node_visa_by_five_tuple(node_addr, ft, &[db::NodeVisaState::Installed])
+        self.find_node_visa_by_five_tuple(node_addr, ft, &[db::NodeVisaState::Installed], None)
             .await
     }
 
     /// Use a linear search of the node's visas in any of `states` to find a five-tuple match.
+    ///
+    /// `relay`, when given, additionally requires the visa's path to hand off from `node_addr`
+    /// to that node. A five-tuple match alone is ambiguous once the path matters: a node with
+    /// several links needs one visa per link for the same flow, because each visa carries a
+    /// single path.
+    ///
     /// TODO: Need in-memory indexes for this.
     async fn find_node_visa_by_five_tuple(
         &self,
         node_addr: &IpAddr,
         ft: &VsapiFiveTuple,
         states: &[db::NodeVisaState],
+        relay: Option<&IpAddr>,
     ) -> Result<Option<Visa>, ServiceError> {
         for state in states {
             for visa in self.repo.get_visas_for_node_by_state(node_addr, *state)? {
-                if visa.dock_pep.is_none() {
-                    warn!(target: VISA, "found visa in store with no dock_pep ID={}", visa.issuer_id);
-                    continue; // not a full visa -- should not happen as only full visas are stored.
+                if !dock_pep_matches_five_tuple(&visa, ft) {
+                    continue;
                 }
-                let dock_pep = visa.dock_pep.as_ref().unwrap();
-                let vsource = &dock_pep.source_addr;
-                let vdest = &dock_pep.dest_addr;
-                if vsource == &ft.source_addr && vdest == &ft.dest_addr {
-                    // Is from VS -> NODE, check for VSS port match.
-                    match &dock_pep.pep {
-                        DockPepType::TCP(tpep) => {
-                            if tpep.dest_port == ft.dest_port && tpep.source_port == ft.source_port
-                            {
-                                // Found it
-                                return Ok(Some(visa));
-                            } else {
-                                continue; // not the right visa
-                            }
-                        }
-                        _ => {
-                            continue; // not the right visa
-                        }
+                if let Some(relay) = relay {
+                    // path[0] is `node_addr` itself, path[1] is the node it hands off to.
+                    let md = self.repo.get_visa_metadata_by_id(visa.issuer_id)?;
+                    if md.path.as_ref().and_then(|p| p.get(1)) != Some(relay) {
+                        continue;
                     }
                 }
+                return Ok(Some(visa));
             }
         }
         Ok(None)
@@ -1248,6 +1267,7 @@ mod tests {
                     db::NodeVisaState::Installed,
                     db::NodeVisaState::PendingInstall,
                 ],
+                None,
             )
             .await
             .unwrap();
@@ -1314,6 +1334,67 @@ mod tests {
         assert_eq!(
             again.issuer_id, visa.issuer_id,
             "second call must reuse the pending visa, not mint a duplicate"
+        );
+    }
+
+    /// A peer with two connected neighbours gets one bootstrap visa per neighbour: the path is
+    /// baked into the visa, so sharing one would leave the second neighbour off it. Deduping
+    /// still holds per neighbour -- asking twice for the same relay reuses.
+    #[tokio::test]
+    async fn test_bootstrap_visa_is_per_relay_not_per_five_tuple() {
+        let asm = crate::assembly::tests::new_assembly_for_tests(None).await;
+        let via_a = add_vs_docking_node(&asm).await; // docks the VS
+        let via_b: IpAddr = "fd5a:5052:3000::2".parse().unwrap();
+        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap();
+
+        // via_b reaches the VS docking node through a link to via_a.
+        asm.topo_mgr.add_node(via_b).unwrap();
+        asm.topo_mgr
+            .add_link(via_a, via_b, LinkId("link-ab".into()), vec![], 1)
+            .unwrap();
+
+        let visa_a = asm
+            .visa_mgr
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_a)
+            .await
+            .unwrap();
+        let visa_b = asm
+            .visa_mgr
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_b)
+            .await
+            .unwrap();
+
+        assert_ne!(
+            visa_a.issuer_id, visa_b.issuer_id,
+            "each relay needs its own visa: one visa carries one path"
+        );
+
+        // Each visa hands off from the peer to its own relay, and stages that relay.
+        for (visa, via) in [(&visa_a, via_a), (&visa_b, via_b)] {
+            let md = asm
+                .visa_mgr
+                .repo
+                .get_visa_metadata_by_id(visa.issuer_id)
+                .unwrap();
+            let path = md.path.expect("bootstrap visa has an explicit path");
+            assert_eq!(path[0], future_peer, "the peer is the ingress node");
+            assert_eq!(path[1], via, "the peer hands off to its own relay");
+            assert_eq!(
+                asm.visa_mgr.repo.get_node_visa_state(visa.issuer_id, &via),
+                Some(db::NodeVisaState::PendingInstall),
+                "the relay on the path is staged"
+            );
+        }
+
+        // Dedup still applies per relay.
+        let again = asm
+            .visa_mgr
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            again.issuer_id, visa_b.issuer_id,
+            "same relay must reuse its visa, not mint another"
         );
     }
 
