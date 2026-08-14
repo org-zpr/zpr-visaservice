@@ -28,9 +28,9 @@ use futures::future::{FutureExt, join_all};
 
 use libeval::actor::Actor;
 use libeval::attribute::{Attribute, ROLE_ADAPTER, key};
-use libeval::eval_result::Hit;
+use libeval::eval_result::{Direction, Hit};
 use libeval::policy::Policy;
-use libeval::route::{NodeId, Route};
+use libeval::route::Route;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -43,7 +43,8 @@ use crate::assembly::Assembly;
 use crate::counters::CounterType;
 use crate::error::ServiceError;
 use crate::logging::targets::VREQ;
-use crate::visa_mgr::VisaWithMetadata;
+use crate::packet::describe_five_tuple;
+use crate::visa_mgr::{VisaWithMetadata, bootstrap_route};
 use crate::visa_policy::{PolicyOutcome, evaluate_against_policy, route_for_allow};
 use crate::{config, net_mgr};
 
@@ -291,9 +292,11 @@ async fn process_visa_request(asm: Arc<Assembly>, job: &VisaRequestJob) -> VisaR
 /// the same argument that justifies minting at topology-send time -- so hand the visa back.
 /// Minting is idempotent, so this returns the same visa the neighbours were pushed.
 ///
-/// Either orientation counts: the peer's own SYN (`peer:any -> vs:VSAPI`) and the reply
-/// direction (`vs:VSAPI -> peer:any`) are one bidirectional flow covered by one visa, and a
-/// node may request for whichever it sees first.
+/// Either orientation counts -- the peer's own SYN (`peer:any -> vs:VSAPI`) or the reply
+/// (`vs:VSAPI -> peer:any`) -- and a node may ask about whichever it sees first. They are two
+/// visas, not one: a visa's dock PEP names a source and a destination, and its path has an
+/// ingress end, so the forward visa matches neither the reply's addresses nor its direction of
+/// travel. The direction detected here is what selects the right one.
 ///
 /// Returns `None` when this is not that flow (including on a mint failure), leaving the
 /// request to normal evaluation.
@@ -310,20 +313,21 @@ async fn bootstrap_visa_for_future_peer_request(
     let vs_addr = asm.config.get_vs_addr();
     let vsapi_port = asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT);
 
-    // Which end is the peer, and is its actor the missing one? A connected peer's VSAPI
-    // traffic must go through policy like anything else.
-    let (peer_addr, peer_actor_missing) = if ft.dest_addr == vs_addr && ft.dest_port == vsapi_port {
-        (ft.source_addr, source_actor.is_none())
-    } else if ft.source_addr == vs_addr && ft.source_port == vsapi_port {
-        (ft.dest_addr, dest_actor.is_none())
-    } else {
-        return None;
-    };
+    // Which end is the peer, which direction of the flow is this, and is the peer's actor the
+    // missing one? A connected peer's VSAPI traffic must go through policy like anything else.
+    let (peer_addr, direction, peer_actor_missing) =
+        if ft.dest_addr == vs_addr && ft.dest_port == vsapi_port {
+            (ft.source_addr, Direction::Forward, source_actor.is_none())
+        } else if ft.source_addr == vs_addr && ft.source_port == vsapi_port {
+            (ft.dest_addr, Direction::Reverse, dest_actor.is_none())
+        } else {
+            return None;
+        };
     if !peer_actor_missing {
         return None;
     }
 
-    // Only for a peer the *requesting* node is declared to link with: that node is the one
+    // Only for a peer the requesting node is declared to link with: that node is the one
     // that would be handed the visa by a topology send, so it is the one allowed to pull it.
     let policy = asm.policy_mgr.get_current();
     let peers = policy
@@ -335,16 +339,23 @@ async fn bootstrap_visa_for_future_peer_request(
     }
 
     // The requesting node relays for the peer, so it is `via_node` of the minted path, and
-    // what it needs is its own actualized copy (forwarding-only, or full if it is the egress
-    // node) -- not the ingress copy the peer gets pushed in `Link.visas`.
+    // what it needs is its own actualized copy (forwarding-only, or full if it is an end of
+    // the path) -- not the copy the peer gets pushed in `Link.visas`.
     let visa = match asm
         .visa_mgr
-        .vsapi_bootstrap_visa_for_future_peer(asm, &peer_addr, &job.requesting_node)
+        .vsapi_bootstrap_visa_for_future_peer(asm, &peer_addr, &job.requesting_node, direction)
         .await
     {
         Ok(visa) => visa,
         Err(e) => {
             warn!(target: VREQ, "failed to mint bootstrap visa for future peer {peer_addr} requested by node {}: {e}", job.requesting_node);
+            return None;
+        }
+    };
+    let route = match bootstrap_route(asm, &peer_addr, &job.requesting_node, direction) {
+        Ok(route) => route,
+        Err(e) => {
+            warn!(target: VREQ, "failed to build the bootstrap route for future peer {peer_addr} via node {}: {e}", job.requesting_node);
             return None;
         }
     };
@@ -355,25 +366,13 @@ async fn bootstrap_visa_for_future_peer_request(
     {
         Ok(visa) => {
             debug!(target: VREQ, "node {} requested the bootstrap visa for future peer {peer_addr}: returning visa {}", job.requesting_node, visa.issuer_id);
-            Some(VisaDecision::Allow(
-                visa,
-                Route::new_direct(NodeId(peer_addr)),
-            ))
+            Some(VisaDecision::Allow(visa, route))
         }
         Err(e) => {
             warn!(target: VREQ, "failed to actualize bootstrap visa for node {} relaying future peer {peer_addr}: {e}", job.requesting_node);
             None
         }
     }
-}
-
-/// One-line `src:port -> dst:port proto` for logging a request's flow.
-fn describe_five_tuple(pdesc: &PacketDesc) -> String {
-    let ft = &pdesc.five_tuple;
-    format!(
-        "{}:{} -> {}:{} proto {}",
-        ft.source_addr, ft.source_port, ft.dest_addr, ft.dest_port, ft.l4_protocol
-    )
 }
 
 /// Fabricate an AAA actor for an anonymous endpoint at the given address.
@@ -1174,19 +1173,15 @@ mod tests {
         );
     }
 
-    /// A visa request from a connected node on behalf of a policy-declared peer that has not
-    /// connected yet is answered from the pre-minted bootstrap visa. Policy cannot answer it:
-    /// the peer has no actor and no route, which is exactly what reaching VSAPI would fix.
-    #[tokio::test]
-    async fn bootstrap_visa_request_for_future_peer_is_allowed() {
+    /// Assembly for the bootstrap tests: policy declares one `via_node`<->`future_peer`
+    /// peering, and `via_node` is connected and docks the visa service. The peer is left
+    /// unconnected (no actor, no route) -- callers that want it connected add its actor.
+    async fn build_bootstrap_test_asm(via_node: IpAddr, future_peer: IpAddr) -> Assembly {
         use crate::db::PolicyRepo;
         use crate::policy_mgr::PolicyMgr;
         use crate::test_helpers::{FakeResolver, make_peering, policy_with_peerings};
         use crate::trusted_services::TrustedServicesMgr;
         use std::path::PathBuf;
-
-        let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap(); // connected, docks the VS
-        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap(); // no actor, no route
 
         let mut asm = new_assembly_for_tests(None).await;
         asm.policy_mgr = PolicyMgr::new_with_initial_policy(
@@ -1203,7 +1198,29 @@ mod tests {
             .hack_set_vs_docking_node(&via_node)
             .await
             .unwrap();
-        let asm = Arc::new(asm);
+        asm
+    }
+
+    /// The two directions of a future peer's VSAPI flow, as a node's dataplane would ask about
+    /// them: the peer's own SYN, and the visa service's reply to it.
+    fn bootstrap_flow_packets(asm: &Assembly, future_peer: &IpAddr) -> (PacketDesc, PacketDesc) {
+        let vs_addr = asm.config.get_vs_addr().to_string();
+        let peer = future_peer.to_string();
+        let vsapi_port = asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT);
+        (
+            PacketDesc::new_tcp(&peer, &vs_addr, 40000, vsapi_port).unwrap(),
+            PacketDesc::new_tcp(&vs_addr, &peer, vsapi_port, 40000).unwrap(),
+        )
+    }
+
+    /// A visa request from a connected node on behalf of a policy-declared peer that has not
+    /// connected yet is answered from the pre-minted bootstrap visa. Policy cannot answer it:
+    /// the peer has no actor and no route, which is exactly what reaching VSAPI would fix.
+    #[tokio::test]
+    async fn bootstrap_visa_request_for_future_peer_is_allowed() {
+        let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap(); // connected, docks the VS
+        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap(); // no actor, no route
+        let asm = Arc::new(build_bootstrap_test_asm(via_node, future_peer).await);
 
         let pkt = PacketDesc::new_tcp(
             &future_peer.to_string(),
@@ -1226,53 +1243,131 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pending, vec![visa.issuer_id]);
+    }
 
-        // The reply direction is the same flow and must resolve to the same visa: the node
-        // may see and ask about either direction first.
-        let reply_pkt = PacketDesc::new_tcp(
-            &asm.config.get_vs_addr().to_string(),
-            &future_peer.to_string(),
-            asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
-            40000,
-        )
-        .unwrap();
+    /// The reply direction gets its own visa. One visa carries one dock PEP and one path
+    /// orientation, so the forward visa (`peer -> vs:VSAPI`, pathed peer-first) cannot answer
+    /// `vs:VSAPI -> peer`: its PEP would not match the packet and no node on its path would
+    /// forward the reply. The reverse visa must be a distinct visa, addressed and pathed the
+    /// other way, with the requesting node forwarding towards the peer.
+    #[tokio::test]
+    async fn bootstrap_visa_reply_direction_gets_its_own_reverse_visa() {
+        use zpr::vsapi_types::{DockPepType, EndpointT};
+
+        let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap(); // connected, docks the VS
+        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap(); // no actor, no route
+        let asm = Arc::new(build_bootstrap_test_asm(via_node, future_peer).await);
+        let vs_addr = asm.config.get_vs_addr();
+        let vsapi_port = asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT);
+        let (syn_pkt, reply_pkt) = bootstrap_flow_packets(&asm, &future_peer);
+
+        let (syn_job, _rx) = VisaRequestJob::new(via_node, syn_pkt);
+        let syn_visa = match process_visa_request(asm.clone(), &syn_job).await.unwrap() {
+            VisaDecision::Allow(visa, _) => visa,
+            VisaDecision::Deny(code) => panic!("expected allow for SYN direction, got {code:?}"),
+        };
+
         let (reply_job, _rx) = VisaRequestJob::new(via_node, reply_pkt);
-        match process_visa_request(asm.clone(), &reply_job).await.unwrap() {
-            VisaDecision::Allow(reply_visa, _) => {
-                assert_eq!(reply_visa.issuer_id, visa.issuer_id)
-            }
+        let reply_visa = match process_visa_request(asm.clone(), &reply_job).await.unwrap() {
+            VisaDecision::Allow(visa, _) => visa,
             VisaDecision::Deny(code) => panic!("expected allow for reply direction, got {code:?}"),
+        };
+
+        assert_ne!(
+            reply_visa.issuer_id, syn_visa.issuer_id,
+            "the reply direction needs its own visa, not the forward one"
+        );
+
+        // The dock PEP must describe the reply packet: vs:VSAPI -> peer:any, server side.
+        let dock_pep = reply_visa.dock_pep.expect("reverse visa must be full");
+        assert_eq!(dock_pep.source_addr, vs_addr);
+        assert_eq!(dock_pep.dest_addr, future_peer);
+        match dock_pep.pep {
+            DockPepType::TCP(tpep) => {
+                assert_eq!(tpep.source_port, vsapi_port);
+                assert_eq!(tpep.dest_port, 0, "reply direction allows any dest port");
+                assert_eq!(tpep.endpoint, EndpointT::Server);
+            }
+            other => panic!("expected a TCP dock PEP, got {other:?}"),
         }
+
+        // The requesting node is where the reply ingresses, so it must forward to the peer.
+        let fwd_pep = reply_visa
+            .fwd_pep
+            .expect("reply ingress node needs a forwarding PEP towards the peer");
+        assert_eq!(fwd_pep.next_hop, future_peer);
+
+        // Both directions are held for the peer until it connects.
+        let mut pending = asm
+            .visa_mgr
+            .get_pending_visa_ids_for_node(&future_peer)
+            .await
+            .unwrap();
+        pending.sort();
+        let mut expected = vec![syn_visa.issuer_id, reply_visa.issuer_id];
+        expected.sort();
+        assert_eq!(pending, expected);
+    }
+
+    /// The route returned with a bootstrap visa names the links the traffic really crosses: the
+    /// peer's own link, which only policy knows about, plus the routed segment on to the visa
+    /// service's docking node -- ordered from the ingress end of the direction asked about.
+    #[tokio::test]
+    async fn bootstrap_visa_route_spans_peer_link_and_routed_segment() {
+        use libeval::route::{LinkId, RouteKind};
+
+        let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
+        let dock_node: IpAddr = "fd5a:5052:3000::2".parse().unwrap(); // docks the VS, one hop on
+        let future_peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap();
+
+        let asm = build_bootstrap_test_asm(via_node, future_peer).await;
+        asm.topo_mgr.add_node(dock_node).unwrap();
+        asm.topo_mgr
+            .add_link(via_node, dock_node, LinkId("link-vd".into()), vec![], 1)
+            .unwrap();
+        asm.actor_mgr
+            .hack_set_vs_docking_node(&dock_node)
+            .await
+            .unwrap();
+        let asm = Arc::new(asm);
+        let (syn_pkt, reply_pkt) = bootstrap_flow_packets(&asm, &future_peer);
+
+        let (syn_job, _rx) = VisaRequestJob::new(via_node, syn_pkt);
+        let syn_route = match process_visa_request(asm.clone(), &syn_job).await.unwrap() {
+            VisaDecision::Allow(_, route) => route,
+            VisaDecision::Deny(code) => panic!("expected allow for SYN direction, got {code:?}"),
+        };
+        assert!(
+            matches!(syn_route.kind, RouteKind::Multihop),
+            "the peer's own link is always crossed, so this is never a direct route"
+        );
+        assert_eq!(
+            syn_route.links,
+            vec![LinkId("link-vp".into()), LinkId("link-vd".into())],
+            "peer's link first, then the routed segment to the docking node"
+        );
+        assert_eq!(syn_route.cost, 2, "one policy link plus one router link");
+
+        let (reply_job, _rx) = VisaRequestJob::new(via_node, reply_pkt);
+        let reply_route = match process_visa_request(asm.clone(), &reply_job).await.unwrap() {
+            VisaDecision::Allow(_, route) => route,
+            VisaDecision::Deny(code) => panic!("expected allow for reply direction, got {code:?}"),
+        };
+        assert_eq!(
+            reply_route.links,
+            vec![LinkId("link-vd".into()), LinkId("link-vp".into())],
+            "the reply crosses the same links from the other end"
+        );
     }
 
     /// A connected peer's VSAPI traffic is not a bootstrap request: it has an actor, so it
     /// goes through policy like anything else.
     #[tokio::test]
     async fn bootstrap_visa_request_declined_for_connected_peer() {
-        use crate::db::PolicyRepo;
-        use crate::policy_mgr::PolicyMgr;
-        use crate::test_helpers::{FakeResolver, make_peering, policy_with_peerings};
-        use crate::trusted_services::TrustedServicesMgr;
-        use std::path::PathBuf;
-
         let via_node: IpAddr = "fd5a:5052:3000::1".parse().unwrap();
         let peer: IpAddr = "fd5a:5052:3000::7".parse().unwrap();
 
-        let mut asm = new_assembly_for_tests(None).await;
-        asm.policy_mgr = PolicyMgr::new_with_initial_policy(
-            policy_with_peerings(&[make_peering(via_node, peer, "link-vp", vec![])]),
-            PolicyRepo::new(asm.state_db.clone()),
-            Arc::new(FakeResolver::ip_only()),
-            Arc::new(TrustedServicesMgr::new()),
-            PathBuf::from("."),
-        )
-        .await
-        .unwrap();
-        asm.topo_mgr.add_node(via_node).unwrap();
-        asm.actor_mgr
-            .hack_set_vs_docking_node(&via_node)
-            .await
-            .unwrap();
+        let asm = build_bootstrap_test_asm(via_node, peer).await;
         // The peer is connected now, so it has an actor.
         let peer_actor = make_node_actor_defexp(&peer.to_string(), "peer-node", "10.0.0.7:5001");
         asm.actor_mgr.add_node(&peer_actor, false).await.unwrap();

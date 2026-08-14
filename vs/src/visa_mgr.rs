@@ -16,7 +16,7 @@ use crate::visa_policy::{PolicyOutcome, evaluate_against_policy, route_for_allow
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval_result::{Direction, Hit};
-use libeval::route::{NodeId, Route};
+use libeval::route::{LinkId, NodeId, Route, RouteKind};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
     CommFlag, DockPep, DockPepType, EndpointT, FwdPep, FwdPepStyle, IcmpPep, KeySet, PacketDesc,
@@ -105,11 +105,28 @@ fn dock_pep_matches_five_tuple(visa: &Visa, ft: &VsapiFiveTuple) -> bool {
     }
 }
 
-fn bootstrap_path(
+/// The node `node_addr` hands off to on `path`, given that it is one of the path's two ends.
+/// `None` if it is not an end (an intermediary has two neighbours, so the question is
+/// ambiguous). Bootstrap dedup asks "does this visa use the peer's link to that relay?", and
+/// the peer is always an end, so this answers it whichever way the path is oriented.
+fn path_neighbour_of_endpoint(path: &[IpAddr], node_addr: &IpAddr) -> Option<IpAddr> {
+    if path.first()? == node_addr {
+        path.get(1).copied()
+    } else if path.last()? == node_addr {
+        path.get(path.len().checked_sub(2)?).copied()
+    } else {
+        None
+    }
+}
+
+/// The routed part of a future peer's path to VSAPI: `via_node` to the node the visa service
+/// docks on. The peer's own link is not in the router until it connects, so it is not in here --
+/// [bootstrap_path] and [bootstrap_route] each stitch it on.
+fn bootstrap_vs_segment(
     asm: &Assembly,
     future_peer: &IpAddr,
     via_node: &IpAddr,
-) -> Result<Vec<IpAddr>, ServiceError> {
+) -> Result<Route, ServiceError> {
     let vs_addr = asm.config.get_vs_addr();
     let vs_dock = asm
         .actor_mgr
@@ -119,22 +136,63 @@ fn bootstrap_path(
                 "visa service {vs_addr} is not docked to a node: cannot path bootstrap visa for {future_peer}"
             ))
         })?;
-    let route = asm
-        .topo_mgr
+    asm.topo_mgr
         .get_best_route(via_node, &vs_dock)
         .ok_or_else(|| {
             ServiceError::Internal(format!(
                 "no route from {via_node} to visa service docking node {vs_dock}"
             ))
-        })?;
+        })
+}
+
+fn bootstrap_path(
+    asm: &Assembly,
+    future_peer: &IpAddr,
+    via_node: &IpAddr,
+) -> Result<Vec<IpAddr>, ServiceError> {
+    let segment = bootstrap_vs_segment(asm, future_peer, via_node)?;
     let mut path = vec![*future_peer];
     path.extend(
         asm.topo_mgr
-            .route_to_path(&route, &NodeId(*via_node))?
+            .route_to_path(&segment, &NodeId(*via_node))?
             .into_iter()
             .map(IpAddr::from),
     );
     Ok(path)
+}
+
+/// The route a future peer's VSAPI traffic takes in the given direction: its own link to
+/// `via_node`, then the routed segment on to the visa service's docking node.
+///
+/// It is always [RouteKind::Multihop] -- at least the peer's link is crossed -- and that link
+/// is described by policy rather than by the router, which does not know it yet.
+/// [Direction::Reverse] walks the same links from the far end, so the order flips.
+pub fn bootstrap_route(
+    asm: &Assembly,
+    future_peer: &IpAddr,
+    via_node: &IpAddr,
+    direction: Direction,
+) -> Result<Route, ServiceError> {
+    let segment = bootstrap_vs_segment(asm, future_peer, via_node)?;
+    let peer_link = asm
+        .policy_mgr
+        .get_current()
+        .describe_link(via_node, future_peer)
+        .map_err(|e| {
+            ServiceError::Internal(format!(
+                "no policy link between {via_node} and future peer {future_peer}: {e}"
+            ))
+        })?;
+    let mut links = vec![LinkId(peer_link.link_id)];
+    links.extend(segment.links);
+    if direction == Direction::Reverse {
+        links.reverse();
+    }
+    Ok(Route {
+        kind: RouteKind::Multihop,
+        links,
+        cost: segment.cost.saturating_add(peer_link.cost),
+    })
 }
 
 impl VisaWithMetadata {
@@ -291,13 +349,23 @@ impl VisaMgr {
         Ok(visas)
     }
 
-    /// Mint (or reuse) the bootstrap visa that lets a not-yet-connected peer reach the
-    /// visa service's VSAPI port, which is how it connects in the first place.
+    /// Mint (or reuse) one direction of the bootstrap flow that lets a not-yet-connected peer
+    /// reach the visa service's VSAPI port, which is how it connects in the first place.
     ///
     /// The visa belongs to `future_peer` and is stored pending-install against it.
     /// `via_node` is the already-connected neighbour whose topology message carries the
     /// copy handed off when the peer shows up; it is also the peer's first hop, so the
     /// path is anchored on it (see [bootstrap_path]).
+    ///
+    /// `direction` picks which half of the flow this visa is for. A visa carries exactly one
+    /// dock PEP and one path orientation, so the two halves cannot share one:
+    /// - [Direction::Forward] is the peer's own SYN, `peer:any -> vs:VSAPI`, ingressing at the
+    ///   peer and forwarded towards the node the visa service docks on.
+    /// - [Direction::Reverse] is the visa service's reply, `vs:VSAPI -> peer:any`, ingressing
+    ///   at the docking node and forwarded towards the peer.
+    ///
+    /// Call it once per direction: with only the forward visa the reply is dropped, because no
+    /// dock PEP matches it and no node on the forward path has a route back.
     ///
     /// This deliberately bypasses policy evaluation. The peer cannot be evaluated --
     /// it has no actor and no route until the link comes up -- and it needs none: a
@@ -309,13 +377,18 @@ impl VisaMgr {
         asm: &Assembly,
         future_peer: &IpAddr,
         via_node: &IpAddr,
+        direction: Direction,
     ) -> Result<Visa, ServiceError> {
-        let ft = make_fivetuple_tcp(
-            future_peer.clone(),      // from future peer
-            asm.config.get_vs_addr(), // to the visa service
-            0,
-            asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT),
-        )?;
+        let vs_addr = asm.config.get_vs_addr();
+        let vsapi_port = asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT);
+        // The wildcard port sits on the peer's side in both cases: it is the client, so its
+        // port is unknown until it picks one. This is also what `create_visa_with_path`
+        // derives for a BiDirectional packet in each direction, so the dedup lookup below
+        // compares equal to what was stored.
+        let ft = match direction {
+            Direction::Forward => make_fivetuple_tcp(*future_peer, vs_addr, 0, vsapi_port)?,
+            Direction::Reverse => make_fivetuple_tcp(vs_addr, *future_peer, vsapi_port, 0)?,
+        };
         // One neighbour can mint for the same peer from several places concurrently -- its
         // topology sends (the policy-update fan-out, or every worker's initial sync after a VS
         // restart) and a visa request pulling the visa. Without this the lookup below and the
@@ -356,14 +429,20 @@ impl VisaMgr {
             // The path cannot be routed -- the peer's link is not up -- so hand it in
             // explicitly. It has to be there: without it the peer's copy gets no fwd_pep
             // and the relaying nodes get no copy at all, leaving the visa unusable.
-            // Forward + BiDirectional gives the ports we want: any source port -> VSAPI.
             let policy = asm.policy_mgr.get_current();
-            let hit = Hit::new_no_signal(0, Direction::Forward);
-            let path = bootstrap_path(asm, future_peer, via_node)?;
+            let hit = Hit::new_no_signal(0, direction);
+            // [bootstrap_path] is peer-first, which is the forward flow's orientation. The
+            // reply ingresses at the other end, so flip it: actualization decides each node's
+            // role from the path plus the ingress node, and `path[0]` is that node either way.
+            let mut path = bootstrap_path(asm, future_peer, via_node)?;
+            if direction == Direction::Reverse {
+                path.reverse();
+            }
+            let ingress_node = path[0]; // bootstrap_path is never empty
 
             let visawmd = self
                 .create_visa_with_path(
-                    future_peer,
+                    &ingress_node,
                     &pkt_data,
                     &hit,
                     Some(path),
@@ -388,8 +467,8 @@ impl VisaMgr {
 
     /// Use a linear search of the node's visas in any of `states` to find a five-tuple match.
     ///
-    /// `relay`, when given, additionally requires the visa's path to hand off from `node_addr`
-    /// to that node. A five-tuple match alone is ambiguous once the path matters: a node with
+    /// `relay`, when given, additionally requires the visa's path to put that node next to
+    /// `node_addr`. A five-tuple match alone is ambiguous once the path matters: a node with
     /// several links needs one visa per link for the same flow, because each visa carries a
     /// single path.
     ///
@@ -407,9 +486,12 @@ impl VisaMgr {
                     continue;
                 }
                 if let Some(relay) = relay {
-                    // path[0] is `node_addr` itself, path[1] is the node it hands off to.
                     let md = self.repo.get_visa_metadata_by_id(visa.issuer_id)?;
-                    if md.path.as_ref().and_then(|p| p.get(1)) != Some(relay) {
+                    let neighbour = md
+                        .path
+                        .as_ref()
+                        .and_then(|p| path_neighbour_of_endpoint(p, node_addr));
+                    if neighbour.as_ref() != Some(relay) {
                         continue;
                     }
                 }
@@ -1300,7 +1382,7 @@ mod tests {
 
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node, Direction::Forward)
             .await
             .expect("bootstrap visa must not need a route from the peer itself");
 
@@ -1328,7 +1410,7 @@ mod tests {
 
         let again = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node, Direction::Forward)
             .await
             .unwrap();
         assert_eq!(
@@ -1355,12 +1437,12 @@ mod tests {
 
         let visa_a = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_a)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_a, Direction::Forward)
             .await
             .unwrap();
         let visa_b = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_b)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_b, Direction::Forward)
             .await
             .unwrap();
 
@@ -1389,7 +1471,7 @@ mod tests {
         // Dedup still applies per relay.
         let again = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_b)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_b, Direction::Forward)
             .await
             .unwrap();
         assert_eq!(
@@ -1409,7 +1491,7 @@ mod tests {
 
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node, Direction::Forward)
             .await
             .unwrap();
 
@@ -1445,7 +1527,7 @@ mod tests {
 
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node)
+            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node, Direction::Forward)
             .await
             .unwrap();
         let md = asm
@@ -1495,6 +1577,7 @@ mod tests {
             &asm,
             &future_peer,
             &via_node,
+            Direction::Forward,
         ));
         assert!(
             tokio::time::timeout(Duration::from_secs(1), &mut mint)

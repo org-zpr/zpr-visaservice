@@ -27,6 +27,7 @@ use crate::error::ServiceError;
 use crate::event_mgr::{self, VsEvent};
 use crate::logging::targets::API;
 use crate::net_mgr;
+use crate::packet::describe_five_tuple;
 use crate::topology_mgr::{AddLinkedNodeError, TopologyMgr};
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
@@ -270,6 +271,8 @@ impl VSHandleImpl {
                 ));
             }
         };
+
+        debug!(target: API, "preparing visa request from node {} for packet {}", requestor_ip, describe_five_tuple(&pdesc));
 
         // Note that we assume that everything above this has taken no time.
         match request_visa_wait_response(&self.asm, requestor_ip, pdesc, timeout).await {
