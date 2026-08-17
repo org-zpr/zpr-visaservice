@@ -21,6 +21,8 @@
 //!
 //! TODO: This whole module is a HACK to get initial MULTINODE working, and is meant to be
 //! deleted once peers authenticate and route properly before needing VSAPI.
+//!
+//! See: https://github.com/org-zpr/zpr-visaservice/issues/301
 
 use std::net::IpAddr;
 use std::sync::Arc;

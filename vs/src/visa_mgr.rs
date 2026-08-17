@@ -288,6 +288,7 @@ impl VisaMgr {
     /// peering declared in policy *is* the authorization for that peer to reach VSAPI.
     ///
     /// TODO: Added as a HACK to get initial MULTINODE working. Should be re-evaluated later.
+    /// See: https://github.com/org-zpr/zpr-visaservice/issues/301
     pub async fn vsapi_bootstrap_visa_for_future_peer(
         &self,
         asm: &Assembly,

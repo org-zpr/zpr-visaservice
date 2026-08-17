@@ -421,8 +421,8 @@ impl PolicyResolver {
                         port: sock_addr.port(),
                     },
                     visas: Vec::new(), // this is used only when sending topology messages
-                                       // TODO: Probably should be an option.
                                        // TODO: Why are use re-using a vsapi type here anyway?
+                                       // See https://github.com/org-zpr/zpr-visaservice/issues/300
                 })
             })
             .collect()

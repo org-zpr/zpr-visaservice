@@ -37,7 +37,6 @@ use crate::auth;
 use crate::config;
 use crate::error::ServiceError;
 use crate::logging::targets::CC;
-use crate::net_mgr;
 
 // TODO: move to libeval
 const CLASS_DEVICE: &str = "device";
@@ -130,6 +129,12 @@ impl ConnectionControl {
     ///
     /// See https://github.com/org-zpr/zpr-visaservice/issues/205
     ///
+    /// The `remote` arg is the TCP peer address of the node.  So it will be a ZPR address and an
+    /// ephemeral socket. Not very useful.  Originally this was supposed to be a substrate address
+    /// but we are not yet told that.
+    ///
+    /// See https://github.com/org-zpr/zpr-visaservice/issues/299
+    ///
     pub async fn authenticate_node(
         &self,
         asm: Arc<Assembly>,
@@ -145,21 +150,17 @@ impl ConnectionControl {
 
         let mut authd_claims: Vec<Attribute> = Vec::new();
 
-        // `remote` is the VSAPI TCP peer, which is the node's substrate address only when the
-        // node connected over the substrate. A node that joined over a link reaches us from
-        // its ZPR address, so take its substrate from the resolved topology instead.
-        //
-        // TODO: May want a node to tell us this.
-        let substrate_addr = if net_mgr::is_zpr_addr(&remote.ip()) {
-            match substrate_addr_from_topology(&asm, &node_req_addr) {
-                Some(sa) => sa,
-                None => {
-                    warn!(target: CC, "node {cn} reached VSAPI over ZPR from {remote} but policy topology gives no substrate address for {node_req_addr}: recording the ZPR address instead");
-                    remote
-                }
+        // Policy might contain the real substrate address.
+        // Otherwise we just use the peer address. Not ideal, but doesn't matter yet since no one is actually
+        // using the SUBSTRATE_ADDR property yet -- BUT code later (db/node.rs) requires that this property
+        // is set.
+        // See: https://github.com/org-zpr/zpr-visaservice/issues/299
+        let substrate_addr = match substrate_addr_from_topology(&asm, &node_req_addr) {
+            Some(sa) => sa,
+            None => {
+                warn!(target: CC, "node {cn} has no substrate address in policy - using peer address {remote}");
+                remote
             }
-        } else {
-            remote
         };
         authd_claims
             .push(Attribute::builder(key::SUBSTRATE_ADDR).value(substrate_addr.to_string()));

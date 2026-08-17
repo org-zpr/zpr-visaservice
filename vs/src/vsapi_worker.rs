@@ -311,6 +311,7 @@ fn write_error(bldr: &mut vsapi::error::Builder, code: vsapi::ErrorCode, message
 /// report the link it came in over as a connect param.
 ///
 /// TODO: Rethink this: do we really node connect and open in VSAPI?
+/// See: https://github.com/org-zpr/zpr-visaservice/issues/302
 async fn install_policy_links_for_node(asm: &Assembly, node_actor: &Actor, node_addr: &IpAddr) {
     let psnap = asm.policy_mgr.get_current_snapshot();
     let Some(peers) = psnap.policy().get_peers_for_node(node_addr) else {
@@ -494,11 +495,14 @@ impl vsapi::visa_service::Server for VisaServiceImpl {
 
         info!(target: API, "node {} requests zpr addr {} (CONNECT_TYPE={:?})", vs_connect_request.cn, node_zpr_addr, vs_connect_request.ctype);
 
-        // The requested address is an unauthenticated claim. A node that joins over a link
-        // reaches VSAPI from its ZPR address using a bootstrap visa pinned to that address,
-        // so the address it claims must be the one we are talking to. Only the first node
-        // connects over the substrate, where the remote is not a ZPR address and there is
-        // nothing to compare against.
+        // The requested address is an unauthenticated claim. A node reaches VSAPI from its ZPR
+        // address using a bootstrap visa pinned to that address, so the address it claims must
+        // be the one we are talking to; past this point `node_zpr_addr` is source-verified.
+        //
+        // The check is skipped when VSAPI is not bound to a ZPR address (`vs_addr` set to
+        // loopback or a substrate address for local development) -- there is no fabric
+        // enforcing the source there, so there is nothing to compare against. Not a supported
+        // production configuration.
         let remote_ip = self.remote.ip();
         if net_mgr::is_zpr_addr(&remote_ip) && remote_ip != node_zpr_addr {
             warn!(target: API, "node {} connecting from ZPR addr {} claims addr {}: rejected", vs_connect_request.cn, remote_ip, node_zpr_addr);
