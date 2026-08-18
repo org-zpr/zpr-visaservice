@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use libeval::actor::Actor;
 use libeval::eval_result::Direction;
+use libeval::policy::Policy;
 use libeval::route::{LinkId, NodeId, Route, RouteKind};
 use tracing::{debug, warn};
 use zpr::vsapi_types::Visa;
@@ -65,8 +66,12 @@ pub const BOOTSTRAP_VISA_ZPL: &str = "<bootstrap: policy peering>";
 /// `via_node` as an intermediary and pushes it a forwarding-only visa for a flow it terminates.
 ///
 /// Minting is idempotent, so calling this on every topology send is free after the first.
+///
+/// `policy` is the view the caller picked the link out of, threaded through so the minted
+/// visas record the generation that actually authorized them.
 pub async fn visas_for_link(
     asm: &Arc<Assembly>,
+    policy: &Arc<Policy>,
     future_peer: &IpAddr,
     via_node: &IpAddr,
 ) -> Result<Vec<Visa>, ServiceError> {
@@ -84,7 +89,7 @@ pub async fn visas_for_link(
     for direction in [Direction::Forward, Direction::Reverse] {
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(asm, future_peer, via_node, direction)
+            .vsapi_bootstrap_visa_for_future_peer(asm, policy, future_peer, via_node, direction)
             .await?;
         let visa = asm
             .visa_mgr
@@ -144,6 +149,10 @@ pub async fn visa_for_future_peer_request(
 
     // Only for a peer the requesting node is declared to link with: that node is the one
     // that would be handed the visa by a topology send, so it is the one allowed to pull it.
+    //
+    // This is the only policy read on this path: the peer selection here, the minted visa's
+    // recorded generation, and the route's link_id all have to agree, so `policy` is threaded
+    // into both calls below rather than re-read in each.
     let policy = asm.policy_mgr.get_current();
     let peers = policy
         .get_peers_for_node(&job.requesting_node)
@@ -158,7 +167,13 @@ pub async fn visa_for_future_peer_request(
     // the path) -- not the copy the peer gets pushed in `Link.visas`.
     let visa = match asm
         .visa_mgr
-        .vsapi_bootstrap_visa_for_future_peer(asm, &peer_addr, &job.requesting_node, direction)
+        .vsapi_bootstrap_visa_for_future_peer(
+            asm,
+            &policy,
+            &peer_addr,
+            &job.requesting_node,
+            direction,
+        )
         .await
     {
         Ok(visa) => visa,
@@ -167,7 +182,7 @@ pub async fn visa_for_future_peer_request(
             return None;
         }
     };
-    let route = match bootstrap_route(asm, &peer_addr, &job.requesting_node, direction) {
+    let route = match bootstrap_route(asm, &policy, &peer_addr, &job.requesting_node, direction) {
         Ok(route) => route,
         Err(e) => {
             warn!(target: VREQ, "failed to build the bootstrap route for future peer {peer_addr} via node {}: {e}", job.requesting_node);
@@ -216,12 +231,19 @@ fn vs_segment(
         })
 }
 
-/// Node path a future peer's VSAPI traffic will take: the peer itself, then `via_node`
-/// (the neighbour carrying the peer's topology message, hence its first hop), then
-/// `via_node`'s route to the node the visa service docks on.
+/// Node path a future peer's VSAPI traffic will take: the peer itself, then
+/// `via_node` (the neighbour carrying the peer's topology message, hence its
+/// first hop), then `via_node`'s route to the node the visa service docks on.
 ///
-/// The peer's own link is not in the router yet -- it only comes up when the peer
-/// connects -- so the first hop is stitched on from the peering rather than routed.
+/// The peer's own link is not in the router yet -- it only comes up when the
+/// peer connects -- so the first hop is stitched on from the peering rather
+/// than routed.
+///
+/// The routed part is read from the live router: the path names the nodes
+/// actualization pushes a copy to, so they have to be nodes whose links are up.
+/// See the comment at the mint site in
+/// `VisaMgr::vsapi_bootstrap_visa_for_future_peer` for why a `PolicySnapshot`
+/// cannot supply this and what does come from policy.
 pub fn path_for_future_peer(
     asm: &Assembly,
     future_peer: &IpAddr,
@@ -242,24 +264,22 @@ pub fn path_for_future_peer(
 /// `via_node`, then the routed segment on to the visa service's docking node.
 ///
 /// It is always [RouteKind::Multihop] -- at least the peer's link is crossed -- and that link
-/// is described by policy rather than by the router, which does not know it yet.
+/// is described by `policy` rather than by the router, which does not know it yet. The caller's
+/// view is threaded in so the link id here matches the peering the caller selected.
 /// [Direction::Reverse] walks the same links from the far end, so the order flips.
 fn bootstrap_route(
     asm: &Assembly,
+    policy: &Arc<Policy>,
     future_peer: &IpAddr,
     via_node: &IpAddr,
     direction: Direction,
 ) -> Result<Route, ServiceError> {
     let segment = vs_segment(asm, future_peer, via_node)?;
-    let peer_link = asm
-        .policy_mgr
-        .get_current()
-        .describe_link(via_node, future_peer)
-        .map_err(|e| {
-            ServiceError::Internal(format!(
-                "no policy link between {via_node} and future peer {future_peer}: {e}"
-            ))
-        })?;
+    let peer_link = policy.describe_link(via_node, future_peer).map_err(|e| {
+        ServiceError::Internal(format!(
+            "no policy link between {via_node} and future peer {future_peer}: {e}"
+        ))
+    })?;
     let mut links = vec![LinkId(peer_link.link_id)];
     links.extend(segment.links);
     if direction == Direction::Reverse {
@@ -468,7 +488,9 @@ mod tests {
         let vs_addr = asm.config.get_vs_addr();
         let vsapi_port = asm.config.core.vsapi_port.unwrap_or(config::VSAPI_PORT);
 
-        let visas = visas_for_link(&asm, &future_peer, &via_node).await.unwrap();
+        let visas = visas_for_link(&asm, &asm.policy_mgr.get_current(), &future_peer, &via_node)
+            .await
+            .unwrap();
         assert_eq!(visas.len(), 2, "one visa per direction of the flow");
         assert_ne!(
             visas[0].issuer_id, visas[1].issuer_id,
@@ -512,7 +534,9 @@ mod tests {
         ids.sort();
         assert_eq!(pending, ids);
 
-        let resent = visas_for_link(&asm, &future_peer, &via_node).await.unwrap();
+        let resent = visas_for_link(&asm, &asm.policy_mgr.get_current(), &future_peer, &via_node)
+            .await
+            .unwrap();
         let mut resent_ids: Vec<u64> = resent.iter().map(|v| v.issuer_id).collect();
         resent_ids.sort();
         assert_eq!(
@@ -547,7 +571,7 @@ mod tests {
         let asm = Arc::new(asm);
 
         assert!(
-            visas_for_link(&asm, &peer, &via_node)
+            visas_for_link(&asm, &asm.policy_mgr.get_current(), &peer, &via_node)
                 .await
                 .unwrap()
                 .is_empty(),

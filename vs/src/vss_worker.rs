@@ -715,7 +715,7 @@ async fn vss_do_set_topology(
         //
         // An already-connected peer is the exception and yields no visas -- it has a VSAPI
         // session of its own and asks for what it needs.
-        let visas = visa_bootstrap::visas_for_link(&asm, &peer.remote_zpr_addr, node_addr)
+        let visas = visa_bootstrap::visas_for_link(&asm, &policy, &peer.remote_zpr_addr, node_addr)
             .await
             .map_err(|e| {
                 VssSyncError::Internal(format!(

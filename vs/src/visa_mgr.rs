@@ -19,6 +19,7 @@ use crate::visa_policy::{
 use crate::visareq_worker::{VisaDecision, request_visa_wait_response};
 
 use libeval::eval_result::{Direction, Hit};
+use libeval::policy::Policy;
 use libeval::route::{NodeId, Route};
 use zpr::vsapi_types::vsapi_ip_number as ip_proto;
 use zpr::vsapi_types::{
@@ -287,11 +288,17 @@ impl VisaMgr {
     /// it has no actor and no route until the link comes up -- and it needs none: a
     /// peering declared in policy *is* the authorization for that peer to reach VSAPI.
     ///
+    /// `policy` is the caller's view, not a fresh read: the peering that authorizes this
+    /// visa was selected by the caller from that same view, so the generation recorded on
+    /// the visa has to come from it too, or a policy install landing mid-call stamps the
+    /// visa with a generation that never authorized it.
+    ///
     /// TODO: Added as a HACK to get initial MULTINODE working. Should be re-evaluated later.
     /// See: https://github.com/org-zpr/zpr-visaservice/issues/301
     pub async fn vsapi_bootstrap_visa_for_future_peer(
         &self,
         asm: &Assembly,
+        policy: &Arc<Policy>,
         future_peer: &IpAddr,
         via_node: &IpAddr,
         direction: Direction,
@@ -346,7 +353,15 @@ impl VisaMgr {
             // The path cannot be routed -- the peer's link is not up -- so hand it in
             // explicitly. It has to be there: without it the peer's copy gets no fwd_pep
             // and the relaying nodes get no copy at all, leaving the visa unusable.
-            let policy = asm.policy_mgr.get_current();
+            //
+            // The path and the recorded generation come from different places on purpose.
+            // Everything policy-derived -- the peering that authorizes this visa, its
+            // link_id and cost, the generation stamped below -- comes from the caller's
+            // `policy`, so one mint cannot straddle two policy installs. The path is read
+            // live from the router instead, and has to be: actualization pushes a copy to
+            // every node on it, so it must name nodes whose links are actually up. A
+            // `PolicySnapshot` carries no topology at all (see `policy_mgr::PolicyState`),
+            // so there is no snapshot to take the path from.
             let hit = Hit::new_no_signal(0, direction);
             // [path_for_future_peer] is peer-first, which is the forward flow's orientation. The
             // reply ingresses at the other end, so flip it: actualization decides each node's
@@ -1284,7 +1299,13 @@ mod tests {
 
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node, Direction::Forward)
+            .vsapi_bootstrap_visa_for_future_peer(
+                &asm,
+                &asm.policy_mgr.get_current(),
+                &future_peer,
+                &via_node,
+                Direction::Forward,
+            )
             .await
             .expect("bootstrap visa must not need a route from the peer itself");
 
@@ -1312,7 +1333,13 @@ mod tests {
 
         let again = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node, Direction::Forward)
+            .vsapi_bootstrap_visa_for_future_peer(
+                &asm,
+                &asm.policy_mgr.get_current(),
+                &future_peer,
+                &via_node,
+                Direction::Forward,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1339,12 +1366,24 @@ mod tests {
 
         let visa_a = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_a, Direction::Forward)
+            .vsapi_bootstrap_visa_for_future_peer(
+                &asm,
+                &asm.policy_mgr.get_current(),
+                &future_peer,
+                &via_a,
+                Direction::Forward,
+            )
             .await
             .unwrap();
         let visa_b = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_b, Direction::Forward)
+            .vsapi_bootstrap_visa_for_future_peer(
+                &asm,
+                &asm.policy_mgr.get_current(),
+                &future_peer,
+                &via_b,
+                Direction::Forward,
+            )
             .await
             .unwrap();
 
@@ -1373,7 +1412,13 @@ mod tests {
         // Dedup still applies per relay.
         let again = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_b, Direction::Forward)
+            .vsapi_bootstrap_visa_for_future_peer(
+                &asm,
+                &asm.policy_mgr.get_current(),
+                &future_peer,
+                &via_b,
+                Direction::Forward,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1393,7 +1438,13 @@ mod tests {
 
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node, Direction::Forward)
+            .vsapi_bootstrap_visa_for_future_peer(
+                &asm,
+                &asm.policy_mgr.get_current(),
+                &future_peer,
+                &via_node,
+                Direction::Forward,
+            )
             .await
             .unwrap();
 
@@ -1429,7 +1480,13 @@ mod tests {
 
         let visa = asm
             .visa_mgr
-            .vsapi_bootstrap_visa_for_future_peer(&asm, &future_peer, &via_node, Direction::Forward)
+            .vsapi_bootstrap_visa_for_future_peer(
+                &asm,
+                &asm.policy_mgr.get_current(),
+                &future_peer,
+                &via_node,
+                Direction::Forward,
+            )
             .await
             .unwrap();
         let md = asm
@@ -1475,8 +1532,11 @@ mod tests {
         let future_peer: IpAddr = "fd5a:5052:3000::8".parse().unwrap();
 
         let guard = asm.visa_mgr.bootstrap_lock.lock().await;
+        // Named local: the future outlives the statement, so this cannot be a temporary.
+        let policy = asm.policy_mgr.get_current();
         let mut mint = Box::pin(asm.visa_mgr.vsapi_bootstrap_visa_for_future_peer(
             &asm,
+            &policy,
             &future_peer,
             &via_node,
             Direction::Forward,

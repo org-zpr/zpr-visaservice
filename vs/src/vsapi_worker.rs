@@ -302,8 +302,20 @@ fn write_error(bldr: &mut vsapi::error::Builder, code: vsapi::ErrorCode, message
 /// `authorize_connect`, so nothing else installs its links: it would land in the router
 /// with no edges at all and every visa request involving it would deny `NoRoute`.
 ///
-/// Failures are logged, not fatal -- the node is authenticated either way, and the
-/// housekeeping revalidation pass repairs router/state drift later.
+/// Failures are logged, not fatal -- the node is authenticated either way. Nothing
+/// reconciles the missing edge afterwards: every `add_linked_node` failure path leaves it
+/// in neither the router nor persisted state, and `revalidate_against_policy` only works
+/// the union of those two stores, so it never installs a policy-declared edge absent from
+/// both. The link stays missing until one of its endpoints reconnects and re-runs this or
+/// `authorize_connect`. Meanwhile the node is still *told* the link exists -- topology
+/// sends come from policy, not the router -- so its visa requests over that link deny
+/// `NoRoute` with nothing on the node side to explain why.
+///
+/// TODO: retry instead of just logging. `add_linked_node` is idempotent (tolerates
+/// `LinkExists`, re-persists on the already-connected path), so a "links dirty" flag on
+/// `VssState` next to `needs_set_topology` would let `do_housekeeping` re-run this on the
+/// next tick -- no new machinery required.
+/// See: https://github.com/org-zpr/zpr-visaservice/issues/302
 ///
 /// TODO: a declared peering between two connected nodes is taken as evidence that the
 /// link is up. VS cannot see which peer forwarded the VSAPI connection, so a node with
@@ -344,7 +356,8 @@ async fn install_policy_links_for_node(asm: &Assembly, node_actor: &Actor, node_
                 info!(target: API, "installed link {} between node {node_addr} and peer {}", peer.link_id, peer.remote_zpr_addr)
             }
             Err(e) => {
-                warn!(target: API, "failed to install link {} between node {node_addr} and peer {}: {e} -- node has no route over that link", peer.link_id, peer.remote_zpr_addr)
+                error!(target: API, "failed to install link {} between node {node_addr} and peer {}: {e} -- node has no route over that link until an endpoint reconnects", peer.link_id, peer.remote_zpr_addr);
+                asm.counters.incr(CounterType::LinkInstallFailed);
             }
         }
     }
