@@ -2207,6 +2207,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 name = "libeval"
 version = "0.16.0"
 dependencies = [
+ "base64",
  "bytes",
  "capnp",
  "enumset",
