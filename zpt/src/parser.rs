@@ -595,6 +595,8 @@ mod test {
         }
     }
 
+    // A tag must be domain qualified (`#user.red`), since the encoded key is
+    // `<domain>.zpr.tag.<name>`; a bare `#red` has no domain and is rejected.
     #[test]
     fn test_set_tag_requires_domain() {
         assert!(parse("set alice #red").is_err());
