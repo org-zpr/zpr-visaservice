@@ -721,12 +721,14 @@ async fn vss_do_set_topology(
                 port: sock_addr.port(),
             },
             visas: Vec::new(),
+            zpr_addr: None, // filled from the policy peer entry below, when one exists
         };
         let Some(peer) = node_peers.iter().find(|p| p.link_id == link.link_id) else {
             warn!(target: VSS, "no peer entry for link {} under node {node_addr}; sending it without bootstrap visas", link.link_id);
             links.push(link);
             continue;
         };
+        link.zpr_addr = Some(peer.remote_zpr_addr);
         // The link is between `node_addr` and `peer.remote_zpr_addr`. Fail the whole call rather
         // than sending the link bare: without the visas the peer cannot reach VSAPI, so the link
         // is useless, and returning Ok would let `send_topology` mark topology synced and stop
