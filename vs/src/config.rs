@@ -261,6 +261,8 @@ mod test {
         (cfg, dir)
     }
 
+    // Relative path fields in the config file must resolve relative to the
+    // config file's directory, not the process's working directory.
     #[test]
     fn test_relative_paths_resolve_relative_to_config_file() {
         let (cfg, dir) = load_from_temp_dir(
@@ -279,6 +281,8 @@ mod test {
         assert_eq!(cfg.core.file_ts_dir, Some(base.join("include")));
     }
 
+    // Absolute path fields must be left exactly as written; anchoring only
+    // applies to relative paths.
     #[test]
     fn test_absolute_paths_are_untouched() {
         let (cfg, _dir) = load_from_temp_dir(
