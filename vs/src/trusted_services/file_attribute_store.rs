@@ -48,13 +48,28 @@ impl Snapshot {
     }
 }
 
-type ActorId = String;
+type IdentityKey = String;
+type IdentityValue = String;
 type AttributeName = String;
 type AttributeValue = String;
 
+/// One actor entry's attribute data: service attribute name -> values.
+type AttributeMap = BTreeMap<AttributeName, Vec<AttributeValue>>;
+
 /// Actor attributes decoded from the file's JSON representation.
+///
+/// Entries are keyed by identity attribute key AND value:
+///
+/// ```json
+/// { "device.zpr.adapter.cn": { "alice.zpr.org": { "color": ["red"] } },
+///   "user.sub":              { "10769150350006150715113082367": { "dept": ["eng"] } } }
+/// ```
+///
+/// Keying on the (key, value) pair rather than a flat value map means a device CN and a
+/// user subject can never collide in this file, and the store can tell which kind of
+/// identity each entry describes.
 #[derive(Debug, Deserialize, Clone)]
-struct ActorAttributes(BTreeMap<ActorId, BTreeMap<AttributeName, Vec<AttributeValue>>>);
+struct ActorAttributes(BTreeMap<IdentityKey, BTreeMap<IdentityValue, AttributeMap>>);
 
 /// Load and decode actor attributes from a local JSON file.
 fn load_actor_attributes_from_file(fp: &Path) -> Result<ActorAttributes, ServiceError> {
@@ -126,30 +141,65 @@ impl FileAttributeStore {
 
 #[async_trait]
 impl TrustedServiceInterface for FileAttributeStore {
-    /// Look up an actor by CN and return its mapped attributes.
+    /// Look up every identity the actor presented and return the UNION of the mapped
+    /// attributes of every entry that matched. Two matched identities supplying the
+    /// same service attribute with differing values is a store misconfiguration; the
+    /// lookup fails (and the caller treats that as indeterminate) rather than pick a
+    /// winner, since silently choosing would make authorization depend on identity
+    /// ordering.
     async fn get_attributes_for_actor(
         &self,
-        actor_ident: &str,
+        identities: &[(String, String)],
     ) -> Result<Vec<Attribute>, ServiceError> {
         let snapshot = self.live_snapshot().await?;
 
-        let Some(attributes) = snapshot.attributes.0.get(actor_ident) else {
-            debug!(target: TS, "{}: actor '{actor_ident}' not found in the attribute store", self.id);
-            return Ok(Vec::new());
-        };
+        // Union the raw (unmapped) attribute maps of every matched identity first, so
+        // value conflicts are detected across identities before any mapping filters
+        // entries out.
+        let mut merged: BTreeMap<&String, (&Vec<String>, &str)> = BTreeMap::new();
+        for (ident_key, ident_value) in identities {
+            let Some(attributes) = snapshot
+                .attributes
+                .0
+                .get(ident_key)
+                .and_then(|by_value| by_value.get(ident_value))
+            else {
+                debug!(
+                    target: TS,
+                    "{}: identity {ident_key}={ident_value} not found in the attribute store",
+                    self.id
+                );
+                continue;
+            };
+            for (name, values) in attributes {
+                match merged.get(name) {
+                    None => {
+                        merged.insert(name, (values, ident_value.as_str()));
+                    }
+                    Some((existing, first_ident)) if *existing != values => {
+                        return Err(ServiceError::Param(format!(
+                            "{}: identities '{first_ident}' and '{ident_value}' disagree on \
+                             attribute '{name}'",
+                            self.id
+                        )));
+                    }
+                    Some(_) => {} // Same key, same values: one attribute, no conflict.
+                }
+            }
+        }
 
         let mut result = Vec::new();
         let src_builder = AttributeSource::new(self.id.clone());
         let remaining = snapshot.remaining();
 
-        for (name, values) in attributes {
+        for (name, (values, _)) in merged {
             if let Some((zpr_name, hint)) = self.mapper.map_attribute(name) {
                 let builder = src_builder.builder(zpr_name).expires_in(remaining);
                 let attribute = match hint {
                     AttrHint::SingleValued => {
                         builder.value(values.first().cloned().unwrap_or_default())
                     }
-                    AttrHint::MultiValued => builder.values(values),
+                    AttrHint::MultiValued => builder.values(values.clone()),
                     // A tag is valueless: presence of the per-tag key is the tag.
                     AttrHint::Tag => builder.values(Vec::<String>::new()),
                 };
@@ -187,6 +237,17 @@ impl TrustedServiceInterface for FileAttributeStore {
 mod tests {
     use super::*;
     use crate::trusted_services::test_support::{test_mapper, write_fixture};
+    use libeval::attribute::key;
+
+    /// True when the snapshot holds an entry for `value` under the builtin CN
+    /// identity key (the key the test fixtures use).
+    fn has_cn_entry(snapshot: &Snapshot, value: &str) -> bool {
+        snapshot
+            .attributes
+            .0
+            .get(key::CN)
+            .is_some_and(|by_value| by_value.contains_key(value))
+    }
 
     /// Construction rejects TTLs that would force a reload on every request.
     #[test]
@@ -219,7 +280,10 @@ mod tests {
     /// An unexpired store stays cached until an explicit flush installs new data.
     #[tokio::test]
     async fn test_flush_forces_reload_on_next_read() {
-        let fp = write_fixture("vs-fas-flush.json", r#"{"alice": {"color": ["red"]}}"#);
+        let fp = write_fixture(
+            "vs-fas-flush.json",
+            r#"{"device.zpr.adapter.cn": {"alice": {"color": ["red"]}}}"#,
+        );
         let store = FileAttributeStore::new(
             "test".to_string(),
             test_mapper(),
@@ -229,18 +293,79 @@ mod tests {
         .unwrap();
 
         let snapshot = store.live_snapshot().await.unwrap();
-        assert!(snapshot.attributes.0.contains_key("alice"));
+        assert!(has_cn_entry(&snapshot, "alice"));
 
-        fs::write(&fp, r#"{"bob": {"color": ["blue"]}}"#).unwrap();
+        fs::write(
+            &fp,
+            r#"{"device.zpr.adapter.cn": {"bob": {"color": ["blue"]}}}"#,
+        )
+        .unwrap();
         let snapshot = store.live_snapshot().await.unwrap();
-        assert!(snapshot.attributes.0.contains_key("alice"));
-        assert!(!snapshot.attributes.0.contains_key("bob"));
+        assert!(has_cn_entry(&snapshot, "alice"));
+        assert!(!has_cn_entry(&snapshot, "bob"));
 
         store.flush().await.unwrap();
         let snapshot = store.live_snapshot().await.unwrap();
-        assert!(snapshot.attributes.0.contains_key("bob"));
-        assert!(!snapshot.attributes.0.contains_key("alice"));
+        assert!(has_cn_entry(&snapshot, "bob"));
+        assert!(!has_cn_entry(&snapshot, "alice"));
         assert!(snapshot.remaining() >= MIN_ATTRIBUTE_TTL);
+
+        fs::remove_file(&fp).unwrap();
+    }
+
+    /// A source matching several of the actor's identities returns the UNION of their
+    /// attributes, and two matched identities disagreeing on one attribute key fail the
+    /// lookup (fail closed) rather than silently picking a winner.
+    #[tokio::test]
+    async fn test_multi_identity_union_and_conflict() {
+        // A device CN entry and two user-subject entries for the same actor.
+        let fp = write_fixture(
+            "vs-fas-multi-ident.json",
+            r#"{
+                "device.zpr.adapter.cn": {
+                    "dev.zpr.org": { "color": ["red"] }
+                },
+                "user.sub": {
+                    "sub-123": { "roles": ["a", "b"] },
+                    "sub-conflict": { "color": ["blue"] }
+                }
+            }"#,
+        );
+        let store = FileAttributeStore::new(
+            "test".to_string(),
+            test_mapper(),
+            Duration::from_secs(3600),
+            &fp,
+        )
+        .unwrap();
+
+        // Union: both matched identities contribute their (non-overlapping) attributes.
+        let attrs = store
+            .get_attributes_for_actor(&[
+                (key::CN.to_string(), "dev.zpr.org".to_string()),
+                ("user.sub".to_string(), "sub-123".to_string()),
+            ])
+            .await
+            .unwrap();
+        let keys: Vec<&str> = attrs.iter().map(|a| a.get_key()).collect();
+        assert!(keys.contains(&"user.color"));
+        assert!(keys.contains(&"user.role"));
+
+        // Conflict: both identities supply `color` with different values -> Err.
+        let result = store
+            .get_attributes_for_actor(&[
+                (key::CN.to_string(), "dev.zpr.org".to_string()),
+                ("user.sub".to_string(), "sub-conflict".to_string()),
+            ])
+            .await;
+        assert!(matches!(result, Err(ServiceError::Param(_))));
+
+        // An unknown identity alone matches nothing: empty result, not an error.
+        let attrs = store
+            .get_attributes_for_actor(&[("user.sub".to_string(), "nobody".to_string())])
+            .await
+            .unwrap();
+        assert!(attrs.is_empty());
 
         fs::remove_file(&fp).unwrap();
     }
@@ -248,7 +373,10 @@ mod tests {
     /// A failed flush preserves the current snapshot and revision.
     #[tokio::test]
     async fn test_flush_failure_keeps_snapshot_and_revision() {
-        let fp = write_fixture("vs-fas-flush-fail.json", r#"{"alice": {"color": ["red"]}}"#);
+        let fp = write_fixture(
+            "vs-fas-flush-fail.json",
+            r#"{"device.zpr.adapter.cn": {"alice": {"color": ["red"]}}}"#,
+        );
         let store = FileAttributeStore::new(
             "test".to_string(),
             test_mapper(),
@@ -261,12 +389,16 @@ mod tests {
         fs::write(&fp, "not json").unwrap();
         assert!(store.flush().await.is_err());
         assert_eq!(store.current_revision(), revision);
-        assert!(store.snapshot.load().attributes.0.contains_key("alice"));
+        assert!(has_cn_entry(&store.snapshot.load(), "alice"));
 
-        fs::write(&fp, r#"{"bob": {"color": ["blue"]}}"#).unwrap();
+        fs::write(
+            &fp,
+            r#"{"device.zpr.adapter.cn": {"bob": {"color": ["blue"]}}}"#,
+        )
+        .unwrap();
         store.flush().await.unwrap();
         assert!(store.current_revision() > revision);
-        assert!(store.snapshot.load().attributes.0.contains_key("bob"));
+        assert!(has_cn_entry(&store.snapshot.load(), "bob"));
 
         fs::remove_file(&fp).unwrap();
     }
