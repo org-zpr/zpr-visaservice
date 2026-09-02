@@ -578,6 +578,17 @@ mod identity_tests {
         let dir = tempfile::tempdir().unwrap();
         // Read-only parent so creating the data home fails with EACCES.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root (or CAP_DAC_OVERRIDE, common in build containers) bypasses
+        // mode bits, so the setup above cannot produce the permission
+        // failure this test is about. Probe for that and skip explicitly
+        // rather than let unwrap_err() panic on a spurious Ok.
+        let probe = dir.path().join("probe");
+        if std::fs::create_dir(&probe).is_ok() {
+            std::fs::remove_dir(&probe).unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipping: privileges bypass file permission bits");
+            return;
+        }
         let data_home = dir.path().join("zpr");
         let err = initialize_identity(&None, &false, &data_home).unwrap_err();
         let msg = err.to_string();

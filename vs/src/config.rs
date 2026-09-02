@@ -4,7 +4,7 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::ServiceError;
@@ -230,8 +230,12 @@ pub fn get_data_home() -> PathBuf {
 // the given values of `XDG_DATA_HOME` and `HOME`. Split out so the resolution
 // logic is unit-testable without mutating process environment variables.
 fn data_home_from(xdg_data_home: Option<&str>, home: Option<&str>) -> PathBuf {
+    // The XDG Base Directory spec requires these variables to hold absolute
+    // paths and says invalid (relative) values must be ignored. Honouring a
+    // relative value would tie the identity location to the process's working
+    // directory, so a restart from elsewhere would mint a new identity.
     let mut dh = match xdg_data_home {
-        Some(val) if !val.trim().is_empty() => PathBuf::from(val),
+        Some(val) if !val.trim().is_empty() && Path::new(val).is_absolute() => PathBuf::from(val),
         _ => match home {
             Some(val) if !val.trim().is_empty() => {
                 let mut pb = PathBuf::from(val);
@@ -272,6 +276,20 @@ mod test {
         assert_eq!(
             data_home_from(Some(""), Some(nonexistent)),
             PathBuf::from(nonexistent).join(".local/share/zpr")
+        );
+    }
+
+    // A relative XDG_DATA_HOME violates the XDG spec and must be ignored,
+    // falling through to the HOME-based (or /var/lib) resolution.
+    #[test]
+    fn test_data_home_ignores_relative_xdg_data_home() {
+        assert_eq!(
+            data_home_from(Some(".data"), Some("/home/u")),
+            PathBuf::from("/home/u/.local/share/zpr")
+        );
+        assert_eq!(
+            data_home_from(Some("relative/path"), None),
+            PathBuf::from("/var/lib/zpr")
         );
     }
 
