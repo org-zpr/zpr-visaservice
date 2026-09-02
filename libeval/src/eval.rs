@@ -1093,6 +1093,39 @@ mod test {
         };
     }
 
+    // Even when a join policy matches, only zpr.addr is taken from the
+    // unauthenticated claims: a self-asserted identity-shaped claim (e.g.
+    // `user.sub`) must never reach the actor, or the refresh path would send
+    // it to trusted services as a lookup identity and leak another identity's
+    // attributes to the claimant.
+    #[test]
+    fn test_join_match_does_not_commit_non_addr_unauth_claims() {
+        setup();
+        let pol = load_policy("basic.bin2");
+        let ctx = EvalContext::new(Arc::new(pol));
+
+        // node.zpr.org matches a join policy in basic.bin2 (see
+        // test_node_can_connect), so the zpr.addr claim IS validated and kept.
+        let authenticated_claims = vec![Attribute::builder(key::CN).value("node.zpr.org")];
+        let unauthenticated_claims = vec![
+            Attribute::builder(key::ZPR_ADDR).value("fd5a:5052:90de::1"),
+            Attribute::builder("user.sub").value("someone-else"),
+        ];
+
+        let actor = ctx
+            .approve_connection(
+                Some(authenticated_claims.as_slice()),
+                Some(unauthenticated_claims.as_slice()),
+            )
+            .unwrap();
+
+        // The join policy matched: the requested address was committed...
+        assert!(actor.is_node());
+        assert!(actor.get_zpr_addr().is_some());
+        // ...but the self-asserted user.sub claim was not.
+        assert!(!actor.has_attribute_named("user.sub"));
+    }
+
     // A node approved under the current policy should still pass re-check.
     #[test]
     fn test_approve_connected_node_still_valid() {

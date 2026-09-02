@@ -142,21 +142,35 @@ impl FileAttributeStore {
 #[async_trait]
 impl TrustedServiceInterface for FileAttributeStore {
     /// Look up every identity the actor presented and return the UNION of the mapped
-    /// attributes of every entry that matched. Two matched identities supplying the
-    /// same service attribute with differing values is a store misconfiguration; the
-    /// lookup fails (and the caller treats that as indeterminate) rather than pick a
-    /// winner, since silently choosing would make authorization depend on identity
-    /// ordering.
+    /// attributes of every entry that matched. Two entries supplying the same
+    /// attribute with differing values is a store misconfiguration; the lookup fails
+    /// (and the caller treats that as indeterminate) rather than pick a winner, since
+    /// silently choosing would make authorization depend on identity ordering.
+    ///
+    /// Conflicts are detected on the MAPPED (canonical ZPR) key, not the raw
+    /// service-side name: two different service-side names can map to the same ZPR
+    /// key (e.g. `department -> user.dept` and `dept -> user.dept`), and comparing
+    /// raw names would let such a pair smuggle conflicting values past the check --
+    /// the caller's `Actor::add_attribute` would then silently keep whichever came
+    /// last instead of failing closed as this interface promises.
     async fn get_attributes_for_actor(
         &self,
         identities: &[(String, String)],
     ) -> Result<Vec<Attribute>, ServiceError> {
         let snapshot = self.live_snapshot().await?;
 
-        // Union the raw (unmapped) attribute maps of every matched identity first, so
-        // value conflicts are detected across identities before any mapping filters
-        // entries out.
-        let mut merged: BTreeMap<&String, (&Vec<String>, &str)> = BTreeMap::new();
+        // Union the attribute maps of every matched identity, keyed by the canonical
+        // ZPR key so conflicts are detected after mapping collapses aliased
+        // service-side names. Unmapped names are filtered out here; they can never
+        // become attributes, so they cannot conflict. Value alongside: the values,
+        // the emission hint, and (identity, raw name) provenance for the error path.
+        struct Merged<'a> {
+            values: &'a Vec<String>,
+            hint: AttrHint,
+            ident: &'a str,
+            raw_name: &'a str,
+        }
+        let mut merged: BTreeMap<String, Merged> = BTreeMap::new();
         for (ident_key, ident_value) in identities {
             let Some(attributes) = snapshot
                 .attributes
@@ -172,18 +186,29 @@ impl TrustedServiceInterface for FileAttributeStore {
                 continue;
             };
             for (name, values) in attributes {
-                match merged.get(name) {
+                let Some((zpr_key, hint)) = self.mapper.map_attribute(name) else {
+                    continue;
+                };
+                match merged.get(&zpr_key) {
                     None => {
-                        merged.insert(name, (values, ident_value.as_str()));
+                        merged.insert(
+                            zpr_key,
+                            Merged {
+                                values,
+                                hint,
+                                ident: ident_value,
+                                raw_name: name,
+                            },
+                        );
                     }
-                    Some((existing, first_ident)) if *existing != values => {
+                    Some(first) if first.values != values => {
                         return Err(ServiceError::Param(format!(
-                            "{}: identities '{first_ident}' and '{ident_value}' disagree on \
-                             attribute '{name}'",
-                            self.id
+                            "{}: '{}' (identity '{}') and '{name}' (identity '{ident_value}') \
+                             disagree on attribute '{zpr_key}'",
+                            self.id, first.raw_name, first.ident
                         )));
                     }
-                    Some(_) => {} // Same key, same values: one attribute, no conflict.
+                    Some(_) => {} // Same ZPR key, same values: one attribute, no conflict.
                 }
             }
         }
@@ -192,19 +217,17 @@ impl TrustedServiceInterface for FileAttributeStore {
         let src_builder = AttributeSource::new(self.id.clone());
         let remaining = snapshot.remaining();
 
-        for (name, (values, _)) in merged {
-            if let Some((zpr_name, hint)) = self.mapper.map_attribute(name) {
-                let builder = src_builder.builder(zpr_name).expires_in(remaining);
-                let attribute = match hint {
-                    AttrHint::SingleValued => {
-                        builder.value(values.first().cloned().unwrap_or_default())
-                    }
-                    AttrHint::MultiValued => builder.values(values.clone()),
-                    // A tag is valueless: presence of the per-tag key is the tag.
-                    AttrHint::Tag => builder.values(Vec::<String>::new()),
-                };
-                result.push(attribute);
-            }
+        for (zpr_key, m) in merged {
+            let builder = src_builder.builder(zpr_key).expires_in(remaining);
+            let attribute = match m.hint {
+                AttrHint::SingleValued => {
+                    builder.value(m.values.first().cloned().unwrap_or_default())
+                }
+                AttrHint::MultiValued => builder.values(m.values.clone()),
+                // A tag is valueless: presence of the per-tag key is the tag.
+                AttrHint::Tag => builder.values(Vec::<String>::new()),
+            };
+            result.push(attribute);
         }
         Ok(result)
     }
@@ -366,6 +389,59 @@ mod tests {
             .await
             .unwrap();
         assert!(attrs.is_empty());
+
+        fs::remove_file(&fp).unwrap();
+    }
+
+    /// Conflicts are detected on the mapped ZPR key: two DIFFERENT service-side
+    /// names mapping to the same ZPR key must fail the lookup when they carry
+    /// different values, and collapse to one attribute when they agree.
+    #[tokio::test]
+    async fn test_conflict_detected_on_mapped_key() {
+        use zpr::policy_types::parse_attribute_mapping;
+
+        // `department` and `dept` are aliases for the same canonical ZPR key.
+        let mapper = AttributeMapper {
+            mappings: ["department -> user.dept", "dept -> user.dept"]
+                .iter()
+                .map(|mapping| parse_attribute_mapping(mapping).unwrap())
+                .collect(),
+        };
+        let fp = write_fixture(
+            "vs-fas-mapped-conflict.json",
+            r#"{
+                "device.zpr.adapter.cn": {
+                    "dev.zpr.org": { "department": ["eng"] }
+                },
+                "user.sub": {
+                    "sub-agree": { "dept": ["eng"] },
+                    "sub-conflict": { "dept": ["sales"] }
+                }
+            }"#,
+        );
+        let store =
+            FileAttributeStore::new("test".to_string(), mapper, Duration::from_secs(3600), &fp)
+                .unwrap();
+
+        // Different raw names, same mapped key, conflicting values -> fail closed.
+        let result = store
+            .get_attributes_for_actor(&[
+                (key::CN.to_string(), "dev.zpr.org".to_string()),
+                ("user.sub".to_string(), "sub-conflict".to_string()),
+            ])
+            .await;
+        assert!(matches!(result, Err(ServiceError::Param(_))));
+
+        // Different raw names, same mapped key, same values -> one attribute.
+        let attrs = store
+            .get_attributes_for_actor(&[
+                (key::CN.to_string(), "dev.zpr.org".to_string()),
+                ("user.sub".to_string(), "sub-agree".to_string()),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0].get_key(), "user.dept");
 
         fs::remove_file(&fp).unwrap();
     }
